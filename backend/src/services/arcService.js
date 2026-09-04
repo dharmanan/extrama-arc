@@ -13,12 +13,44 @@ const USDC_ABI = [
   'function name() view returns (string)',
 ];
 
+const FACTORY_ABI = [
+  'function pools() view returns (address[])',
+];
+
+const POOL_ABI = [
+  'function ASSET() view returns (uint8)',
+  'function DIRECTION() view returns (uint8)',
+  'function CADENCE() view returns (uint8)',
+  'function TICKET() view returns (address)',
+  'function nextRoundId() view returns (uint256)',
+  'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
+];
+
+const ASSETS = ['BTC', 'ETH', 'SOL', 'HYPE'];
+const DIRECTIONS = ['HIGH', 'LOW'];
+const CADENCES = ['DAILY', 'WEEKLY', 'QUARTERLY'];
+const CONTRACT_STATUSES = ['ENTRY_OPEN', 'LOCKED', 'SETTLED', 'CANCELLED'];
+const SOURCE_SYMBOLS = {
+  BTC: 'BTCUSDT',
+  ETH: 'ETHUSDT',
+  SOL: 'SOLUSDT',
+  HYPE: 'HYPEUSDT',
+};
+
 function getProvider() {
   return new ethers.JsonRpcProvider(
     config.ARC_TESTNET_RPC_URL,
     { chainId: Number(ARC_TESTNET_CHAIN_ID), name: 'Arc Testnet' },
     { staticNetwork: true },
   );
+}
+
+function toIso(seconds) {
+  return new Date(Number(seconds) * 1000).toISOString();
+}
+
+function slugify(asset, cadence, direction) {
+  return `${asset.toLowerCase()}-${cadence.toLowerCase()}-${direction.toLowerCase()}`;
 }
 
 async function readArcWalletState(address) {
@@ -80,8 +112,119 @@ async function readArcWalletState(address) {
   };
 }
 
+async function readStandardRounds() {
+  const provider = getProvider();
+  const factoryAddress = ethers.getAddress(config.EXTREMA_FACTORY_ADDRESS);
+
+  const [network, blockNumber, latestBlock, factoryCode] = await Promise.all([
+    provider.getNetwork(),
+    provider.getBlockNumber(),
+    provider.getBlock('latest'),
+    provider.getCode(factoryAddress),
+  ]);
+
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+  if (factoryCode === '0x') {
+    throw new Error('extrema_factory_contract_not_found');
+  }
+  if (!latestBlock) {
+    throw new Error('arc_latest_block_unavailable');
+  }
+
+  const factory = new ethers.Contract(factoryAddress, FACTORY_ABI, provider);
+  const poolAddresses = await factory.pools();
+  if (poolAddresses.length !== 24) {
+    throw new Error('extrema_pool_count_mismatch');
+  }
+
+  const chainTimestamp = BigInt(latestBlock.timestamp);
+
+  const pools = await Promise.all(
+    poolAddresses.map(async (poolAddressRaw) => {
+      const poolAddress = ethers.getAddress(poolAddressRaw);
+      const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+
+      const [assetIndex, directionIndex, cadenceIndex, ticketAddressRaw, nextRoundId] =
+        await Promise.all([
+          pool.ASSET(),
+          pool.DIRECTION(),
+          pool.CADENCE(),
+          pool.TICKET(),
+          pool.nextRoundId(),
+        ]);
+
+      const asset = ASSETS[Number(assetIndex)];
+      const direction = DIRECTIONS[Number(directionIndex)];
+      const cadence = CADENCES[Number(cadenceIndex)];
+      if (!asset || !direction || !cadence) {
+        throw new Error('extrema_pool_identity_invalid');
+      }
+      if (nextRoundId <= 1n) {
+        throw new Error('extrema_standard_round_missing');
+      }
+
+      const roundId = nextRoundId - 1n;
+      const round = await pool.getRound(roundId);
+      const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+      if (!contractStatus) {
+        throw new Error('extrema_round_status_invalid');
+      }
+
+      const canEnter =
+        contractStatus === 'ENTRY_OPEN' &&
+        chainTimestamp >= round.entryOpenAt &&
+        chainTimestamp < round.entryCloseAt;
+
+      return {
+        slug: slugify(asset, cadence, direction),
+        poolAddress,
+        ticketAddress: ethers.getAddress(ticketAddressRaw),
+        asset,
+        direction,
+        cadence,
+        source: 'Binance USDⓈ-M Futures Mark Price',
+        sourceSymbol: SOURCE_SYMBOLS[asset],
+        round: {
+          roundId: Number(roundId),
+          contractStatus,
+          canEnter,
+          entryOpenAt: toIso(round.entryOpenAt),
+          entryCloseAt: toIso(round.entryCloseAt),
+          observationStartAt: toIso(round.observationStartAt),
+          observationEndAt: toIso(round.observationEndAt),
+          entryCount: Number(round.entryCount),
+          totalStakeRaw: round.totalStake.toString(),
+          totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
+          escrowRemainingRaw: round.escrowRemaining.toString(),
+          escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
+          resolvedPriceCents: round.resolvedPriceCents.toString(),
+        },
+      };
+    }),
+  );
+
+  return {
+    chain: {
+      id: Number(network.chainId),
+      name: 'Arc Testnet',
+      blockNumber,
+      timestamp: Number(chainTimestamp),
+      timestampIso: toIso(chainTimestamp),
+      explorerUrl: 'https://testnet.arcscan.app',
+    },
+    factory: {
+      address: factoryAddress,
+      poolCount: pools.length,
+    },
+    pools,
+  };
+}
+
 module.exports = {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_USDC_ADDRESS,
   readArcWalletState,
+  readStandardRounds,
 };
