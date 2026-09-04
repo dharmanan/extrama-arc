@@ -54,8 +54,8 @@ contract ExtremaRenderer {
             '<rect x="44" y="44" width="812" height="1112" rx="36" fill="none" stroke="', _accent(direction), '" stroke-width="3"/>',
             '<text x="76" y="120" font-family="monospace" font-size="28" fill="#ffffff">EXTREMA</text>',
             '<text x="76" y="230" font-family="monospace" font-size="76" font-weight="700" fill="#ffffff">', assetName, '</text>',
-            '<text x="760" y="230" text-anchor="end" font-family="monospace" font-size="80" fill="', _accent(direction), '">', direction == 0 ? "↑" : "↓", '</text>',
-            '<text x="76" y="292" font-family="monospace" font-size="30" fill="', _accent(direction), '">', cadenceName, ' · ', directionName, '</text>',
+            '<text x="760" y="230" text-anchor="end" font-family="monospace" font-size="80" fill="', _accent(direction), '">', direction == 0 ? "&#8593;" : "&#8595;", '</text>',
+            '<text x="76" y="292" font-family="monospace" font-size="30" fill="', _accent(direction), '">', cadenceName, ' - ', directionName, '</text>',
             '<text x="76" y="440" font-family="monospace" font-size="24" fill="#aeb4bd">PREDICTION</text>',
             '<text x="76" y="515" font-family="monospace" font-size="56" font-weight="700" fill="#ffffff">$',
             _formatCents(prediction),
@@ -144,9 +144,9 @@ contract ExtremaRenderer {
         if (roundStatus == 1) return "LOCKED";
         if (roundStatus == 3) return "CANCELLED";
 
-        if (placement == 1) return "WINNER · 1ST";
-        if (placement == 2) return "WINNER · 2ND";
-        if (placement == 3) return "WINNER · 3RD";
+        if (placement == 1) return "WINNER - 1ST";
+        if (placement == 2) return "WINNER - 2ND";
+        if (placement == 3) return "WINNER - 3RD";
 
         return "SETTLED";
     }
