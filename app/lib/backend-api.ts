@@ -5,6 +5,9 @@ const API_URL = "/api/extrema";
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
+  if (typeof window !== "undefined") {
+    headers.set("x-extrema-browser-origin", window.location.origin);
+  }
 
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
