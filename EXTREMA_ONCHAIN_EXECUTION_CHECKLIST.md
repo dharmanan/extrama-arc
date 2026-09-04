@@ -214,37 +214,73 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 ## 2.3 Arc Testnet deployment
 
 - [x] Full Arc Testnet deployment simulation completed without broadcast
-- [ ] Deploy pool/round contract(s) to Arc Testnet
-- [ ] Deploy ERC-721 ticket contract if separate
-- [ ] Configure treasury
-- [ ] Configure Arc Testnet USDC
-- [ ] Verify deployed bytecode/contracts
-- [ ] Record deployment transactions
+- [x] Deploy 24 pool contracts to Arc Testnet
+- [x] Deploy 24 paired ERC-721 ticket collections through pool deployment
+- [x] Configure treasury contract
+- [x] Configure Arc Testnet USDC
+- [ ] Verify deployed bytecode/contracts and complete topology reads
+- [x] Record deployment transactions
 
 ### Simulation proof
 
 - Verification date: 2026-09-05
 - Chain ID: `5042002`
-- Command: `forge script script/DeployArcTestnet.s.sol:DeployArcTestnet --rpc-url https://rpc.testnet.arc.network -vvv`
 - Result: `SIMULATION COMPLETE`
 - Broadcast: **NO**
-- Predicted Factory: `0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A`
-- Predicted Treasury: `0x1D00C89Ed4AF7227a858D305183B4037f732b87e`
-- Predicted Renderer: `0x1C52E55B8CC91A8E327BDDA8E0FAE33bC41fEe1c`
-- Estimated total gas used: `121050442`
+- Predicted addresses matched the subsequent broadcast addresses.
 - Estimated amount required: `5.44726989 USDC`
-- Dry-run artifact: `broadcast/DeployArcTestnet.s.sol/5042002/dry-run/run-latest.json`
-- Note: predicted dry-run addresses are not considered deployed addresses until broadcast succeeds.
 
-### Onchain proof record
+### Broadcast proof
 
-- Pool contract:
-- Ticket contract:
-- Deployment tx:
-- Explorer:
-- Treasury:
-- USDC:
-- Verification:
+- Verification date: 2026-09-05
+- Chain ID: `5042002`
+- Result: `ONCHAIN EXECUTION COMPLETE & SUCCESSFUL`
+- Successful transactions: `27`
+  - 3 core deployments
+  - 24 `deployPool(asset,direction,cadence)` calls
+- Deployer / Pool Admin: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Resolver: `0x1EDC4594195fFb134315c3258DE974563Ed9762A`
+- Arc Testnet USDC: `0x3600000000000000000000000000000000000000`
+- Factory: `0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A`
+  - deployment tx: `0xf8422d3282092cd8e3dd770dbbb3e2c529442705b51816b860badfb77f3be836`
+- Treasury: `0x1D00C89Ed4AF7227a858D305183B4037f732b87e`
+  - deployment tx: `0x7cf1791378a54820620f5b9c66e9e00be755b99127708dd230aa7f79ede4ce61`
+- Renderer: `0x1C52E55B8CC91A8E327BDDA8E0FAE33bC41fEe1c`
+  - deployment tx: `0x7956c50122db1b611013982004b36cba7d25f499d569a444aa1c3c4abc53cf94`
+- 24 pool deployment transactions:
+  - `0xf3d15fc1758f39c7e04e9a0c3c2d899564e32b33920c9c1ab851d0ff1debc9ae`
+  - `0x76a47a49163970d9f113322ec67f37e07da61612977e98d766b894016143df98`
+  - `0x2178f2f1fd9dfbf73a71c8f241bcc677448c417b53df6ceca172d039c035f84c`
+  - `0xe15e60077c9fe4071b5ef1064bc489ef73fcb4c3f252654aa23e8b2699a89def`
+  - `0xd34f316d442992653ad6dda5597ea0d1bf31dfd57d1baf0767452e6bdf90b68b`
+  - `0x3c59dea1a1d24b0d750353a5314854396ef230cc02b3b00d940413faa5a47723`
+  - `0x4722ab3cf0ffb2a3efe08c5248b05067826768eb32e31e0cc865bf0c026eb57e`
+  - `0x81b6dc2fe572123daea73d58108b2a7a7720f661ab6c55c90e2291d35cac6130`
+  - `0x818e6a95c5dea7461d79aaa2764b77c1b65a3bf257d4f825977f143f39e37789`
+  - `0x55adbfc44345ff15b7627793af9c22cfea3fa870ac644fef2534d5d458d661bb`
+  - `0x86fc896efd7f27eb34858b2f2dfb62d367dc9db023e47a40442308af399dd446`
+  - `0x34fe0301c7fdb16008cd261c84f1998c06a668a96a04906a337a791a6850f30d`
+  - `0x4935fcbd43616df0a7b9a64a1031ad2752348c6a6ce7ed028ca5ab50e2987fc2`
+  - `0x2284351decfdb33fc381cf8c191097944097c55b6814ee2bddffd8d98ec91e18`
+  - `0x71df3baecbe5bf138c56d8ece64057879c40f8e14862158a01d7e7db13b727b4`
+  - `0x9bb148e22934fc36107bcb08d21b6dfb248e646a8760329be0b39d11029c7a48`
+  - `0x2f31f107104ee7df8b8b6dffa364707d21c5227ed1d1c8637fcb3f8bcacf9dbf`
+  - `0x44d4b396d40165ef8f4d31ee88b404b57194478def85652d43bd8ef80e4bf8ee`
+  - `0x4009437117710cdd7801f0f62b71ad39dbd0b93b3e253c1d8989afd185e9b613`
+  - `0x21bd4c2743e03f3e0f7a8399fc697b2773d0c065e332d03379837d271eb8c231`
+  - `0x0f862d192336b27a1952bf3796c597da61bb234e30831163505fb24dcef32cab`
+  - `0x40dc046ba52773323fd75ae923f8bb2716ae9b0ad03de2c3c5c0a1120d6669f3`
+  - `0x93b58f220c6ef6e0405fde3f19787c5fd8cd3b2520bfbfe63a1bf860d38a4d50`
+  - `0x1fe9e906d9543d994ae698b33f84676cb641e8bb3f4d6a6ad3c3846f47301c9a`
+- Total paid: `2.119636575 USDC`
+- Broadcast artifact: `broadcast/DeployArcTestnet.s.sol/5042002/run-latest.json`
+- Note: each pool deployment creates its paired ExtremaTicket internally; ticket addresses still require explicit topology verification/readout.
+
+### Verification pending
+
+- Run `VerifyArcDeployment.s.sol` against the deployed Factory/Treasury/Renderer.
+- Read and record all 24 pool addresses and all 24 ticket addresses.
+- Confirm every pool has the expected immutable asset/direction/cadence, treasury, resolver, USDC, and distinct ticket collection.
 
 ---
 
