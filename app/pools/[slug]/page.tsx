@@ -5,12 +5,16 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AssetMark, ProductHeader } from "../../product-components";
 import { formatUsd, getPoolBySlug } from "../../lib/data";
+import { useDemoState } from "../../demo-state";
 
 export default function PoolDetailPage() {
   const params = useParams<{ slug: string }>();
   const pool = useMemo(() => getPoolBySlug(params.slug), [params.slug]);
-  const [prediction, setPrediction] = useState("2085.00");
-  const [reserved, setReserved] = useState(false);
+  const { wallet, enterPrediction, getTicketForPool, hasEnteredPool, isPredictionTaken } = useDemoState();
+
+  const initialValue = pool ? pool.referencePrice.toFixed(2) : "0.00";
+  const [prediction, setPrediction] = useState(initialValue);
+  const [message, setMessage] = useState("");
 
   if (!pool) {
     return (
@@ -21,18 +25,45 @@ export default function PoolDetailPage() {
     );
   }
 
+  const numericPrediction = Number(prediction);
+  const existingTicket = getTicketForPool(pool.slug);
+  const alreadyEntered = hasEnteredPool(pool.slug);
+
+  function nearbyAvailable() {
+    const base = Number.isFinite(numericPrediction) ? numericPrediction : pool.referencePrice;
+    const offsets = [-0.02, -0.01, 0.01, 0.02, 0.05, -0.05];
+    return offsets
+      .map((offset) => Number((base + offset).toFixed(2)))
+      .filter((value, index, values) =>
+        value >= pool.predictionMin &&
+        value <= pool.predictionMax &&
+        !isPredictionTaken(pool.slug, value) &&
+        values.indexOf(value) === index,
+      )
+      .slice(0, 4);
+  }
+
+  function handleSubmit() {
+    setMessage("");
+    const result = enterPrediction(pool.slug, numericPrediction);
+    setMessage(result.message);
+  }
+
   return (
     <main className="wf-page">
       <ProductHeader />
       <section className="wf-main">
         <Link href="/pools">← Back to pools</Link>
+
         <div className="wf-two-col wf-section">
           <section className="wf-panel">
             <AssetMark asset={pool.asset} />
             <h1>{pool.asset} · {pool.cadence} {pool.direction}</h1>
+            <p>Status: <b>{pool.status}</b></p>
             <p>Reference price: <b>{formatUsd(pool.referencePrice)}</b></p>
             <p>Official source: <b>{pool.source}</b></p>
             <p>Symbol: <b>{pool.sourceSymbol}</b></p>
+            <p>Entry closes: {pool.entryCloseAt}</p>
             <p>Observation: {pool.observationStartAt} → {pool.observationEndAt}</p>
             <p>Current pool: {pool.poolSizeUsdc} USDC · {pool.players} players</p>
             <Link href={`/rounds/${pool.slug}`} className="wf-action">View live round</Link>
@@ -40,16 +71,66 @@ export default function PoolDetailPage() {
 
           <section className="wf-panel">
             <h2>Make a prediction</h2>
-            <p>Every entry costs exactly 1 USDC. The same price cannot be taken twice.</p>
-            <label className="wf-field">
-              Prediction (USD)
-              <input value={prediction} onChange={(event) => setPrediction(event.target.value)} inputMode="decimal" />
-            </label>
-            <p>Allowed demo range: {formatUsd(pool.predictionMin)} – {formatUsd(pool.predictionMax)}</p>
-            <p>NFT ticket: {pool.asset} · {pool.cadence} {pool.direction} · Round #{pool.roundId}</p>
-            <button className="wf-action" type="button" onClick={() => setReserved(true)}>
-              {reserved ? "Reserved in mock state" : "Confirm prediction · 1 USDC"}
-            </button>
+            <p>Every entry costs exactly 1 USDC. The same wallet can enter this pool once, and the same exact price cannot be taken twice.</p>
+
+            {wallet.status !== "ready" && (
+              <p><b>Wallet required.</b> <Link href="/wallet">Create or connect a wallet</Link>.</p>
+            )}
+
+            {alreadyEntered && existingTicket ? (
+              <div className="wf-card">
+                <strong>You already entered this pool.</strong>
+                <p>Prediction: {formatUsd(existingTicket.prediction)}</p>
+                <p>Ticket #{existingTicket.tokenId}</p>
+                <Link className="wf-action" href="/tickets">View my tickets</Link>
+              </div>
+            ) : (
+              <>
+                <label className="wf-field">
+                  Prediction (USD)
+                  <input
+                    value={prediction}
+                    onChange={(event) => setPrediction(event.target.value)}
+                    inputMode="decimal"
+                  />
+                </label>
+
+                <p>
+                  Allowed demo range: {formatUsd(pool.predictionMin)} – {formatUsd(pool.predictionMax)}
+                </p>
+
+                {Number.isFinite(numericPrediction) && isPredictionTaken(pool.slug, Number(numericPrediction.toFixed(2))) && (
+                  <p><b>{formatUsd(numericPrediction)} is already taken.</b></p>
+                )}
+
+                <div className="wf-tabs">
+                  {nearbyAvailable().map((value) => (
+                    <button
+                      className="wf-filter"
+                      key={value}
+                      type="button"
+                      onClick={() => setPrediction(value.toFixed(2))}
+                    >
+                      {formatUsd(value)}
+                    </button>
+                  ))}
+                </div>
+
+                <p>NFT ticket: {pool.asset} · {pool.cadence} {pool.direction} · Round #{pool.roundId}</p>
+                <p>Wallet balance: {wallet.status === "ready" ? `${wallet.balanceUsdc.toFixed(2)} USDC` : "—"}</p>
+
+                <button
+                  className="wf-action"
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={pool.status !== "ENTRY_OPEN" || wallet.status !== "ready"}
+                >
+                  Confirm prediction · 1 USDC
+                </button>
+
+                {message && <p><b>{message}</b></p>}
+              </>
+            )}
           </section>
         </div>
       </section>
