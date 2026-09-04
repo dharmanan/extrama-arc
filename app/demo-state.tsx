@@ -14,8 +14,8 @@ type DemoState = {
   wallet: DemoWallet;
   tickets: Ticket[];
   entries: PredictionEntry[];
-  createWallet: () => void;
-  connectExistingWallet: () => void;
+  createWallet: (address: string) => void;
+  connectExistingWallet: (address: string) => void;
   lockWallet: () => void;
   unlockWallet: () => void;
   fundWallet: (amount?: number) => void;
@@ -122,20 +122,20 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
   }, [hydrated, wallet, tickets, entries, nextTicketId]);
 
-  function createWallet() {
+  function createWallet(address: string) {
     setWallet({
       status: "ready",
       mode: "extrema",
-      address: sampleAddress,
+      address,
       balanceUsdc: 12.4,
     });
   }
 
-  function connectExistingWallet() {
+  function connectExistingWallet(address: string) {
     setWallet({
       status: "ready",
       mode: "external",
-      address: sampleAddress,
+      address,
       balanceUsdc: 12.4,
     });
   }
