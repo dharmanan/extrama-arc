@@ -67,8 +67,10 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 
 ## 1.2 Real native balance
 
+Implementation status: native Arc gas balance is now read via `eth_getBalance` and displayed in the wallet UI. Proof is pending.
+
 - [ ] Read EXTREMA wallet native Arc Testnet balance through RPC
-- [ ] Remove any mock/native demo balance from the product path
+- [x] Remove any mock/native demo balance from the product path
 - [ ] UI displays the real RPC result only
 
 ### Proof record
