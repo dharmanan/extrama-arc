@@ -1,12 +1,36 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { assetConfigs, formatUsd } from "./lib/data";
 import type { Asset, Pool, Ticket } from "./lib/domain";
 import { shortAddress, useDemoState } from "./demo-state";
+import { backendApi } from "./lib/backend-api";
 
 export function ProductHeader() {
   const { wallet } = useDemoState();
+  const [onchainUsdc, setOnchainUsdc] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (wallet.status !== "ready" || !wallet.address) {
+      setOnchainUsdc(null);
+      return;
+    }
+
+    backendApi.wallet.chainState()
+      .then((state) => {
+        if (!cancelled) setOnchainUsdc(state.usdc.balanceFormatted);
+      })
+      .catch(() => {
+        if (!cancelled) setOnchainUsdc(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [wallet.status, wallet.address]);
 
   return (
     <header className="wf-header">
@@ -19,7 +43,7 @@ export function ProductHeader() {
       </nav>
       <Link href="/wallet" className="wf-action">
         {wallet.status === "ready" && wallet.address
-          ? `${shortAddress(wallet.address)} · ${wallet.balanceUsdc.toFixed(2)} USDC`
+          ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${onchainUsdc} USDC` : ""}`
           : "Create / Connect Wallet"}
       </Link>
     </header>
