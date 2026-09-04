@@ -363,22 +363,22 @@ Cadences:
 Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 - [ ] Backend round model connected to onchain `roundId`
-- [ ] Daily round creation verified
-- [ ] Weekly round creation verified
-- [ ] Quarterly round creation verified
-- [ ] High direction verified
-- [ ] Low direction verified
-- [ ] BTC verified
-- [ ] ETH verified
-- [ ] SOL verified
-- [ ] HYPE verified
-- [ ] Entry-open timestamp stored onchain
-- [ ] Entry-close timestamp stored onchain
+- [x] Daily round creation verified
+- [x] Weekly round creation verified
+- [x] Quarterly round creation verified
+- [x] High direction verified
+- [x] Low direction verified
+- [x] BTC verified
+- [x] ETH verified
+- [x] SOL verified
+- [x] HYPE verified
+- [x] Entry-open timestamp stored onchain
+- [x] Entry-close timestamp stored onchain
 - [x] Daily entry-close offset locked at 4 hours before observation start
 - [x] Weekly entry-close offset locked at 24 hours before observation start
 - [x] Quarterly entry-close offset locked at 24 hours before observation start
 - [x] Standard UTC observation boundaries locked
-- [ ] Observation start/end stored or deterministically represented
+- [x] Observation start/end stored or deterministically represented
 - [ ] UI reads real round state from chain/backend indexer
 - [ ] Remove hardcoded `Players`, `Pool`, and `ENTRY_OPEN` values
 
@@ -445,12 +445,27 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - #23: `0x2ab6a455a49fcacd4ed7ad217ad7ad683c46b88b4dba267c80bce273d46608b0`
   - #24: `0x5b39ca15a7a4d74d95ef1d1896af5fe71cf083931a9750108dfcac1acd3f8d50`
 
-#### Onchain verification pending
+#### Arc Testnet Round #1 verification proof
 
-- Run `./script/verify-standard-rounds.sh` against Arc Testnet.
-- Confirm all 24 pools now report `nextRoundId() == 2`.
-- Confirm Round #1 timestamps/status/entryCount/totalStake/escrow match the exact saved plan.
-- Only after that verification passes mark Daily/Weekly/Quarterly and all asset/direction creation checks complete.
+- Verification date: 2026-09-05
+- Command: `./script/verify-standard-rounds.sh`
+- Chain ID: `5042002`
+- Result: `Script ran successfully.`
+- Result: `verifiedRounds: uint256 24`
+- Result: `STANDARD_ROUND_VERIFICATION=PASS`
+- Verified across all 24 pools:
+  - `nextRoundId() == 2`
+  - Round #1 exists
+  - `entryOpenAt` is nonzero and before entry close
+  - `entryCloseAt` matches the exact saved cadence plan
+  - `observationStartAt` matches the exact saved cadence plan
+  - `observationEndAt` matches the exact saved cadence plan
+  - status = `ENTRY_OPEN`
+  - `entryCount == 0`
+  - `totalStake == 0`
+  - `escrowRemaining == 0`
+- Because the 24-pool topology covers every combination of BTC/ETH/SOL/HYPE × HIGH/LOW × DAILY/WEEKLY/QUARTERLY, cadence, direction, and asset round-creation checks are proven onchain.
+- The stale Foundry artifact warning is non-blocking; the verification script compiled and completed successfully.
 
 ---
 
@@ -829,4 +844,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-The exact saved Round #1 plan was broadcast successfully to all 24 pools on Arc Testnet. Next: run the dedicated onchain verification script and record the reads before marking round-creation items complete.
+Round #1 creation is now broadcast and verified across all 24 standard pools on Arc Testnet. Next: connect the backend round model/indexing path to these real onchain round IDs and states, then replace hardcoded pool/player/status values in the UI.
