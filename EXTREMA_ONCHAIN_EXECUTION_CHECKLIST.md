@@ -445,6 +445,22 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - #23: `0x2ab6a455a49fcacd4ed7ad217ad7ad683c46b88b4dba267c80bce273d46608b0`
   - #24: `0x5b39ca15a7a4d74d95ef1d1896af5fe71cf083931a9750108dfcac1acd3f8d50`
 
+#### Frontend live-round integration build proof
+
+- Verification date: 2026-09-05
+- Commands:
+  - `npm run typecheck`
+  - `npm run build`
+- Result: both commands passed twice consecutively after wiring the pool UI to the backend live-round API.
+- Next.js version: `16.3.4`
+- Production build: `Compiled successfully`
+- Dynamic routes confirmed:
+  - `/pools/[slug]`
+  - `/rounds/[slug]`
+  - `/api/extrema/[...path]`
+- The frontend source no longer uses hardcoded pool/player/status values on the normal `/pools`, `/pools/[slug]`, or `/rounds/[slug]` paths.
+- Browser/runtime proof is still required before checking the two UI completion items below.
+
 #### Backend live-round read proof
 
 - Verification date: 2026-09-05
@@ -870,4 +886,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Round #1 creation and backend live-round reads are verified across all 24 standard pools. Frontend pool and live-round routes are now wired to the backend live-round API with no mock fallback; next run the frontend typecheck/build and browser verification before marking the UI items complete.
+Round #1 creation, backend live-round reads, frontend typecheck, and production build are verified. Next: browser/runtime verification of `/pools`, `/pools/[slug]`, and `/rounds/[slug]`; only after that mark the remaining two Section 3 UI items complete.
