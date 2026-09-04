@@ -2,24 +2,20 @@
 pragma solidity ^0.8.30;
 
 interface IExtremaPoolMetadata {
+    struct TicketMetadata {
+        uint256 roundId;
+        uint64 predictionPriceCents;
+        uint64 entrySequence;
+        uint8 roundStatus;
+        uint8 placement;
+        bool isClaimed;
+        bool isRefunded;
+    }
+
     function ASSET() external view returns (uint8);
     function DIRECTION() external view returns (uint8);
     function CADENCE() external view returns (uint8);
-
-    function getTicketMetadata(
-        uint256 ticketId
-    )
-        external
-        view
-        returns (
-            uint256 roundId,
-            uint64 predictionPriceCents,
-            uint64 entrySequence,
-            uint8 roundStatus,
-            uint8 placement,
-            bool isClaimed,
-            bool isRefunded
-        );
+    function getTicketMetadata(uint256 ticketId) external view returns (TicketMetadata memory);
 }
 
 contract ExtremaRenderer {
@@ -29,15 +25,7 @@ contract ExtremaRenderer {
     ) external view returns (string memory) {
         IExtremaPoolMetadata source = IExtremaPoolMetadata(pool);
 
-        (
-            uint256 roundId,
-            uint64 prediction,
-            uint64 entrySequence,
-            uint8 roundStatus,
-            uint8 placement,
-            bool isClaimed,
-            bool isRefunded
-        ) = source.getTicketMetadata(tokenId);
+        IExtremaPoolMetadata.TicketMetadata memory metadata = source.getTicketMetadata(tokenId);
 
         uint8 asset = source.ASSET();
         uint8 direction = source.DIRECTION();
@@ -46,7 +34,12 @@ contract ExtremaRenderer {
         string memory assetName = _asset(asset);
         string memory directionName = direction == 0 ? "HIGH" : "LOW";
         string memory cadenceName = _cadence(cadence);
-        string memory statusName = _status(roundStatus, placement, isClaimed, isRefunded);
+        string memory statusName = _status(
+            metadata.roundStatus,
+            metadata.placement,
+            metadata.isClaimed,
+            metadata.isRefunded
+        );
 
         string memory svg = string.concat(
             '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">',
@@ -58,15 +51,15 @@ contract ExtremaRenderer {
             '<text x="76" y="292" font-family="monospace" font-size="30" fill="', _accent(direction), '">', cadenceName, ' - ', directionName, '</text>',
             '<text x="76" y="440" font-family="monospace" font-size="24" fill="#aeb4bd">PREDICTION</text>',
             '<text x="76" y="515" font-family="monospace" font-size="56" font-weight="700" fill="#ffffff">$',
-            _formatCents(prediction),
+            _formatCents(metadata.predictionPriceCents),
             '</text>',
             '<line x1="76" y1="585" x2="824" y2="585" stroke="#ffffff" stroke-opacity=".16"/>',
             '<text x="76" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">ROUND</text>',
             '<text x="320" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">TICKET</text>',
             '<text x="570" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">ENTRY</text>',
-            '<text x="76" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(roundId), '</text>',
+            '<text x="76" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(metadata.roundId), '</text>',
             '<text x="320" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(tokenId), '</text>',
-            '<text x="570" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(entrySequence), '</text>',
+            '<text x="570" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(metadata.entrySequence), '</text>',
             '<rect x="76" y="870" width="748" height="150" rx="28" fill="', _accent(direction), '" fill-opacity=".12"/>',
             '<text x="450" y="930" text-anchor="middle" font-family="monospace" font-size="22" fill="#aeb4bd">STATUS</text>',
             '<text x="450" y="985" text-anchor="middle" font-family="monospace" font-size="34" font-weight="700" fill="', _accent(direction), '">', statusName, '</text>',
@@ -94,9 +87,9 @@ contract ExtremaRenderer {
             '{"trait_type":"Asset","value":"', assetName, '"},',
             '{"trait_type":"Direction","value":"', directionName, '"},',
             '{"trait_type":"Cadence","value":"', cadenceName, '"},',
-            '{"trait_type":"Round","value":', _toString(roundId), '},',
-            '{"trait_type":"Prediction Cents","value":', _toString(prediction), '},',
-            '{"trait_type":"Entry Sequence","value":', _toString(entrySequence), '},',
+            '{"trait_type":"Round","value":', _toString(metadata.roundId), '},',
+            '{"trait_type":"Prediction Cents","value":', _toString(metadata.predictionPriceCents), '},',
+            '{"trait_type":"Entry Sequence","value":', _toString(metadata.entrySequence), '},',
             '{"trait_type":"Status","value":"', statusName, '"}',
             ']}'
         );
