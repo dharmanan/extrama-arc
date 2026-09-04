@@ -15,6 +15,7 @@ const schema = z.object({
   JWT_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
   ALLOW_CODESPACE_ORIGINS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
+  EXTREMA_FACTORY_ADDRESS: z.string().default("0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A"),
 });
 
 const parsed = schema.safeParse(process.env);
