@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ProductHeader } from "../../product-components";
 import { formatUsd, getPoolBySlug, getResultByRoundId } from "../../lib/data";
+import ResultActions from "./ResultActions";
 
 export default async function ResultPage({ params }: { params: Promise<{ roundId: string }> }) {
   const { roundId } = await params;
@@ -51,7 +52,7 @@ export default async function ResultPage({ params }: { params: Promise<{ roundId
 
         <div className="wf-row">
           <Link className="wf-action" href={`/verify/${result.roundId}`}>Verify settlement</Link>
-          <Link className="wf-action" href="/tickets">Claim with NFT</Link>
+          <ResultActions roundId={result.roundId} />
         </div>
       </section>
     </main>
