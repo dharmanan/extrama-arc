@@ -7,9 +7,9 @@ import {ExtremaTestBase} from "./TestBase.sol";
 
 contract ExtremaTreasuryTest is ExtremaTestBase {
     address internal constant CONTROLLER_A =
-        0xafbb6cc5c0a9c0eb1bff8db2ed807e83aab8e321;
+        0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321;
     address internal constant CONTROLLER_B =
-        0x99677aab4b168c274a34525d526346fc47fab72c;
+        0x99677aab4b168c274A34525D526346fC47Fab72c;
     address internal constant STRANGER = address(0xBAD);
 
     MockUSDC internal usdc;
