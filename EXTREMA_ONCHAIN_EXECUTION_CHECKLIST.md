@@ -384,6 +384,30 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 ### Proof record
 
+#### No-broadcast Round #1 simulation
+
+- Verification date: 2026-09-05
+- Arc block time used for plan: `2026-09-04T23:00:46Z`
+- Chain ID: `5042002`
+- Result: `createdRounds: 24`
+- Result: `SIMULATION COMPLETE`
+- Result: `STANDARD_ROUND_SIMULATION=PASS`
+- Broadcast: **NO**
+- Estimated gas: `2,650,904`
+- Estimated native gas cost: `0.131219748 USDC`
+- Daily Round #1 plan:
+  - entry close: `2026-09-05T20:00:00Z`
+  - observation: `2026-09-06T00:00:00Z -> 2026-09-07T00:00:00Z`
+- Weekly Round #1 plan:
+  - entry close: `2026-09-06T00:00:00Z`
+  - observation: `2026-09-07T00:00:00Z -> 2026-09-14T00:00:00Z`
+- Quarterly Round #1 plan:
+  - entry close: `2026-09-30T00:00:00Z`
+  - observation: `2026-10-01T00:00:00Z -> 2027-01-01T00:00:00Z`
+- Dry-run artifact: `broadcast/CreateStandardRounds.s.sol/5042002/dry-run/run-latest.json`
+
+#### Onchain proof pending
+
 - Example Daily roundId:
 - Example Weekly roundId:
 - Example Quarterly roundId:
@@ -769,4 +793,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Next: run the no-broadcast simulation. Only after it passes should the first 24 standard Round #1 transactions be broadcast to Arc Testnet.
+The no-broadcast simulation passed with all 24 Round #1 creations. Next: broadcast the exact saved plan to Arc Testnet, then run the dedicated onchain verification script before marking round-creation items complete.
