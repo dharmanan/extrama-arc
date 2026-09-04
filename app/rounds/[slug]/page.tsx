@@ -49,7 +49,7 @@ export default async function LiveRoundPage({ params }: { params: Promise<{ slug
         </div>
 
         <div className="wf-section">
-          <RoundUserState poolSlug={pool.slug} />
+          <RoundUserState poolSlug={pool.slug} roundId={pool.roundId} />
         </div>
 
         <section className="wf-section wf-row">
