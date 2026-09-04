@@ -84,7 +84,7 @@ contract ExtremaPoolLifecycleTest is ExtremaTestBase {
         require(pool.claimableByTicket(bobTicket) == 900_000, "second payout");
         require(pool.claimableByTicket(carolTicket) == 540_000, "third payout");
         require(usdc.balanceOf(address(treasury)) == 400_000, "treasury share");
-        require(pool.totalReservedUSDC() == 3_600_000, "reserved");
+        require(pool.totalReservedUsdc() == 3_600_000, "reserved");
         require(pool.escrowInvariantHolds(), "invariant");
 
         ExtremaPool.Round memory round = pool.getRound(roundId);
@@ -161,7 +161,7 @@ contract ExtremaPoolLifecycleTest is ExtremaTestBase {
         VM.prank(BOB);
         pool.refund(bobTicket);
 
-        require(pool.totalReservedUSDC() == 0, "reserved zero");
+        require(pool.totalReservedUsdc() == 0, "reserved zero");
         require(pool.escrowInvariantHolds(), "refund invariant");
     }
 
@@ -195,25 +195,25 @@ contract ExtremaPoolLifecycleTest is ExtremaTestBase {
         uint256 roundId = _createRound();
         _enter(ALICE, roundId, 10_000);
 
-        require(pool.totalReservedUSDC() == 1_000_000, "reserved");
-        require(pool.excessUSDC() == 0, "initial excess");
+        require(pool.totalReservedUsdc() == 1_000_000, "reserved");
+        require(pool.excessUsdc() == 0, "initial excess");
 
         VM.expectRevert(ExtremaPool.ExcessAmountUnavailable.selector);
-        pool.rescueExcessUSDC(1);
+        pool.rescueExcessUsdc(1);
 
         usdc.mint(address(pool), 2_000_000);
 
-        require(pool.excessUSDC() == 2_000_000, "excess");
+        require(pool.excessUsdc() == 2_000_000, "excess");
 
         uint256 beforeBalance = usdc.balanceOf(address(this));
-        pool.rescueExcessUSDC(2_000_000);
+        pool.rescueExcessUsdc(2_000_000);
 
         require(
             usdc.balanceOf(address(this)) - beforeBalance == 2_000_000,
             "rescued"
         );
         require(usdc.balanceOf(address(pool)) == 1_000_000, "escrow untouched");
-        require(pool.totalReservedUSDC() == 1_000_000, "reserve untouched");
+        require(pool.totalReservedUsdc() == 1_000_000, "reserve untouched");
         require(pool.escrowInvariantHolds(), "rescue invariant");
     }
 
@@ -223,14 +223,14 @@ contract ExtremaPoolLifecycleTest is ExtremaTestBase {
 
         VM.expectRevert(ExtremaPool.NotOwner.selector);
         VM.prank(CONTROLLER_A);
-        pool.rescueExcessUSDC(1);
+        pool.rescueExcessUsdc(1);
 
         VM.expectRevert(ExtremaPool.NotOwner.selector);
         VM.prank(CONTROLLER_B);
-        pool.rescueExcessUSDC(1);
+        pool.rescueExcessUsdc(1);
 
         require(usdc.balanceOf(address(pool)) == 1_000_000, "escrow");
-        require(pool.totalReservedUSDC() == 1_000_000, "reserved");
+        require(pool.totalReservedUsdc() == 1_000_000, "reserved");
     }
 
     function _settleFour()

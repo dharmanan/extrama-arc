@@ -2,10 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {IERC721Receiver} from "./interfaces/IERC721Receiver.sol";
-
-interface IExtremaRenderer {
-    function tokenURI(address pool, uint256 tokenId) external view returns (string memory);
-}
+import {IExtremaRenderer} from "./interfaces/IExtremaRenderer.sol";
 
 contract ExtremaTicket {
     error ZeroAddress();
@@ -52,13 +49,21 @@ contract ExtremaTicket {
     }
 
     modifier onlyMinter() {
-        if (msg.sender != MINTER) revert NotMinter();
+        _checkMinter();
         _;
     }
 
     modifier onlyRendererAdmin() {
-        if (msg.sender != RENDERER_ADMIN) revert NotRendererAdmin();
+        _checkRendererAdmin();
         _;
+    }
+
+    function _checkMinter() internal view {
+        if (msg.sender != MINTER) revert NotMinter();
+    }
+
+    function _checkRendererAdmin() internal view {
+        if (msg.sender != RENDERER_ADMIN) revert NotRendererAdmin();
     }
 
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {

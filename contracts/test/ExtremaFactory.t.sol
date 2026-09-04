@@ -140,14 +140,24 @@ contract ExtremaFactoryTest is ExtremaTestBase {
             )
         );
 
-        factory.setResolver(NEW_RESOLVER);
+        factory.setResolverForPool(address(first), NEW_RESOLVER);
 
         require(first.resolver() == NEW_RESOLVER, "first resolver");
-        require(second.resolver() == NEW_RESOLVER, "second resolver");
+        require(second.resolver() == RESOLVER, "second resolver unchanged");
+
+        factory.setDefaultResolver(NEW_RESOLVER);
+        ExtremaPool third = ExtremaPool(
+            factory.deployPool(
+                ExtremaPool.Asset.HYPE,
+                ExtremaPool.Direction.HIGH,
+                ExtremaPool.Cadence.DAILY
+            )
+        );
+        require(third.resolver() == NEW_RESOLVER, "default resolver");
 
         VM.expectRevert(ExtremaPool.NotOwner.selector);
         VM.prank(address(factory));
-        first.rescueExcessUSDC(1);
+        first.rescueExcessUsdc(1);
     }
 
     function testRendererCanBeRotatedAcrossCollections() public {
@@ -167,9 +177,19 @@ contract ExtremaFactoryTest is ExtremaTestBase {
         );
 
         ExtremaRenderer nextRenderer = new ExtremaRenderer();
-        factory.setRendererForAll(address(nextRenderer));
+        factory.setRendererForPool(address(first), address(nextRenderer));
 
         require(first.TICKET().renderer() == address(nextRenderer), "first renderer");
-        require(second.TICKET().renderer() == address(nextRenderer), "second renderer");
+        require(second.TICKET().renderer() == address(renderer), "second unchanged");
+
+        factory.setDefaultRenderer(address(nextRenderer));
+        ExtremaPool third = ExtremaPool(
+            factory.deployPool(
+                ExtremaPool.Asset.SOL,
+                ExtremaPool.Direction.HIGH,
+                ExtremaPool.Cadence.DAILY
+            )
+        );
+        require(third.TICKET().renderer() == address(nextRenderer), "default renderer");
     }
 }

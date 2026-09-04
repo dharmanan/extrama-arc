@@ -1,24 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-interface IExtremaPoolMetadata {
-    struct TicketMetadata {
-        uint256 roundId;
-        uint64 predictionPriceCents;
-        uint64 entrySequence;
-        uint8 roundStatus;
-        uint8 placement;
-        bool isClaimed;
-        bool isRefunded;
-    }
+import {IExtremaRenderer} from "./interfaces/IExtremaRenderer.sol";
+import {IExtremaPoolMetadata} from "./interfaces/IExtremaPoolMetadata.sol";
 
-    function ASSET() external view returns (uint8);
-    function DIRECTION() external view returns (uint8);
-    function CADENCE() external view returns (uint8);
-    function getTicketMetadata(uint256 ticketId) external view returns (TicketMetadata memory);
-}
-
-contract ExtremaRenderer {
+contract ExtremaRenderer is IExtremaRenderer {
     struct RenderContext {
         IExtremaPoolMetadata.TicketMetadata metadata;
         uint8 asset;
@@ -303,7 +289,7 @@ contract ExtremaRenderer {
         if (value == 0) return "0";
 
         uint256 temp = value;
-        uint256 digits;
+        uint256 digits = 0;
 
         while (temp != 0) {
             ++digits;
@@ -325,11 +311,12 @@ contract ExtremaRenderer {
         if (data.length == 0) return "";
 
         bytes memory table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        uint256 encodedLen = 4 * ((data.length + 2) / 3);
+        uint256 groups = (data.length + 2) / 3;
+        uint256 encodedLen = groups * 4;
         bytes memory result = new bytes(encodedLen);
 
-        uint256 i;
-        uint256 j;
+        uint256 i = 0;
+        uint256 j = 0;
 
         while (i < data.length) {
             uint256 a = uint8(data[i++]);

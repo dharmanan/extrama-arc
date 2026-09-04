@@ -16,15 +16,18 @@ contract ExtremaFactory {
     address public immutable TREASURY;
     address public immutable POOL_ADMIN;
 
-    address public resolver;
+    address public defaultResolver;
     address public defaultRenderer;
 
     address[] private _pools;
     mapping(bytes32 => address) public poolByIdentity;
+    mapping(address => bool) public isRegisteredPool;
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-    event ResolverUpdated(address indexed previousResolver, address indexed newResolver);
+    event DefaultResolverUpdated(address indexed previousResolver, address indexed newResolver);
+    event PoolResolverUpdated(address indexed pool, address indexed newResolver);
     event DefaultRendererUpdated(address indexed previousRenderer, address indexed newRenderer);
+    event PoolRendererUpdated(address indexed pool, address indexed newRenderer);
     event PoolDeployed(
         address indexed pool,
         address indexed ticket,
@@ -52,15 +55,19 @@ contract ExtremaFactory {
         USDC = usdc_;
         TREASURY = treasury_;
         POOL_ADMIN = poolAdmin_;
-        resolver = resolver_;
+        defaultResolver = resolver_;
         defaultRenderer = renderer_;
 
         emit OwnershipTransferred(address(0), msg.sender);
     }
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
+        _checkOwner();
         _;
+    }
+
+    function _checkOwner() internal view {
+        if (msg.sender != owner) revert NotOwner();
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
@@ -72,17 +79,21 @@ contract ExtremaFactory {
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
-    function setResolver(address newResolver) external onlyOwner {
+    function setDefaultResolver(address newResolver) external onlyOwner {
         if (newResolver == address(0)) revert ZeroAddress();
 
-        address previousResolver = resolver;
-        resolver = newResolver;
+        address previousResolver = defaultResolver;
+        defaultResolver = newResolver;
 
-        for (uint256 i = 0; i < _pools.length; ++i) {
-            ExtremaPool(_pools[i]).setResolver(newResolver);
-        }
+        emit DefaultResolverUpdated(previousResolver, newResolver);
+    }
 
-        emit ResolverUpdated(previousResolver, newResolver);
+    function setResolverForPool(address pool, address newResolver) external onlyOwner {
+        if (pool == address(0) || newResolver == address(0)) revert ZeroAddress();
+        if (!isRegisteredPool[pool]) revert PoolNotFound();
+
+        emit PoolResolverUpdated(pool, newResolver);
+        ExtremaPool(pool).setResolver(newResolver);
     }
 
     function deployPool(
@@ -96,7 +107,7 @@ contract ExtremaFactory {
         ExtremaPool pool = new ExtremaPool(
             USDC,
             TREASURY,
-            resolver,
+            defaultResolver,
             POOL_ADMIN,
             defaultRenderer,
             address(this),
@@ -107,6 +118,7 @@ contract ExtremaFactory {
 
         poolAddress = address(pool);
         poolByIdentity[key] = poolAddress;
+        isRegisteredPool[poolAddress] = true;
         _pools.push(poolAddress);
 
         emit PoolDeployed(
@@ -118,23 +130,20 @@ contract ExtremaFactory {
         );
     }
 
-    function setRendererForAll(address newRenderer) external onlyOwner {
+    function setDefaultRenderer(address newRenderer) external onlyOwner {
         if (newRenderer == address(0)) revert ZeroAddress();
 
         address previousRenderer = defaultRenderer;
         defaultRenderer = newRenderer;
-
-        for (uint256 i = 0; i < _pools.length; ++i) {
-            ExtremaTicket(address(ExtremaPool(_pools[i]).TICKET())).setRenderer(newRenderer);
-        }
 
         emit DefaultRendererUpdated(previousRenderer, newRenderer);
     }
 
     function setRendererForPool(address pool, address newRenderer) external onlyOwner {
         if (pool == address(0) || newRenderer == address(0)) revert ZeroAddress();
-        if (!_isRegisteredPool(pool)) revert PoolNotFound();
+        if (!isRegisteredPool[pool]) revert PoolNotFound();
 
+        emit PoolRendererUpdated(pool, newRenderer);
         ExtremaTicket(address(ExtremaPool(pool).TICKET())).setRenderer(newRenderer);
     }
 
@@ -162,11 +171,4 @@ contract ExtremaFactory {
         return poolByIdentity[identityKey(asset, direction, cadence)];
     }
 
-    function _isRegisteredPool(address pool) internal view returns (bool) {
-        for (uint256 i = 0; i < _pools.length; ++i) {
-            if (_pools[i] == pool) return true;
-        }
-
-        return false;
-    }
 }

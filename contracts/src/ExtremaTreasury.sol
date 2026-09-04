@@ -8,6 +8,7 @@ contract ExtremaTreasury {
     error NotController();
     error InvalidAmount();
     error TokenTransferFailed();
+    error Reentrancy();
 
     IERC20 public immutable USDC;
     address public immutable CONTROLLER_A;
@@ -29,35 +30,42 @@ contract ExtremaTreasury {
     }
 
     modifier onlyController() {
-        if (msg.sender != CONTROLLER_A && msg.sender != CONTROLLER_B) revert NotController();
+        _checkController();
         _;
     }
 
-    modifier nonReentrant() {
-        if (_reentrancyState != 1) revert TokenTransferFailed();
-        _reentrancyState = 2;
-        _;
-        _reentrancyState = 1;
+    function _checkController() internal view {
+        if (msg.sender != CONTROLLER_A && msg.sender != CONTROLLER_B) revert NotController();
     }
 
     function balance() external view returns (uint256) {
         return _balance();
     }
 
-    function withdraw(uint256 amount) external onlyController nonReentrant {
+    function withdraw(uint256 amount) external onlyController {
+        if (_reentrancyState != 1) revert Reentrancy();
+        _reentrancyState = 2;
+
         uint256 available = _balance();
         if (amount == 0 || amount > available) revert InvalidAmount();
 
         emit TreasuryWithdrawal(msg.sender, amount);
         if (!USDC.transfer(msg.sender, amount)) revert TokenTransferFailed();
+
+        _reentrancyState = 1;
     }
 
-    function withdrawAll() external onlyController nonReentrant {
+    function withdrawAll() external onlyController {
+        if (_reentrancyState != 1) revert Reentrancy();
+        _reentrancyState = 2;
+
         uint256 amount = _balance();
         if (amount == 0) revert InvalidAmount();
 
         emit TreasuryWithdrawal(msg.sender, amount);
         if (!USDC.transfer(msg.sender, amount)) revert TokenTransferFailed();
+
+        _reentrancyState = 1;
     }
 
     function _balance() internal view returns (uint256) {
