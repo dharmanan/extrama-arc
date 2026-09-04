@@ -70,6 +70,14 @@ const seedEntries: PredictionEntry[] = [
     prediction: 2078,
     enteredAt: "2026-09-06T18:51:00Z",
   },
+  {
+    ticketId: 9001,
+    roundId: 160,
+    poolSlug: "btc-daily-high",
+    wallet: "0x1111000000000000000000000000000000001111",
+    prediction: 73421,
+    enteredAt: "2026-09-04T14:00:00Z",
+  },
 ];
 
 function getInitialState(): PersistedDemo {
