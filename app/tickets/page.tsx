@@ -1,4 +1,20 @@
-import Link from "next/link";
-import { AssetBadge, Header } from "../components";
+import { ProductHeader, TicketSummary } from "../product-components";
+import { getTicketsForWallet } from "../lib/data";
 
-export default function Tickets() { return <main className="paper"><Header /><section className="tickets-wrap"><p className="eyebrow">0x3aF...92E1</p><h1>My Tickets</h1><p className="sub">Each prediction is a unique place in the round.</p><div className="ticket-grid"><article className="ticket live-ticket"><div><AssetBadge asset="ETH" /><span className="status">Live</span></div><h2>ETH<br />Weekly Low</h2><b>$2,085.00</b><small>Prediction · Round #184</small><footer>1 USDC <span>↗</span></footer></article><article className="ticket settled-ticket"><div><AssetBadge asset="BTC" /><span className="status">Settled</span></div><h2>BTC<br />Daily High</h2><b>$73,401.00</b><small>Prediction · Round #128</small><footer>1 USDC <span>↗</span></footer></article><article className="ticket winner-ticket"><div><AssetBadge asset="SOL" /><span className="status">Winner #1</span></div><h2>SOL<br />Weekly High</h2><b>$243.20</b><small>Prediction · Round #96</small><footer>1 USDC <span>Claimed</span></footer></article></div><Link className="button dark" href="/pools">Find another pool →</Link></section></main>; }
+export default function TicketsPage() {
+  const tickets = getTicketsForWallet();
+
+  return (
+    <main className="wf-page">
+      <ProductHeader />
+      <section className="wf-main">
+        <p>0x3aF...92E1</p>
+        <h1>My NFT Tickets</h1>
+        <p>Every prediction entry becomes a unique ticket. Winning ticket ownership controls the claim right.</p>
+        <div className="wf-grid-3 wf-section">
+          {tickets.map((ticket) => <TicketSummary ticket={ticket} key={ticket.tokenId} />)}
+        </div>
+      </section>
+    </main>
+  );
+}
