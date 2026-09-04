@@ -138,6 +138,5 @@ export async function authenticatePasskey(ownerAddress: string) {
     encodeCredential(credential),
   );
 
-  setSessionToken(result.token);
   return result;
 }
