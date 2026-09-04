@@ -44,6 +44,12 @@ function fromBase64Url(value: string) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
 function assertWebAuthnAvailable() {
   if (!window.isSecureContext) {
     throw new Error("Passkeys require HTTPS or localhost.");
@@ -66,7 +72,7 @@ async function evaluatePrf(credentialId: Uint8Array, salt: Uint8Array) {
     publicKey: {
       challenge: randomBytes(32),
       rpId: window.location.hostname,
-      allowCredentials: [{ type: "public-key", id: credentialId }],
+      allowCredentials: [{ type: "public-key", id: toArrayBuffer(credentialId) }],
       userVerification: "required",
       timeout: 60_000,
       extensions,
