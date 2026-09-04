@@ -12,7 +12,7 @@ const schema = z.object({
   WEBAUTHN_RP_NAME: z.string().default('EXTREMA'),
   WEBAUTHN_RP_ID: z.string().optional().default(''),
   WEBAUTHN_ORIGINS: z.string().default('http://localhost:3000'),
-  JWT_TTL_SECONDS: z.coerce.number().int().positive().default(43200),
+  JWT_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
 });
 
 const parsed = schema.safeParse(process.env);
