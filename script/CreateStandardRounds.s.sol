@@ -12,6 +12,18 @@ interface IRoundVm {
 }
 
 contract CreateStandardRounds {
+    struct RoundTimes {
+        uint64 entryCloseAt;
+        uint64 observationStartAt;
+        uint64 observationEndAt;
+    }
+
+    struct StandardPlan {
+        RoundTimes daily;
+        RoundTimes weekly;
+        RoundTimes quarterly;
+    }
+
     IRoundVm private constant VM =
         IRoundVm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -36,65 +48,32 @@ contract CreateStandardRounds {
             revert WrongDeployer(deployer, FACTORY.owner());
         }
 
-        uint64 dailyClose = _envUint64("EXTREMA_DAILY_ENTRY_CLOSE_AT");
-        uint64 dailyStart = _envUint64("EXTREMA_DAILY_OBSERVATION_START_AT");
-        uint64 dailyEnd = _envUint64("EXTREMA_DAILY_OBSERVATION_END_AT");
-
-        uint64 weeklyClose = _envUint64("EXTREMA_WEEKLY_ENTRY_CLOSE_AT");
-        uint64 weeklyStart = _envUint64("EXTREMA_WEEKLY_OBSERVATION_START_AT");
-        uint64 weeklyEnd = _envUint64("EXTREMA_WEEKLY_OBSERVATION_END_AT");
-
-        uint64 quarterlyClose = _envUint64("EXTREMA_QUARTERLY_ENTRY_CLOSE_AT");
-        uint64 quarterlyStart = _envUint64("EXTREMA_QUARTERLY_OBSERVATION_START_AT");
-        uint64 quarterlyEnd = _envUint64("EXTREMA_QUARTERLY_OBSERVATION_END_AT");
-
-        _validatePlan(dailyClose, dailyStart, dailyEnd, 4 hours, 1 days);
-        _validatePlan(weeklyClose, weeklyStart, weeklyEnd, 1 days, 7 days);
-        _validateQuarterlyPlan(quarterlyClose, quarterlyStart, quarterlyEnd);
+        StandardPlan memory plan = _loadPlan();
+        _validatePlan(plan);
 
         address[] memory pools = FACTORY.pools();
         if (pools.length != 24) revert UnexpectedPoolCount(pools.length);
 
-        // Safety gate: this script is only for the first standard Round #1.
-        for (uint256 i = 0; i < pools.length; ++i) {
-            uint256 nextRoundId = ExtremaPool(pools[i]).nextRoundId();
-            if (nextRoundId != 1) revert ExistingRound(pools[i], nextRoundId);
-        }
+        _requireFirstRounds(pools);
 
         uint64 entryOpenAt = uint64(block.timestamp);
         if (
-            entryOpenAt >= dailyClose
-                || entryOpenAt >= weeklyClose
-                || entryOpenAt >= quarterlyClose
+            entryOpenAt >= plan.daily.entryCloseAt
+                || entryOpenAt >= plan.weekly.entryCloseAt
+                || entryOpenAt >= plan.quarterly.entryCloseAt
         ) revert InvalidPlan();
 
         VM.startBroadcast(deployerPrivateKey);
 
         for (uint256 i = 0; i < pools.length; ++i) {
             ExtremaPool pool = ExtremaPool(pools[i]);
-
-            (
-                uint64 entryCloseAt,
-                uint64 observationStartAt,
-                uint64 observationEndAt
-            ) = _timesForCadence(
-                pool.CADENCE(),
-                dailyClose,
-                dailyStart,
-                dailyEnd,
-                weeklyClose,
-                weeklyStart,
-                weeklyEnd,
-                quarterlyClose,
-                quarterlyStart,
-                quarterlyEnd
-            );
+            RoundTimes memory times = _timesForCadence(pool.CADENCE(), plan);
 
             uint256 roundId = pool.createRound(
                 entryOpenAt,
-                entryCloseAt,
-                observationStartAt,
-                observationEndAt
+                times.entryCloseAt,
+                times.observationStartAt,
+                times.observationEndAt
             );
 
             if (roundId != 1) revert RoundVerificationFailed(address(pool));
@@ -103,34 +82,59 @@ contract CreateStandardRounds {
 
         VM.stopBroadcast();
 
-        // Verify the simulated/broadcast state of every pool.
+        _verifyCreatedRounds(pools, entryOpenAt, plan);
+    }
+
+    function _loadPlan() internal returns (StandardPlan memory plan) {
+        plan.daily = RoundTimes({
+            entryCloseAt: _envUint64("EXTREMA_DAILY_ENTRY_CLOSE_AT"),
+            observationStartAt: _envUint64("EXTREMA_DAILY_OBSERVATION_START_AT"),
+            observationEndAt: _envUint64("EXTREMA_DAILY_OBSERVATION_END_AT")
+        });
+
+        plan.weekly = RoundTimes({
+            entryCloseAt: _envUint64("EXTREMA_WEEKLY_ENTRY_CLOSE_AT"),
+            observationStartAt: _envUint64("EXTREMA_WEEKLY_OBSERVATION_START_AT"),
+            observationEndAt: _envUint64("EXTREMA_WEEKLY_OBSERVATION_END_AT")
+        });
+
+        plan.quarterly = RoundTimes({
+            entryCloseAt: _envUint64("EXTREMA_QUARTERLY_ENTRY_CLOSE_AT"),
+            observationStartAt: _envUint64("EXTREMA_QUARTERLY_OBSERVATION_START_AT"),
+            observationEndAt: _envUint64("EXTREMA_QUARTERLY_OBSERVATION_END_AT")
+        });
+    }
+
+    function _validatePlan(StandardPlan memory plan) internal pure {
+        _validateFixedPlan(plan.daily, 4 hours, 1 days);
+        _validateFixedPlan(plan.weekly, 1 days, 7 days);
+        _validateQuarterlyPlan(plan.quarterly);
+    }
+
+    function _requireFirstRounds(address[] memory pools) internal view {
+        for (uint256 i = 0; i < pools.length; ++i) {
+            uint256 nextRoundId = ExtremaPool(pools[i]).nextRoundId();
+            if (nextRoundId != 1) revert ExistingRound(pools[i], nextRoundId);
+        }
+    }
+
+    function _verifyCreatedRounds(
+        address[] memory pools,
+        uint64 entryOpenAt,
+        StandardPlan memory plan
+    ) internal view {
         for (uint256 i = 0; i < pools.length; ++i) {
             ExtremaPool pool = ExtremaPool(pools[i]);
             if (pool.nextRoundId() != 2) revert RoundVerificationFailed(address(pool));
 
             ExtremaPool.Round memory round = pool.getRound(1);
-            (
-                uint64 expectedClose,
-                uint64 expectedStart,
-                uint64 expectedEnd
-            ) = _timesForCadence(
-                pool.CADENCE(),
-                dailyClose,
-                dailyStart,
-                dailyEnd,
-                weeklyClose,
-                weeklyStart,
-                weeklyEnd,
-                quarterlyClose,
-                quarterlyStart,
-                quarterlyEnd
-            );
+            RoundTimes memory expected = _timesForCadence(pool.CADENCE(), plan);
 
             if (
                 round.entryOpenAt != entryOpenAt
-                    || round.entryCloseAt != expectedClose
-                    || round.observationStartAt != expectedStart
-                    || round.observationEndAt != expectedEnd
+                    || round.entryCloseAt != expected.entryCloseAt
+                    || round.observationStartAt != expected.observationStartAt
+                    || round.observationEndAt != expected.observationEndAt
                     || uint8(round.status) != uint8(ExtremaPool.RoundStatus.ENTRY_OPEN)
                     || round.entryCount != 0
             ) revert RoundVerificationFailed(address(pool));
@@ -143,54 +147,36 @@ contract CreateStandardRounds {
         value = uint64(raw);
     }
 
-    function _validatePlan(
-        uint64 closeAt,
-        uint64 startAt,
-        uint64 endAt,
+    function _validateFixedPlan(
+        RoundTimes memory times,
         uint256 requiredLead,
         uint256 requiredDuration
     ) internal pure {
         if (
-            uint256(closeAt) + requiredLead != uint256(startAt)
-                || uint256(startAt) + requiredDuration != uint256(endAt)
+            uint256(times.entryCloseAt) + requiredLead != uint256(times.observationStartAt)
+                || uint256(times.observationStartAt) + requiredDuration
+                    != uint256(times.observationEndAt)
         ) revert InvalidPlan();
     }
 
-    function _validateQuarterlyPlan(
-        uint64 closeAt,
-        uint64 startAt,
-        uint64 endAt
-    ) internal pure {
+    function _validateQuarterlyPlan(RoundTimes memory times) internal pure {
+        uint256 duration =
+            uint256(times.observationEndAt) - uint256(times.observationStartAt);
+
         if (
-            uint256(closeAt) + 1 days != uint256(startAt)
-                || endAt <= startAt
-                || uint256(endAt) - uint256(startAt) < 89 days
-                || uint256(endAt) - uint256(startAt) > 92 days
+            uint256(times.entryCloseAt) + 1 days != uint256(times.observationStartAt)
+                || times.observationEndAt <= times.observationStartAt
+                || duration < 89 days
+                || duration > 92 days
         ) revert InvalidPlan();
     }
 
     function _timesForCadence(
         ExtremaPool.Cadence cadence,
-        uint64 dailyClose,
-        uint64 dailyStart,
-        uint64 dailyEnd,
-        uint64 weeklyClose,
-        uint64 weeklyStart,
-        uint64 weeklyEnd,
-        uint64 quarterlyClose,
-        uint64 quarterlyStart,
-        uint64 quarterlyEnd
-    )
-        internal
-        pure
-        returns (uint64 closeAt, uint64 startAt, uint64 endAt)
-    {
-        if (cadence == ExtremaPool.Cadence.DAILY) {
-            return (dailyClose, dailyStart, dailyEnd);
-        }
-        if (cadence == ExtremaPool.Cadence.WEEKLY) {
-            return (weeklyClose, weeklyStart, weeklyEnd);
-        }
-        return (quarterlyClose, quarterlyStart, quarterlyEnd);
+        StandardPlan memory plan
+    ) internal pure returns (RoundTimes memory times) {
+        if (cadence == ExtremaPool.Cadence.DAILY) return plan.daily;
+        if (cadence == ExtremaPool.Cadence.WEEKLY) return plan.weekly;
+        return plan.quarterly;
     }
 }
