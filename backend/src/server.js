@@ -9,6 +9,7 @@ const config = require('./config');
 const db = require('./db');
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
+const roundRoutes = require('./routes/rounds');
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.get('/health', async (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/rounds', roundRoutes);
 
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
