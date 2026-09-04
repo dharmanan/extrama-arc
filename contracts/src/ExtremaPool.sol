@@ -69,6 +69,16 @@ contract ExtremaPool {
         uint64 entrySequence;
     }
 
+    struct TicketMetadata {
+        uint256 roundId;
+        uint64 predictionPriceCents;
+        uint64 entrySequence;
+        uint8 roundStatus;
+        uint8 placement;
+        bool isClaimed;
+        bool isRefunded;
+    }
+
     IERC20Balance public immutable USDC;
     address public immutable TREASURY;
     ExtremaTicket public immutable TICKET;
@@ -439,31 +449,19 @@ contract ExtremaPool {
 
     function getTicketMetadata(
         uint256 ticketId
-    )
-        external
-        view
-        returns (
-            uint256 roundId,
-            uint64 predictionPriceCents,
-            uint64 entrySequence,
-            uint8 roundStatus,
-            uint8 placement,
-            bool isClaimed,
-            bool isRefunded
-        )
-    {
-        Entry memory entry = _requireEntry(ticketId);
+    ) external view returns (TicketMetadata memory metadata) {
+        Entry storage entry = entries[ticketId];
+        if (entry.ticketId == 0) revert RoundNotFound();
+
         Round storage round = _rounds[entry.roundId];
 
-        return (
-            entry.roundId,
-            entry.predictionPriceCents,
-            entry.entrySequence,
-            uint8(round.status),
-            _placement(round, ticketId),
-            claimed[ticketId],
-            refunded[ticketId]
-        );
+        metadata.roundId = entry.roundId;
+        metadata.predictionPriceCents = entry.predictionPriceCents;
+        metadata.entrySequence = entry.entrySequence;
+        metadata.roundStatus = uint8(round.status);
+        metadata.placement = _placement(round, ticketId);
+        metadata.isClaimed = claimed[ticketId];
+        metadata.isRefunded = refunded[ticketId];
     }
 
     function _placement(Round storage round, uint256 ticketId) internal view returns (uint8) {
