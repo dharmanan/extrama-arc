@@ -82,6 +82,8 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 
 ## 1.3 Real Arc Testnet USDC balance
 
+Implementation status: real Arc RPC/USDC balance reader and wallet UI are wired; **proof is still pending**, so no checkbox below is marked complete yet.
+
 Target token:
 
 `0x3600000000000000000000000000000000000000`
