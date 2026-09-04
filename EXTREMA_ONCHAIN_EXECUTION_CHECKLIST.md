@@ -52,18 +52,18 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 
 ## 1.1 Real chain identity
 
-- [ ] Frontend and backend both verify Arc Testnet chain ID `5042002`
-- [ ] EXTREMA wallet address is shown with Arc Testnet explorer link
+- [x] Frontend and backend both verify Arc Testnet chain ID `5042002`
+- [x] EXTREMA wallet address is shown with Arc Testnet explorer link
 - [ ] Wrong-network state is detected and blocked for transaction actions
 - [ ] Switch-to-Arc-Testnet action is verified
 
 ### Proof record
 
-- Chain ID:
-- Wallet address:
-- Explorer:
-- Verification date:
-- Notes:
+- Chain ID: `5042002`
+- Wallet address: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Explorer: `https://testnet.arcscan.app/address/0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Verification date: 2026-09-04
+- Notes: Backend RPC state read and wallet UI both reported Arc Testnet / chain ID 5042002. Wrong-network rejection/switch still requires explicit test.
 
 ## 1.2 Real native balance
 
@@ -88,25 +88,26 @@ Target token:
 
 `0x3600000000000000000000000000000000000000`
 
-- [ ] Verify token contract exists on Arc Testnet
-- [ ] Verify token metadata/decimals from chain
-- [ ] Read EXTREMA wallet `balanceOf` from the token contract
-- [ ] Remove `Demo USDC balance`
-- [ ] Remove `Get 10 demo USDC`
-- [ ] UI displays only the real onchain USDC balance
+- [x] Verify token contract exists on Arc Testnet
+- [x] Verify token metadata/decimals from chain
+- [x] Read EXTREMA wallet `balanceOf` from the token contract
+- [x] Remove `Demo USDC balance`
+- [x] Remove `Get 10 demo USDC`
+- [x] UI displays only the real onchain USDC balance
 - [ ] Real testnet funding path established
 - [ ] Funding transaction verified onchain
 
 ### Proof record
 
-- Token address:
-- Decimals:
-- Wallet:
-- Balance before:
-- Funding tx hash:
-- Explorer:
-- Balance after:
-- Verification:
+- Token address: `0x3600000000000000000000000000000000000000`
+- Decimals: `6`
+- Wallet: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Balance before funding-proof transaction: `40.0 USDC`
+- RPC proof block: `60461390`
+- Funding tx hash: pending
+- Explorer: pending funding transaction
+- Balance after: pending
+- Verification: Real `balanceOf` returned 40.0 USDC and UI rendered the same onchain value. Funding transaction proof still required.
 
 ---
 
@@ -595,10 +596,13 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 1.3 — Real Arc Testnet USDC balance and real funding path.**
+**Section 1.3 — Real Arc Testnet funding proof.**
 
-Do not advance to pool contracts until the EXTREMA wallet can:
+Current verified balance: `40.0 USDC`.
 
-1. read its real Arc Testnet USDC balance,
-2. receive real testnet USDC,
-3. prove the balance change onchain.
+Do not advance to pool contracts until a new real Arc Testnet USDC funding transaction is recorded with:
+
+1. balance before,
+2. transaction hash,
+3. explorer proof,
+4. balance after.
