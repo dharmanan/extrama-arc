@@ -22,3 +22,9 @@
 .wf-code{font-family:monospace;word-break:break-all;background:#f1f0ec;padding:10px;border-radius:8px}
 @media(max-width:900px){.wf-grid{grid-template-columns:repeat(2,1fr)}.wf-grid-3,.wf-two-col{grid-template-columns:1fr}.wf-header{grid-template-columns:1fr auto}.wf-header nav{display:none}}
 @media(max-width:560px){.wf-grid{grid-template-columns:1fr}.wf-main{width:min(100% - 24px,1180px)}}
+
+.wf-filter{padding:8px 12px;border:1px solid #ccc;border-radius:999px;background:#fff}
+.wf-filter[data-active="true"]{border-color:#111;background:#111;color:#fff}
+.wf-action{background:#fff;color:#111}
+.wf-action:disabled{opacity:.45}
+.wf-message{padding:10px 12px;border:1px solid #bbb;border-radius:8px;background:#faf9f6}
