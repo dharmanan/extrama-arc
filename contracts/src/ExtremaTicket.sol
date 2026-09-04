@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
 
-interface IERC721Receiver {
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external returns (bytes4);
-}
+import {IERC721Receiver} from "./interfaces/IERC721Receiver.sol";
 
 contract ExtremaTicket {
     error ZeroAddress();
@@ -21,7 +14,7 @@ contract ExtremaTicket {
     string public constant name = "EXTREMA Prediction Ticket";
     string public constant symbol = "EXTICKET";
 
-    address public immutable minter;
+    address public immutable MINTER;
 
     mapping(uint256 => address) private _owners;
     mapping(address => uint256) private _balances;
@@ -34,11 +27,11 @@ contract ExtremaTicket {
 
     constructor(address minter_) {
         if (minter_ == address(0)) revert ZeroAddress();
-        minter = minter_;
+        MINTER = minter_;
     }
 
     modifier onlyMinter() {
-        if (msg.sender != minter) revert NotMinter();
+        if (msg.sender != MINTER) revert NotMinter();
         _;
     }
 
