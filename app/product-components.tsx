@@ -37,8 +37,8 @@ export function AssetMark({ asset }: { asset: Asset }) {
 }
 
 export function PoolSummary({ pool }: { pool: Pool }) {
-  const { hasEnteredPool } = useDemoState();
-  const entered = hasEnteredPool(pool.slug);
+  const { hasEnteredRound } = useDemoState();
+  const entered = hasEnteredRound(pool.roundId);
 
   return (
     <article className="wf-card">
