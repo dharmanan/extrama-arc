@@ -53,6 +53,37 @@ function slugify(asset, cadence, direction) {
   return `${asset.toLowerCase()}-${cadence.toLowerCase()}-${direction.toLowerCase()}`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRateLimitError(error) {
+  return (
+    error?.info?.error?.code === -32005 ||
+    String(error?.info?.error?.message || '').toLowerCase().includes('rate limit') ||
+    String(error?.shortMessage || error?.message || '').toLowerCase().includes('rate limit')
+  );
+}
+
+async function rpcRead(operation, attempts = 6) {
+  let lastError;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isRateLimitError(error) || attempt === attempts - 1) {
+        throw error;
+      }
+
+      await sleep(250 * (2 ** attempt));
+    }
+  }
+
+  throw lastError;
+}
+
 async function readArcWalletState(address) {
   if (!ethers.isAddress(address)) {
     throw new Error('invalid_wallet_address');
@@ -141,69 +172,69 @@ async function readStandardRounds() {
 
   const chainTimestamp = BigInt(latestBlock.timestamp);
 
-  const pools = await Promise.all(
-    poolAddresses.map(async (poolAddressRaw) => {
-      const poolAddress = ethers.getAddress(poolAddressRaw);
-      const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+  // Arc's public RPC rate-limits large bursts of eth_call requests.
+  // Read pools sequentially and retry only explicit rate-limit failures.
+  // This is slower than a 24-way Promise.all, but deterministic and reliable.
+  const pools = [];
 
-      const [assetIndex, directionIndex, cadenceIndex, ticketAddressRaw, nextRoundId] =
-        await Promise.all([
-          pool.ASSET(),
-          pool.DIRECTION(),
-          pool.CADENCE(),
-          pool.TICKET(),
-          pool.nextRoundId(),
-        ]);
+  for (const poolAddressRaw of poolAddresses) {
+    const poolAddress = ethers.getAddress(poolAddressRaw);
+    const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
 
-      const asset = ASSETS[Number(assetIndex)];
-      const direction = DIRECTIONS[Number(directionIndex)];
-      const cadence = CADENCES[Number(cadenceIndex)];
-      if (!asset || !direction || !cadence) {
-        throw new Error('extrema_pool_identity_invalid');
-      }
-      if (nextRoundId <= 1n) {
-        throw new Error('extrema_standard_round_missing');
-      }
+    const assetIndex = await rpcRead(() => pool.ASSET());
+    const directionIndex = await rpcRead(() => pool.DIRECTION());
+    const cadenceIndex = await rpcRead(() => pool.CADENCE());
+    const ticketAddressRaw = await rpcRead(() => pool.TICKET());
+    const nextRoundId = await rpcRead(() => pool.nextRoundId());
 
-      const roundId = nextRoundId - 1n;
-      const round = await pool.getRound(roundId);
-      const contractStatus = CONTRACT_STATUSES[Number(round.status)];
-      if (!contractStatus) {
-        throw new Error('extrema_round_status_invalid');
-      }
+    const asset = ASSETS[Number(assetIndex)];
+    const direction = DIRECTIONS[Number(directionIndex)];
+    const cadence = CADENCES[Number(cadenceIndex)];
+    if (!asset || !direction || !cadence) {
+      throw new Error('extrema_pool_identity_invalid');
+    }
+    if (nextRoundId <= 1n) {
+      throw new Error('extrema_standard_round_missing');
+    }
 
-      const canEnter =
-        contractStatus === 'ENTRY_OPEN' &&
-        chainTimestamp >= round.entryOpenAt &&
-        chainTimestamp < round.entryCloseAt;
+    const roundId = nextRoundId - 1n;
+    const round = await rpcRead(() => pool.getRound(roundId));
+    const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+    if (!contractStatus) {
+      throw new Error('extrema_round_status_invalid');
+    }
 
-      return {
-        slug: slugify(asset, cadence, direction),
-        poolAddress,
-        ticketAddress: ethers.getAddress(ticketAddressRaw),
-        asset,
-        direction,
-        cadence,
-        source: 'Binance USDⓈ-M Futures Mark Price',
-        sourceSymbol: SOURCE_SYMBOLS[asset],
-        round: {
-          roundId: Number(roundId),
-          contractStatus,
-          canEnter,
-          entryOpenAt: toIso(round.entryOpenAt),
-          entryCloseAt: toIso(round.entryCloseAt),
-          observationStartAt: toIso(round.observationStartAt),
-          observationEndAt: toIso(round.observationEndAt),
-          entryCount: Number(round.entryCount),
-          totalStakeRaw: round.totalStake.toString(),
-          totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
-          escrowRemainingRaw: round.escrowRemaining.toString(),
-          escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
-          resolvedPriceCents: round.resolvedPriceCents.toString(),
-        },
-      };
-    }),
-  );
+    const canEnter =
+      contractStatus === 'ENTRY_OPEN' &&
+      chainTimestamp >= round.entryOpenAt &&
+      chainTimestamp < round.entryCloseAt;
+
+    pools.push({
+      slug: slugify(asset, cadence, direction),
+      poolAddress,
+      ticketAddress: ethers.getAddress(ticketAddressRaw),
+      asset,
+      direction,
+      cadence,
+      source: 'Binance USDⓈ-M Futures Mark Price',
+      sourceSymbol: SOURCE_SYMBOLS[asset],
+      round: {
+        roundId: Number(roundId),
+        contractStatus,
+        canEnter,
+        entryOpenAt: toIso(round.entryOpenAt),
+        entryCloseAt: toIso(round.entryCloseAt),
+        observationStartAt: toIso(round.observationStartAt),
+        observationEndAt: toIso(round.observationEndAt),
+        entryCount: Number(round.entryCount),
+        totalStakeRaw: round.totalStake.toString(),
+        totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
+        escrowRemainingRaw: round.escrowRemaining.toString(),
+        escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
+        resolvedPriceCents: round.resolvedPriceCents.toString(),
+      },
+    });
+  }
 
   return {
     chain: {
