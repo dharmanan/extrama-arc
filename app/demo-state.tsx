@@ -122,7 +122,25 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
   }, [hydrated, wallet, tickets, entries, nextTicketId]);
 
+  function bindDemoIdentity(address: string) {
+    setTickets((current) =>
+      current.map((ticket) =>
+        ticket.owner.toLowerCase() === sampleAddress.toLowerCase()
+          ? { ...ticket, owner: address }
+          : ticket,
+      ),
+    );
+    setEntries((current) =>
+      current.map((entry) =>
+        entry.wallet.toLowerCase() === sampleAddress.toLowerCase()
+          ? { ...entry, wallet: address }
+          : entry,
+      ),
+    );
+  }
+
   function createWallet(address: string) {
+    bindDemoIdentity(address);
     setWallet({
       status: "ready",
       mode: "extrema",
@@ -132,6 +150,7 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
   }
 
   function connectExistingWallet(address: string) {
+    bindDemoIdentity(address);
     setWallet({
       status: "ready",
       mode: "external",
