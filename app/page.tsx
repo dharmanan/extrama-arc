@@ -11,26 +11,24 @@ const assets = [
 export default function Home() {
   return (
     <main className={styles.page}>
-      <header className={styles.header}>
-        <Link className={styles.brand} href="/" aria-label="EXTREMA home">
-          <span aria-hidden="true">✦</span>
-          EXTREMA
-        </Link>
+      <section className={styles.hero}>
+        <header className={styles.header}>
+          <Link className={styles.brand} href="/" aria-label="EXTREMA home">
+            <span aria-hidden="true">✦</span>
+            EXTREMA
+          </Link>
 
-        <nav className={styles.nav} aria-label="Main navigation">
-          <Link className={styles.active} href="/">Play</Link>
-          <Link href="/results/184">Leaderboard</Link>
-          <a href="#how">How it works</a>
-        </nav>
+          <nav className={styles.nav} aria-label="Main navigation">
+            <Link className={styles.active} href="/">Play</Link>
+            <Link href="/results/184">Leaderboard</Link>
+            <a href="#how">How it works</a>
+          </nav>
 
-        <Link className={styles.wallet} href="/wallet">Connect Wallet</Link>
-      </header>
+          <Link className={styles.wallet} href="/wallet">Connect Wallet</Link>
+        </header>
 
-      <section className={styles.hero} aria-labelledby="home-title">
         <div className={styles.copy}>
-          <p className={styles.eyebrow}>REAL PRICES. REAL PLAYERS.</p>
-
-          <h1 id="home-title">
+          <h1>
             Small<br />
             Predictions.<br />
             Real Rewards.
@@ -45,22 +43,17 @@ export default function Home() {
             Start Predicting
             <span aria-hidden="true">→</span>
           </Link>
+        </div>
 
-          <div className={styles.assets} aria-label="Supported assets">
-            {assets.map((asset) => (
-              <Link
-                className={styles.asset}
-                href="/pools"
-                key={asset.name}
-                aria-label={`Explore ${asset.name} pools`}
-              >
-                <span className={`${styles.assetIcon} ${styles[asset.tone]}`}>
-                  <img src={asset.src} alt="" />
-                </span>
-                <small>{asset.name}</small>
-              </Link>
-            ))}
-          </div>
+        <div className={styles.assets} aria-label="Supported assets">
+          {assets.map((asset) => (
+            <Link className={styles.asset} href="/pools" key={asset.name}>
+              <span className={`${styles.assetIcon} ${styles[asset.tone]}`}>
+                <img src={asset.src} alt="" />
+              </span>
+              <small>{asset.name}</small>
+            </Link>
+          ))}
         </div>
 
         <p className={styles.manifesto} aria-hidden="true">
@@ -77,19 +70,17 @@ export default function Home() {
           <span>OWN</span>
         </div>
 
-        <div className={styles.bottom}>
-          <dl className={styles.stats}>
-            <div><dt>24</dt><dd>Active Pools</dd></div>
-            <div><dt>12,438</dt><dd>Players</dd></div>
-            <div><dt>$12,438</dt><dd>Total Pool Volume</dd></div>
-          </dl>
+        <dl className={styles.stats}>
+          <div><dt>24</dt><dd>Active Pools</dd></div>
+          <div><dt>12,438</dt><dd>Players</dd></div>
+          <div><dt>$12,438</dt><dd>Total Pool Volume</dd></div>
+        </dl>
 
-          <p className={styles.trust}>
-            Built on <b>✦ Arc</b>
-            <i aria-hidden="true" />
-            Powered by <b className={styles.usdc}>◎ USDC</b>
-          </p>
-        </div>
+        <p className={styles.trust}>
+          Built on <b>✦ Arc</b>
+          <i aria-hidden="true" />
+          Powered by <b className={styles.usdc}>◎ USDC</b>
+        </p>
       </section>
     </main>
   );
