@@ -85,6 +85,12 @@ export const backendApi = {
           explorerUrl: string;
           blockNumber: number;
         };
+        native: {
+          symbol: string;
+          decimals: number;
+          balanceRaw: string;
+          balanceFormatted: string;
+        };
         usdc: {
           address: string;
           name: string;
