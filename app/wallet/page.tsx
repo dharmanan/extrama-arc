@@ -256,6 +256,8 @@ export default function WalletPage() {
                 <>
                   <p><b>Network:</b> {chainState.chain.name} · Chain ID {chainState.chain.id}</p>
                   <p><b>Block:</b> {chainState.chain.blockNumber}</p>
+                  <p><b>Native gas balance:</b> {chainState.native.balanceFormatted} {chainState.native.symbol}</p>
+                  <p><b>Native decimals:</b> {chainState.native.decimals}</p>
                   <p><b>USDC contract:</b></p>
                   <p className="wf-code">{chainState.usdc.address}</p>
                   <p><b>USDC decimals:</b> {chainState.usdc.decimals}</p>
