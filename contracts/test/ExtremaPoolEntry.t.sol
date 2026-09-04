@@ -16,6 +16,7 @@ contract ExtremaPoolEntryTest {
 
     address internal constant TREASURY = address(0xA11CE);
     address internal constant RESOLVER = address(0xB0B);
+    address internal constant RENDERER = address(0xC0DE);
     address internal constant ALICE = address(0x1001);
     address internal constant BOB = address(0x1002);
 
@@ -31,7 +32,17 @@ contract ExtremaPoolEntryTest {
     function setUp() public {
         vm.warp(1_000_000);
         usdc = new MockUSDC();
-        pool = new ExtremaPool(address(usdc), TREASURY, RESOLVER);
+        pool = new ExtremaPool(
+            address(usdc),
+            TREASURY,
+            RESOLVER,
+            address(this),
+            RENDERER,
+            address(this),
+            ExtremaPool.Asset.ETH,
+            ExtremaPool.Direction.LOW,
+            ExtremaPool.Cadence.WEEKLY
+        );
         ticket = ExtremaTicket(address(pool.TICKET()));
 
         openAt = uint64(block.timestamp);
@@ -50,6 +61,9 @@ contract ExtremaPoolEntryTest {
         require(roundId == 1, "round id");
         require(round.entryCount == 0, "entry count");
         require(round.status == ExtremaPool.RoundStatus.ENTRY_OPEN, "status");
+        require(pool.ASSET() == ExtremaPool.Asset.ETH, "asset");
+        require(pool.DIRECTION() == ExtremaPool.Direction.LOW, "direction");
+        require(pool.CADENCE() == ExtremaPool.Cadence.WEEKLY, "cadence");
     }
 
     function testEntryTransfersOneUsdcAndMintsTicket() public {
@@ -97,9 +111,6 @@ contract ExtremaPoolEntryTest {
 
     function _createRound() internal returns (uint256) {
         return pool.createRound(
-            ExtremaPool.Asset.ETH,
-            ExtremaPool.Direction.LOW,
-            ExtremaPool.Cadence.WEEKLY,
             openAt,
             closeAt,
             observationStartAt,
