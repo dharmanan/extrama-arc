@@ -65,6 +65,7 @@ export type Result = {
 export type Ticket = {
   tokenId: number;
   roundId: number;
+  owner: string;
   poolSlug: string;
   asset: Asset;
   cadence: Cadence;
