@@ -1,86 +1,52 @@
 import Link from "next/link";
-import styles from "./home.module.css";
+import { ProductHeader } from "./product-components";
 
-const assets = [
-  { name: "BTC", src: "/brands/bitcoin.svg", tone: "bitcoin" },
-  { name: "ETH", src: "/brands/ethereum.png", tone: "ethereum" },
-  { name: "SOL", src: "/brands/solana.svg", tone: "solana" },
-  { name: "HYPE", src: "/brands/hyperliquid.svg", tone: "hyperliquid" },
-] as const;
-
-export default function Home() {
+export default function HomePage() {
   return (
-    <main className={styles.page}>
-      <section className={styles.hero}>
-        <header className={styles.header}>
-          <Link className={styles.brand} href="/" aria-label="EXTREMA home">
-            <span aria-hidden="true">✦</span>
-            EXTREMA
-          </Link>
-
-          <nav className={styles.nav} aria-label="Main navigation">
-            <Link className={styles.active} href="/">Play</Link>
-            <Link href="/results/184">Leaderboard</Link>
-            <a href="#how">How it works</a>
-          </nav>
-
-          <Link className={styles.wallet} href="/wallet">Connect Wallet</Link>
-        </header>
-
-        <div className={styles.copy}>
-          <h1>
-            Small<br />
-            Predictions.<br />
-            <span className={styles.rewardLine}>Real Rewards.</span>
-          </h1>
-
-          <p className={styles.body}>
-            Predict the next high or low of BTC, ETH, SOL or HYPE. 1 USDC entry.
-            Onchain. Transparent. For everyone.
-          </p>
-
-          <Link className={styles.cta} href="/pools">
-            Start Predicting
-            <span aria-hidden="true">→</span>
-          </Link>
-        </div>
-
-        <div className={styles.assets} aria-label="Supported assets">
-          {assets.map((asset) => (
-            <Link className={styles.asset} href="/pools" key={asset.name}>
-              <span className={`${styles.assetIcon} ${styles[asset.tone]}`}>
-                <img src={asset.src} alt="" />
-              </span>
-              <small>{asset.name}</small>
-            </Link>
-          ))}
-        </div>
-
-        <p className={styles.manifesto} aria-hidden="true">
-          SAME<br />
-          MARKETS.<br />
-          BIGGER<br />
-          STORIES.
+    <main className="wf-page">
+      <ProductHeader />
+      <section className="wf-main">
+        <p>EXTREMA · ETHONLINE 2026</p>
+        <h1>Fixed-entry crypto forecasting pools.</h1>
+        <p>
+          Predict the Daily, Weekly or Quarterly High or Low of BTC, ETH, SOL or HYPE.
+          Every entry costs exactly 1 USDC and every exact prediction is unique within its pool.
         </p>
 
-        <div className={styles.rail} aria-hidden="true">
-          <span>PREDICT</span>
-          <span>EXPLORE</span>
-          <span>COMPETE</span>
-          <span>OWN</span>
+        <div className="wf-grid-3 wf-section">
+          <article className="wf-card">
+            <small>MARKETS</small>
+            <strong>24 standard pools</strong>
+            <p>4 assets × 2 directions × 3 cadences.</p>
+            <Link className="wf-action" href="/pools">Explore pools</Link>
+          </article>
+          <article className="wf-card">
+            <small>WALLET</small>
+            <strong>Create or connect</strong>
+            <p>Functional demo wallet state is shared across every route.</p>
+            <Link className="wf-action" href="/wallet">Open wallet</Link>
+          </article>
+          <article className="wf-card">
+            <small>SETTLEMENT</small>
+            <strong>Deterministic result</strong>
+            <p>Review the settled demo round and its evidence trail.</p>
+            <Link className="wf-action" href="/results/184">View demo result</Link>
+          </article>
         </div>
 
-        <dl className={styles.stats}>
-          <div><dt>24</dt><dd>Active Pools</dd></div>
-          <div><dt>12,438</dt><dd>Players</dd></div>
-          <div><dt>$12,438</dt><dd>Total Pool Volume</dd></div>
-        </dl>
-
-        <p className={styles.trust}>
-          Built on <b>✦ Arc</b>
-          <i aria-hidden="true" />
-          Powered by <b className={styles.usdc}>◎ USDC</b>
-        </p>
+        <section className="wf-panel wf-section">
+          <h2>End-to-end demo path</h2>
+          <ol>
+            <li>Create or connect wallet.</li>
+            <li>Get test USDC.</li>
+            <li>Open an ENTRY_OPEN pool.</li>
+            <li>Enter one unique price for exactly 1 USDC.</li>
+            <li>Receive a ticket in My Tickets.</li>
+            <li>Inspect live round state.</li>
+            <li>Review settled results and verification evidence.</li>
+            <li>Claim a winning NFT reward.</li>
+          </ol>
+        </section>
       </section>
     </main>
   );
