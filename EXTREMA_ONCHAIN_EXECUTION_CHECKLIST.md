@@ -218,7 +218,7 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 - [x] Deploy 24 paired ERC-721 ticket collections through pool deployment
 - [x] Configure treasury contract
 - [x] Configure Arc Testnet USDC
-- [ ] Verify deployed bytecode/contracts and complete topology reads
+- [x] Verify deployed bytecode/contracts and complete topology reads
 - [x] Record deployment transactions
 
 ### Simulation proof
@@ -296,8 +296,40 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 - Treasury controller direct reads:
   - `CONTROLLER_A() -> 0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
   - `CONTROLLER_B() -> 0x99677aab4b168c274A34525D526346fC47Fab72c`
-- Remaining evidence task:
-  - print and record the explicit 24 pool addresses and 24 ticket addresses in the checklist for auditability.
+- Explicit topology readout:
+  - Command: `./script/print-arc-topology.sh`
+  - Chain ID: `5042002`
+  - Factory: `0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A`
+  - Result: `POOL_COUNT=24`, `TOPOLOGY_PRINT=PASS`
+
+| # | Asset | Direction | Cadence | Pool | Ticket |
+|---:|---|---|---|---|---|
+| 1 | BTC | HIGH | DAILY | `0xc724050511Df7CC0cb7aFC688cbcc9C2A16dC36d` | `0x3c04c15025731A07772018e8609a8af7212d8801` |
+| 2 | BTC | HIGH | WEEKLY | `0xE7d18196075227F0b264F3612942b02e0FedC1d1` | `0x5e39A234c7654d3f005Ec5d2bEb014c159a9D38d` |
+| 3 | BTC | HIGH | QUARTERLY | `0x7573cD9Ff84afda1e1f46Ab59f6Ff3dc4c0106A0` | `0xD6F2545F00eefaA00c02cEcaFfBb4EC33532c603` |
+| 4 | BTC | LOW | DAILY | `0x18e34fF5527637fdA1C13297DAcbEE7c08e69dad` | `0x9BF5C34B23658a9aC06C0A47B59d9B90350e735E` |
+| 5 | BTC | LOW | WEEKLY | `0x74a1Fc98876C2c7E792eB2F7577a908620F68f89` | `0x468f1485cDfF194114Bd3fC7b126EbdbBa704e0A` |
+| 6 | BTC | LOW | QUARTERLY | `0x842A2F152a9b5aD7E9b7CB651DE59eD53040dBD0` | `0xEa6d00b5E473c5647f1B8CdceD8E56653181Afd3` |
+| 7 | ETH | HIGH | DAILY | `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f` | `0xF65Cf4a67299ad596e139e3F6a9594E809F05637` |
+| 8 | ETH | HIGH | WEEKLY | `0x7c2e9C3221534F24ecA83949D4f7249c95C35c33` | `0xd20a69DB0A957D6f285b6Af67fed653d65cD7E5d` |
+| 9 | ETH | HIGH | QUARTERLY | `0x6652e6F150e889Be15fbD6608A70e03aB7048d48` | `0x070C0153F1DCa041FdE84C581f12Ef832f3F50B8` |
+| 10 | ETH | LOW | DAILY | `0x490A5CE02E3fd85d51095A69AAE9511552d91095` | `0x6FC6756af39fb520844EdA73D6855990e56049E1` |
+| 11 | ETH | LOW | WEEKLY | `0x8ec016AE0376Bf7d893Be4BeA6Fb1C57AAabf718` | `0xa2F82BE41567D7BE6F7F2Ba435D23068eE2A2212` |
+| 12 | ETH | LOW | QUARTERLY | `0xBD70a2F01F8524C4858A9A26AEdF82dC936da789` | `0xDb6761e9eeD6e52E3bb42FB0157b3818a2BF6b16` |
+| 13 | SOL | HIGH | DAILY | `0xb81C2551cb757Cd51ABfCa3db4e876820634c76c` | `0x7Fb08d5A0d168De4CE479FC21C1E45fF35353F9C` |
+| 14 | SOL | HIGH | WEEKLY | `0x7b24aFccf1f63545A36cd41a30c4846aBFb17CF8` | `0x534d90A4E4314f4A54E3eBd4D0cBe276E7CdD92A` |
+| 15 | SOL | HIGH | QUARTERLY | `0xC5BA26016387e2c041d136779D1dE8d02DEf5c50` | `0x18c6b2c1Aad92321E83a39D92Fc621ffCDD51264` |
+| 16 | SOL | LOW | DAILY | `0xdf1bE0356E5207f8aB96598c289823B488478fF5` | `0x174a3f5C207875f059171f35399869D60F792190` |
+| 17 | SOL | LOW | WEEKLY | `0x5341Ca1e1257555a8bAceF969f3F3e06C6583f48` | `0x4BC109D7347855b5096B84BC6194Fe0d34a17bf4` |
+| 18 | SOL | LOW | QUARTERLY | `0xc3b87D6C96924C107148D3db01dcDFcddFfCF981` | `0xD2b407294F18ec833c6BED915437832cdd235e6d` |
+| 19 | HYPE | HIGH | DAILY | `0x97563B5DE4019311529c405ac78F59D74A001894` | `0x6e40BCedcb29b7E5e509F15d3f4C4380a5C670e2` |
+| 20 | HYPE | HIGH | WEEKLY | `0xc699665f2BB38f7545C6bC1226755046F48A4D63` | `0xa7e359d2dF9E94B1E829f56016A7D879C53C63BC` |
+| 21 | HYPE | HIGH | QUARTERLY | `0x8EFEEdfF439c772dcD040E36F43767F67B229C74` | `0x3cA0498a01c2D2D4a687E68791f77a542AF88d14` |
+| 22 | HYPE | LOW | DAILY | `0x429329Efcd2c20198aB99EbF2459Be649864337C` | `0xAff6f3b5C2947368545B012c9689df2eC55997Bb` |
+| 23 | HYPE | LOW | WEEKLY | `0xE936A4125360562390d8202911d767DAb2FA4852` | `0x0A4C0AA2D0ff801AC774167c69A44b4F1210B404` |
+| 24 | HYPE | LOW | QUARTERLY | `0x8F921fDc4C02D46a02B85dAd0b2F3dF23303505b` | `0x84B9C1AdC20333022064234BaC11A1C786Cf08fC` |
+
+**Section 2.3 status: COMPLETE.** Deployment, role wiring, treasury controllers, 24 pool identities, and 24 distinct ticket collections are all proven on Arc Testnet.
 
 ---
 
@@ -717,12 +749,8 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 2.3 — Arc Testnet deployment.**
+**Section 3 — Real round creation.**
 
-Local contract gate is complete with 31/31 tests passing and all production contracts within deployable size limits.
+Section 2.3 is complete on Arc Testnet.
 
-Next:
-1. compile the deployment scripts
-2. simulate the full Arc Testnet deployment without broadcasting
-3. verify the expected 1 Factory + 1 Treasury + 1 Renderer + 24 Pool + 24 Ticket topology
-4. only then broadcast and record every deployment transaction/address
+Before creating the first standard Daily / Weekly / Quarterly rounds, lock the exact UTC time-boundary convention for each cadence so round timestamps and the Binance resolver observation window are deterministic and cannot drift between backend, UI, and settlement.
