@@ -131,7 +131,7 @@ router.post('/register/start', startLimiter, async (req, res, next) => {
     const options = await passkeyService.startRegistration(
       user.id,
       normalized,
-      req.get('origin'),
+      req.get('x-extrema-origin') || req.get('origin'),
     );
 
     res.json(options);
@@ -180,7 +180,7 @@ router.post('/login/start', startLimiter, async (req, res, next) => {
 
     const options = await passkeyService.startAuthentication(
       rows[0].id,
-      req.get('origin'),
+      req.get('x-extrema-origin') || req.get('origin'),
     );
     res.json(options);
   } catch (error) {
