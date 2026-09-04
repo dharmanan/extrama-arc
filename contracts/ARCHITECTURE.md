@@ -277,7 +277,31 @@ Any future rescue function for accidental excess tokens must be limited to:
 
 and must never touch reserved escrow.
 
-## 10. Settlement source
+## 10. Standard round UTC boundaries
+
+All standard rounds use UTC boundaries. Entry closes before the observation window begins.
+
+Deterministic cadence rules:
+
+- DAILY
+  - observation window: 00:00 UTC to next day 00:00 UTC
+  - entry close: exactly 4 hours before observation start
+  - therefore a daily observation beginning at 00:00 UTC closes entry at 20:00 UTC on the previous calendar day
+
+- WEEKLY
+  - observation window: Monday 00:00 UTC to next Monday 00:00 UTC
+  - entry close: exactly 24 hours before observation start
+  - therefore weekly entry closes Sunday 00:00 UTC
+
+- QUARTERLY
+  - observation window: first calendar day of the quarter at 00:00 UTC to first calendar day of the next quarter at 00:00 UTC
+  - entry close: exactly 24 hours before observation start
+
+There is no MONTHLY cadence in the locked 24-pool architecture. Adding MONTHLY later would be a separate architecture change because it would increase the standard pool count.
+
+These rules must be identical in contract round creation, backend scheduling, UI display, and resolver source-window calculation.
+
+## 11. Settlement source
 
 Offchain resolver source:
 
@@ -297,13 +321,13 @@ Rules:
 
 The pool identity already determines which asset/direction rule applies.
 
-## 11. Winner ranking
+## 12. Winner ranking
 
 1. smallest absolute distance from resolved price
 2. earlier accepted onchain entry sequence
 3. transaction/log position for independent audit proof
 
-## 12. Payout accounting
+## 13. Payout accounting
 
 Basis points:
 
@@ -322,7 +346,7 @@ On settlement:
 
 No treasury controller can call a pool withdrawal function because no such player-escrow withdrawal function exists.
 
-## 13. Treasury withdrawal behavior
+## 14. Treasury withdrawal behavior
 
 ExtremaTreasury exposes controller-only withdrawal.
 
@@ -337,7 +361,7 @@ No arbitrary destination parameter is required.
 
 This gives availability redundancy without granting either controller direct pool access.
 
-## 14. NFT collection model
+## 15. NFT collection model
 
 There are 24 separate collections, one per pool.
 
@@ -359,7 +383,7 @@ Within each collection, each token contains dynamic onchain data:
 - winner placement
 - claim/refund state
 
-## 15. NFT visual system
+## 16. NFT visual system
 
 All NFT data and artwork are generated onchain.
 
@@ -404,7 +428,7 @@ LIVE
 
 The renderer can later change visual styling while the ticket collection address, ownership, prediction, and economic rights remain unchanged.
 
-## 16. NFT claim/refund right
+## 17. NFT claim/refund right
 
 Current `ownerOf(ticketId)` controls the economic right.
 
@@ -421,7 +445,7 @@ Cancelled round:
 
 - current NFT owner may claim 1 USDC refund once
 
-## 17. Access control
+## 18. Access control
 
 Roles are isolated:
 
@@ -436,7 +460,7 @@ No treasury controller is a pool escrow controller.
 
 No renderer authority has financial authority.
 
-## 18. Deployment count
+## 19. Deployment count
 
 Target architecture:
 
@@ -450,7 +474,7 @@ Total target addresses: **51 contracts**
 
 The 24 ticket contracts may be created by their paired pool contracts, so pool deployment can atomically establish the pool + its NFT collection.
 
-## 19. Implementation acceptance gate
+## 20. Implementation acceptance gate
 
 Before Arc Testnet deployment:
 

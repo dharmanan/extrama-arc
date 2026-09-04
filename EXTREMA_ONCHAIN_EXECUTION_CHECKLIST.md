@@ -335,6 +335,13 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 
 # 3. Real round creation
 
+Locked UTC cadence boundaries:
+
+- DAILY: observation 00:00 UTC → next day 00:00 UTC; entry closes exactly 4 hours before observation start
+- WEEKLY: Monday 00:00 UTC → next Monday 00:00 UTC; entry closes exactly 24 hours before observation start
+- QUARTERLY: first day of quarter 00:00 UTC → first day of next quarter 00:00 UTC; entry closes exactly 24 hours before observation start
+- MONTHLY is not part of the current 24-pool architecture
+
 Assets:
 
 - BTC
@@ -367,6 +374,10 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - [ ] HYPE verified
 - [ ] Entry-open timestamp stored onchain
 - [ ] Entry-close timestamp stored onchain
+- [x] Daily entry-close offset locked at 4 hours before observation start
+- [x] Weekly entry-close offset locked at 24 hours before observation start
+- [x] Quarterly entry-close offset locked at 24 hours before observation start
+- [x] Standard UTC observation boundaries locked
 - [ ] Observation start/end stored or deterministically represented
 - [ ] UI reads real round state from chain/backend indexer
 - [ ] Remove hardcoded `Players`, `Pool`, and `ENTRY_OPEN` values
@@ -753,4 +764,4 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 Section 2.3 is complete on Arc Testnet.
 
-Before creating the first standard Daily / Weekly / Quarterly rounds, lock the exact UTC time-boundary convention for each cadence so round timestamps and the Binance resolver observation window are deterministic and cannot drift between backend, UI, and settlement.
+UTC cadence boundaries are now locked. Next, implement deterministic standard-round timestamp generation for Daily / Weekly / Quarterly and prove the first real Arc Testnet round creation transaction.
