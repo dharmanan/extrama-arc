@@ -32,7 +32,7 @@ contract VerifyStandardRounds {
     error WrongChain(uint256 actual);
     error InvalidEnv();
 
-    function run() external view returns (uint256 verifiedRounds) {
+    function run() external returns (uint256 verifiedRounds) {
         if (block.chainid != ARC_TESTNET_CHAIN_ID) revert WrongChain(block.chainid);
 
         StandardPlan memory plan = _loadPlan();
@@ -63,7 +63,7 @@ contract VerifyStandardRounds {
         }
     }
 
-    function _loadPlan() internal view returns (StandardPlan memory plan) {
+    function _loadPlan() internal returns (StandardPlan memory plan) {
         plan.daily = RoundTimes({
             entryCloseAt: _envUint64("EXTREMA_DAILY_ENTRY_CLOSE_AT"),
             observationStartAt: _envUint64("EXTREMA_DAILY_OBSERVATION_START_AT"),
@@ -81,7 +81,7 @@ contract VerifyStandardRounds {
         });
     }
 
-    function _envUint64(string memory name) internal view returns (uint64 value) {
+    function _envUint64(string memory name) internal returns (uint64 value) {
         uint256 raw = VM.envUint(name);
         if (raw > type(uint64).max) revert InvalidEnv();
         value = uint64(raw);
