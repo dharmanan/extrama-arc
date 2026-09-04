@@ -34,7 +34,7 @@ type PersistedDemo = {
   nextTicketId: number;
 };
 
-const STORAGE_KEY = "extrema-demo-state-v3";
+const STORAGE_KEY = "extrema-demo-state-v4";
 
 const sampleAddress = "0x3aF00000000000000000000000000000000092E1";
 
