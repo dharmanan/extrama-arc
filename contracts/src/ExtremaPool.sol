@@ -4,6 +4,10 @@ pragma solidity ^0.8.30;
 import {ExtremaTicket} from "./ExtremaTicket.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 
+interface IERC20Balance is IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+}
+
 contract ExtremaPool {
     error ZeroAddress();
     error NotOwner();
@@ -29,6 +33,7 @@ contract ExtremaPool {
     error RoundNotSettled();
     error RoundNotCancelled();
     error Reentrancy();
+    error ExcessAmountUnavailable();
 
     uint256 public constant STAKE_AMOUNT = 1_000_000;
     uint256 public constant BPS_DENOMINATOR = 10_000;
@@ -43,9 +48,6 @@ contract ExtremaPool {
     enum RoundStatus { ENTRY_OPEN, LOCKED, SETTLED, CANCELLED }
 
     struct Round {
-        Asset asset;
-        Direction direction;
-        Cadence cadence;
         uint64 entryOpenAt;
         uint64 entryCloseAt;
         uint64 observationStartAt;
@@ -54,6 +56,7 @@ contract ExtremaPool {
         uint64 entryCount;
         uint64 nextEntrySequence;
         uint256 totalStake;
+        uint256 escrowRemaining;
         uint64 resolvedPriceCents;
         uint256[3] winnerTicketIds;
     }
@@ -66,15 +69,20 @@ contract ExtremaPool {
         uint64 entrySequence;
     }
 
-    IERC20 public immutable USDC;
+    IERC20Balance public immutable USDC;
     address public immutable TREASURY;
     ExtremaTicket public immutable TICKET;
+
+    Asset public immutable ASSET;
+    Direction public immutable DIRECTION;
+    Cadence public immutable CADENCE;
 
     address public owner;
     address public resolver;
 
     uint256 public nextRoundId = 1;
     uint256 public nextTicketId = 1;
+    uint256 public totalReservedUSDC;
 
     mapping(uint256 => Round) private _rounds;
     mapping(uint256 => Entry) public entries;
@@ -91,9 +99,6 @@ contract ExtremaPool {
     event ResolverUpdated(address indexed previousResolver, address indexed newResolver);
     event RoundCreated(
         uint256 indexed roundId,
-        Asset asset,
-        Direction direction,
-        Cadence cadence,
         uint64 entryOpenAt,
         uint64 entryCloseAt,
         uint64 observationStartAt,
@@ -128,92 +133,99 @@ contract ExtremaPool {
         uint256 amount
     );
     event TreasuryAllocated(uint256 indexed roundId, address indexed treasury, uint256 amount);
+    event ExcessUSDCRescued(address indexed owner, uint256 amount);
 
-    constructor(address usdc_, address treasury_, address resolver_) {
-        if (usdc_ == address(0) || treasury_ == address(0) || resolver_ == address(0)) {
-            revert ZeroAddress();
-        }
+    constructor(
+        address usdc_,
+        address treasury_,
+        address resolver_,
+        address owner_,
+        address renderer_,
+        address rendererAdmin_,
+        Asset asset_,
+        Direction direction_,
+        Cadence cadence_
+    ) {
+        if (
+            usdc_ == address(0)
+                || treasury_ == address(0)
+                || resolver_ == address(0)
+                || owner_ == address(0)
+                || renderer_ == address(0)
+                || rendererAdmin_ == address(0)
+        ) revert ZeroAddress();
 
-        USDC = IERC20(usdc_);
+        USDC = IERC20Balance(usdc_);
         TREASURY = treasury_;
         resolver = resolver_;
-        owner = msg.sender;
-        TICKET = new ExtremaTicket(address(this));
+        owner = owner_;
 
-        emit OwnershipTransferred(address(0), msg.sender);
+        ASSET = asset_;
+        DIRECTION = direction_;
+        CADENCE = cadence_;
+
+        TICKET = new ExtremaTicket(
+            address(this),
+            rendererAdmin_,
+            renderer_,
+            _collectionName(asset_, direction_, cadence_),
+            _collectionSymbol(asset_, direction_, cadence_)
+        );
+
+        emit OwnershipTransferred(address(0), owner_);
         emit ResolverUpdated(address(0), resolver_);
     }
 
     modifier onlyOwner() {
-        _checkOwner();
+        if (msg.sender != owner) revert NotOwner();
         _;
     }
 
     modifier onlyResolver() {
-        _checkResolver();
+        if (msg.sender != resolver) revert NotResolver();
         _;
     }
 
     modifier nonReentrant() {
-        _nonReentrantBefore();
-        _;
-        _nonReentrantAfter();
-    }
-
-    function _checkOwner() internal view {
-        if (msg.sender != owner) revert NotOwner();
-    }
-
-    function _checkResolver() internal view {
-        if (msg.sender != resolver) revert NotResolver();
-    }
-
-    function _nonReentrantBefore() internal {
         if (_reentrancyState != 1) revert Reentrancy();
         _reentrancyState = 2;
-    }
-
-    function _nonReentrantAfter() internal {
+        _;
         _reentrancyState = 1;
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
+
         address previousOwner = owner;
         owner = newOwner;
+
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
     function setResolver(address newResolver) external onlyOwner {
         if (newResolver == address(0)) revert ZeroAddress();
+
         address previousResolver = resolver;
         resolver = newResolver;
+
         emit ResolverUpdated(previousResolver, newResolver);
     }
 
     function createRound(
-        Asset asset,
-        Direction direction,
-        Cadence cadence,
         uint64 entryOpenAt,
         uint64 entryCloseAt,
         uint64 observationStartAt,
         uint64 observationEndAt
     ) external onlyOwner returns (uint256 roundId) {
         if (
-            entryOpenAt >= entryCloseAt ||
-            entryCloseAt > observationStartAt ||
-            observationStartAt >= observationEndAt
-        ) {
-            revert InvalidTimestamps();
-        }
+            entryOpenAt >= entryCloseAt
+                || entryCloseAt > observationStartAt
+                || observationStartAt >= observationEndAt
+        ) revert InvalidTimestamps();
 
         roundId = nextRoundId++;
-        Round storage round = _rounds[roundId];
 
-        round.asset = asset;
-        round.direction = direction;
-        round.cadence = cadence;
+        Round storage round = _rounds[roundId];
         round.entryOpenAt = entryOpenAt;
         round.entryCloseAt = entryCloseAt;
         round.observationStartAt = observationStartAt;
@@ -223,9 +235,6 @@ contract ExtremaPool {
 
         emit RoundCreated(
             roundId,
-            asset,
-            direction,
-            cadence,
             entryOpenAt,
             entryCloseAt,
             observationStartAt,
@@ -251,8 +260,11 @@ contract ExtremaPool {
 
         hasEntered[roundId][msg.sender] = true;
         predictionTaken[roundId][predictionPriceCents] = true;
+
         round.entryCount += 1;
         round.totalStake += STAKE_AMOUNT;
+        round.escrowRemaining += STAKE_AMOUNT;
+        totalReservedUSDC += STAKE_AMOUNT;
 
         entries[ticketId] = Entry({
             ticketId: ticketId,
@@ -261,6 +273,7 @@ contract ExtremaPool {
             predictionPriceCents: predictionPriceCents,
             entrySequence: entrySequence
         });
+
         _roundTicketIds[roundId].push(ticketId);
 
         emit PredictionEntered(
@@ -271,18 +284,20 @@ contract ExtremaPool {
             entrySequence
         );
 
-        _safeTransferFrom(msg.sender, address(this), STAKE_AMOUNT);
+        if (!USDC.transferFrom(msg.sender, address(this), STAKE_AMOUNT)) {
+            revert TokenTransferFailed();
+        }
+
         TICKET.mint(msg.sender, ticketId);
     }
 
     function lockRound(uint256 roundId) external {
         Round storage round = _requireRound(roundId);
+
         if (
-            round.status != RoundStatus.ENTRY_OPEN ||
-            block.timestamp < round.entryCloseAt
-        ) {
-            revert RoundNotLockable();
-        }
+            round.status != RoundStatus.ENTRY_OPEN
+                || block.timestamp < round.entryCloseAt
+        ) revert RoundNotLockable();
 
         round.status = RoundStatus.LOCKED;
         emit RoundLocked(roundId);
@@ -300,12 +315,13 @@ contract ExtremaPool {
         if (resolvedPriceCents == 0) revert InvalidPredictionPrice();
 
         uint256[3] memory winners = _selectWinners(roundId, resolvedPriceCents);
-        uint256 grossPool = round.totalStake;
 
+        uint256 grossPool = round.totalStake;
         uint256 firstAmount = (grossPool * FIRST_BPS) / BPS_DENOMINATOR;
         uint256 secondAmount = (grossPool * SECOND_BPS) / BPS_DENOMINATOR;
         uint256 thirdAmount = (grossPool * THIRD_BPS) / BPS_DENOMINATOR;
         uint256 treasuryAmount = grossPool - firstAmount - secondAmount - thirdAmount;
+        uint256 winnerReserve = firstAmount + secondAmount + thirdAmount;
 
         round.resolvedPriceCents = resolvedPriceCents;
         round.winnerTicketIds = winners;
@@ -314,6 +330,9 @@ contract ExtremaPool {
         claimableByTicket[winners[0]] = firstAmount;
         claimableByTicket[winners[1]] = secondAmount;
         claimableByTicket[winners[2]] = thirdAmount;
+
+        round.escrowRemaining = winnerReserve;
+        totalReservedUSDC -= treasuryAmount;
 
         emit TreasuryAllocated(roundId, TREASURY, treasuryAmount);
         emit RoundSettled(
@@ -324,7 +343,7 @@ contract ExtremaPool {
             winners[2]
         );
 
-        _safeTransfer(TREASURY, treasuryAmount);
+        if (!USDC.transfer(TREASURY, treasuryAmount)) revert TokenTransferFailed();
     }
 
     function cancelRound(uint256 roundId) external onlyResolver {
@@ -335,6 +354,7 @@ contract ExtremaPool {
         if (round.entryCount >= MIN_ENTRIES) revert TooManyEntriesForCancellation();
 
         round.status = RoundStatus.CANCELLED;
+
         emit RoundCancelled(roundId);
     }
 
@@ -353,9 +373,12 @@ contract ExtremaPool {
 
         claimed[ticketId] = true;
         claimableByTicket[ticketId] = 0;
+        round.escrowRemaining -= amount;
+        totalReservedUSDC -= amount;
 
         emit RewardClaimed(entry.roundId, ticketId, currentOwner, amount);
-        _safeTransfer(currentOwner, amount);
+
+        if (!USDC.transfer(currentOwner, amount)) revert TokenTransferFailed();
     }
 
     function refund(uint256 ticketId) external nonReentrant {
@@ -369,8 +392,34 @@ contract ExtremaPool {
         if (msg.sender != currentOwner) revert NotTicketOwner();
 
         refunded[ticketId] = true;
+        round.escrowRemaining -= STAKE_AMOUNT;
+        totalReservedUSDC -= STAKE_AMOUNT;
+
         emit RefundClaimed(entry.roundId, ticketId, currentOwner, STAKE_AMOUNT);
-        _safeTransfer(currentOwner, STAKE_AMOUNT);
+
+        if (!USDC.transfer(currentOwner, STAKE_AMOUNT)) revert TokenTransferFailed();
+    }
+
+    function rescueExcessUSDC(uint256 amount) external onlyOwner nonReentrant {
+        uint256 balance = USDC.balanceOf(address(this));
+
+        if (balance < totalReservedUSDC) revert ExcessAmountUnavailable();
+
+        uint256 excess = balance - totalReservedUSDC;
+        if (amount == 0 || amount > excess) revert ExcessAmountUnavailable();
+
+        emit ExcessUSDCRescued(owner, amount);
+
+        if (!USDC.transfer(owner, amount)) revert TokenTransferFailed();
+    }
+
+    function excessUSDC() external view returns (uint256) {
+        uint256 balance = USDC.balanceOf(address(this));
+        return balance > totalReservedUSDC ? balance - totalReservedUSDC : 0;
+    }
+
+    function escrowInvariantHolds() external view returns (bool) {
+        return USDC.balanceOf(address(this)) >= totalReservedUSDC;
     }
 
     function getRound(uint256 roundId) external view returns (Round memory) {
@@ -386,6 +435,43 @@ contract ExtremaPool {
     function getWinners(uint256 roundId) external view returns (uint256[3] memory) {
         Round storage round = _requireRound(roundId);
         return round.winnerTicketIds;
+    }
+
+    function getTicketMetadata(
+        uint256 ticketId
+    )
+        external
+        view
+        returns (
+            uint256 roundId,
+            uint64 predictionPriceCents,
+            uint64 entrySequence,
+            uint8 roundStatus,
+            uint8 placement,
+            bool isClaimed,
+            bool isRefunded
+        )
+    {
+        Entry memory entry = _requireEntry(ticketId);
+        Round storage round = _rounds[entry.roundId];
+
+        return (
+            entry.roundId,
+            entry.predictionPriceCents,
+            entry.entrySequence,
+            uint8(round.status),
+            _placement(round, ticketId),
+            claimed[ticketId],
+            refunded[ticketId]
+        );
+    }
+
+    function _placement(Round storage round, uint256 ticketId) internal view returns (uint8) {
+        if (round.status != RoundStatus.SETTLED) return 0;
+        if (round.winnerTicketIds[0] == ticketId) return 1;
+        if (round.winnerTicketIds[1] == ticketId) return 2;
+        if (round.winnerTicketIds[2] == ticketId) return 3;
+        return 0;
     }
 
     function _selectWinners(
@@ -420,8 +506,14 @@ contract ExtremaPool {
         Entry storage candidate = entries[candidateTicketId];
         Entry storage incumbent = entries[incumbentTicketId];
 
-        uint256 candidateDistance = _distance(candidate.predictionPriceCents, resolvedPriceCents);
-        uint256 incumbentDistance = _distance(incumbent.predictionPriceCents, resolvedPriceCents);
+        uint256 candidateDistance = _distance(
+            candidate.predictionPriceCents,
+            resolvedPriceCents
+        );
+        uint256 incumbentDistance = _distance(
+            incumbent.predictionPriceCents,
+            resolvedPriceCents
+        );
 
         if (candidateDistance != incumbentDistance) {
             return candidateDistance < incumbentDistance;
@@ -448,11 +540,56 @@ contract ExtremaPool {
         if (entry.ticketId == 0) revert RoundNotFound();
     }
 
-    function _safeTransfer(address to, uint256 amount) internal {
-        if (!USDC.transfer(to, amount)) revert TokenTransferFailed();
+    function _collectionName(
+        Asset asset_,
+        Direction direction_,
+        Cadence cadence_
+    ) internal pure returns (string memory) {
+        return string.concat(
+            "EXTREMA ",
+            _assetName(asset_),
+            " ",
+            _cadenceName(cadence_),
+            " ",
+            _directionName(direction_)
+        );
     }
 
-    function _safeTransferFrom(address from, address to, uint256 amount) internal {
-        if (!USDC.transferFrom(from, to, amount)) revert TokenTransferFailed();
+    function _collectionSymbol(
+        Asset asset_,
+        Direction direction_,
+        Cadence cadence_
+    ) internal pure returns (string memory) {
+        return string.concat(
+            "X",
+            _assetName(asset_),
+            "-",
+            _cadenceShort(cadence_),
+            "-",
+            direction_ == Direction.HIGH ? "H" : "L"
+        );
+    }
+
+    function _assetName(Asset value) internal pure returns (string memory) {
+        if (value == Asset.BTC) return "BTC";
+        if (value == Asset.ETH) return "ETH";
+        if (value == Asset.SOL) return "SOL";
+        return "HYPE";
+    }
+
+    function _directionName(Direction value) internal pure returns (string memory) {
+        return value == Direction.HIGH ? "HIGH" : "LOW";
+    }
+
+    function _cadenceName(Cadence value) internal pure returns (string memory) {
+        if (value == Cadence.DAILY) return "DAILY";
+        if (value == Cadence.WEEKLY) return "WEEKLY";
+        return "QUARTERLY";
+    }
+
+    function _cadenceShort(Cadence value) internal pure returns (string memory) {
+        if (value == Cadence.DAILY) return "D";
+        if (value == Cadence.WEEKLY) return "W";
+        return "Q";
     }
 }
