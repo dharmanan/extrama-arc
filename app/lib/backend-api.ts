@@ -1,24 +1,10 @@
 "use client";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001/api";
-const TOKEN_KEY = "extrema_session_token";
-
-export function getSessionToken() {
-  if (typeof window === "undefined") return null;
-  return window.sessionStorage.getItem(TOKEN_KEY);
-}
-
-export function setSessionToken(token: string | null) {
-  if (typeof window === "undefined") return;
-  if (token) window.sessionStorage.setItem(TOKEN_KEY, token);
-  else window.sessionStorage.removeItem(TOKEN_KEY);
-}
+const API_URL = "/api/extrema";
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = getSessionToken();
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -64,7 +50,7 @@ export const backendApi = {
       });
     },
     finishRegister(ownerAddress: string, credential: unknown, deviceName: string) {
-      return post<{ token: string; ownerAddress: string }>("/auth/register/finish", {
+      return post<{ ownerAddress: string }>("/auth/register/finish", {
         ownerAddress,
         credential,
         deviceName,
@@ -74,7 +60,7 @@ export const backendApi = {
       return post<PublicKeyCredentialRequestOptionsJSON>("/auth/login/start", { ownerAddress });
     },
     finishLogin(ownerAddress: string, credential: unknown) {
-      return post<{ token: string; ownerAddress: string }>("/auth/login/finish", {
+      return post<{ ownerAddress: string }>("/auth/login/finish", {
         ownerAddress,
         credential,
       });
