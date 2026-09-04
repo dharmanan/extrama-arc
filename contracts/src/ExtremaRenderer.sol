@@ -19,60 +19,183 @@ interface IExtremaPoolMetadata {
 }
 
 contract ExtremaRenderer {
+    struct RenderContext {
+        IExtremaPoolMetadata.TicketMetadata metadata;
+        uint8 asset;
+        uint8 direction;
+        uint8 cadence;
+        uint256 tokenId;
+    }
+
     function tokenURI(
         address pool,
         uint256 tokenId
     ) external view returns (string memory) {
         IExtremaPoolMetadata source = IExtremaPoolMetadata(pool);
 
-        IExtremaPoolMetadata.TicketMetadata memory metadata = source.getTicketMetadata(tokenId);
+        RenderContext memory context = RenderContext({
+            metadata: source.getTicketMetadata(tokenId),
+            asset: source.ASSET(),
+            direction: source.DIRECTION(),
+            cadence: source.CADENCE(),
+            tokenId: tokenId
+        });
 
-        uint8 asset = source.ASSET();
-        uint8 direction = source.DIRECTION();
-        uint8 cadence = source.CADENCE();
-
-        string memory assetName = _asset(asset);
-        string memory directionName = direction == 0 ? "HIGH" : "LOW";
-        string memory cadenceName = _cadence(cadence);
-        string memory statusName = _status(
-            metadata.roundStatus,
-            metadata.placement,
-            metadata.isClaimed,
-            metadata.isRefunded
-        );
-
-        string memory svg = string.concat(
-            '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">',
-            '<rect width="900" height="1200" rx="48" fill="', _background(asset), '"/>',
-            '<rect x="44" y="44" width="812" height="1112" rx="36" fill="none" stroke="', _accent(direction), '" stroke-width="3"/>',
-            '<text x="76" y="120" font-family="monospace" font-size="28" fill="#ffffff">EXTREMA</text>',
-            '<text x="76" y="230" font-family="monospace" font-size="76" font-weight="700" fill="#ffffff">', assetName, '</text>',
-            '<text x="760" y="230" text-anchor="end" font-family="monospace" font-size="80" fill="', _accent(direction), '">', direction == 0 ? "&#8593;" : "&#8595;", '</text>',
-            '<text x="76" y="292" font-family="monospace" font-size="30" fill="', _accent(direction), '">', cadenceName, ' - ', directionName, '</text>',
-            '<text x="76" y="440" font-family="monospace" font-size="24" fill="#aeb4bd">PREDICTION</text>',
-            '<text x="76" y="515" font-family="monospace" font-size="56" font-weight="700" fill="#ffffff">$',
-            _formatCents(metadata.predictionPriceCents),
-            '</text>',
-            '<line x1="76" y1="585" x2="824" y2="585" stroke="#ffffff" stroke-opacity=".16"/>',
-            '<text x="76" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">ROUND</text>',
-            '<text x="320" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">TICKET</text>',
-            '<text x="570" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">ENTRY</text>',
-            '<text x="76" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(metadata.roundId), '</text>',
-            '<text x="320" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(tokenId), '</text>',
-            '<text x="570" y="715" font-family="monospace" font-size="34" fill="#ffffff">#', _toString(metadata.entrySequence), '</text>',
-            '<rect x="76" y="870" width="748" height="150" rx="28" fill="', _accent(direction), '" fill-opacity=".12"/>',
-            '<text x="450" y="930" text-anchor="middle" font-family="monospace" font-size="22" fill="#aeb4bd">STATUS</text>',
-            '<text x="450" y="985" text-anchor="middle" font-family="monospace" font-size="34" font-weight="700" fill="', _accent(direction), '">', statusName, '</text>',
-            '<text x="76" y="1100" font-family="monospace" font-size="20" fill="#7f8792">ONCHAIN PREDICTION TICKET</text>',
-            '</svg>'
-        );
-
+        string memory svg = _renderSvg(context);
         string memory image = string.concat(
             "data:image/svg+xml;base64,",
             _base64(bytes(svg))
         );
 
-        string memory json = string.concat(
+        return string.concat(
+            "data:application/json;base64,",
+            _base64(bytes(_renderJson(context, image)))
+        );
+    }
+
+    function _renderSvg(
+        RenderContext memory context
+    ) internal pure returns (string memory) {
+        return string.concat(
+            _svgHeader(context),
+            _svgPrediction(context),
+            _svgDetails(context),
+            _svgStatus(context)
+        );
+    }
+
+    function _svgHeader(
+        RenderContext memory context
+    ) internal pure returns (string memory) {
+        string memory assetName = _asset(context.asset);
+        string memory directionName = context.direction == 0 ? "HIGH" : "LOW";
+        string memory cadenceName = _cadence(context.cadence);
+        string memory accent = _accent(context.direction);
+
+        return string.concat(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">',
+            '<rect width="900" height="1200" rx="48" fill="',
+            _background(context.asset),
+            '"/>',
+            '<rect x="44" y="44" width="812" height="1112" rx="36" fill="none" stroke="',
+            accent,
+            '" stroke-width="3"/>',
+            '<text x="76" y="120" font-family="monospace" font-size="28" fill="#ffffff">EXTREMA</text>',
+            '<text x="76" y="230" font-family="monospace" font-size="76" font-weight="700" fill="#ffffff">',
+            assetName,
+            '</text>',
+            '<text x="760" y="230" text-anchor="end" font-family="monospace" font-size="80" fill="',
+            accent,
+            '">',
+            context.direction == 0 ? "&#8593;" : "&#8595;",
+            '</text>',
+            '<text x="76" y="292" font-family="monospace" font-size="30" fill="',
+            accent,
+            '">',
+            cadenceName,
+            ' - ',
+            directionName,
+            '</text>'
+        );
+    }
+
+    function _svgPrediction(
+        RenderContext memory context
+    ) internal pure returns (string memory) {
+        return string.concat(
+            '<text x="76" y="440" font-family="monospace" font-size="24" fill="#aeb4bd">PREDICTION</text>',
+            '<text x="76" y="515" font-family="monospace" font-size="56" font-weight="700" fill="#ffffff">$',
+            _formatCents(context.metadata.predictionPriceCents),
+            '</text>',
+            '<line x1="76" y1="585" x2="824" y2="585" stroke="#ffffff" stroke-opacity=".16"/>'
+        );
+    }
+
+    function _svgDetails(
+        RenderContext memory context
+    ) internal pure returns (string memory) {
+        return string.concat(
+            '<text x="76" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">ROUND</text>',
+            '<text x="320" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">TICKET</text>',
+            '<text x="570" y="665" font-family="monospace" font-size="24" fill="#aeb4bd">ENTRY</text>',
+            '<text x="76" y="715" font-family="monospace" font-size="34" fill="#ffffff">#',
+            _toString(context.metadata.roundId),
+            '</text>',
+            '<text x="320" y="715" font-family="monospace" font-size="34" fill="#ffffff">#',
+            _toString(context.tokenId),
+            '</text>',
+            '<text x="570" y="715" font-family="monospace" font-size="34" fill="#ffffff">#',
+            _toString(context.metadata.entrySequence),
+            '</text>'
+        );
+    }
+
+    function _svgStatus(
+        RenderContext memory context
+    ) internal pure returns (string memory) {
+        string memory accent = _accent(context.direction);
+        string memory statusName = _status(
+            context.metadata.roundStatus,
+            context.metadata.placement,
+            context.metadata.isClaimed,
+            context.metadata.isRefunded
+        );
+
+        return string.concat(
+            '<rect x="76" y="870" width="748" height="150" rx="28" fill="',
+            accent,
+            '" fill-opacity=".12"/>',
+            '<text x="450" y="930" text-anchor="middle" font-family="monospace" font-size="22" fill="#aeb4bd">STATUS</text>',
+            '<text x="450" y="985" text-anchor="middle" font-family="monospace" font-size="34" font-weight="700" fill="',
+            accent,
+            '">',
+            statusName,
+            '</text>',
+            '<text x="76" y="1100" font-family="monospace" font-size="20" fill="#7f8792">ONCHAIN PREDICTION TICKET</text>',
+            '</svg>'
+        );
+    }
+
+    function _renderJson(
+        RenderContext memory context,
+        string memory image
+    ) internal pure returns (string memory) {
+        string memory assetName = _asset(context.asset);
+        string memory directionName = context.direction == 0 ? "HIGH" : "LOW";
+        string memory cadenceName = _cadence(context.cadence);
+        string memory statusName = _status(
+            context.metadata.roundStatus,
+            context.metadata.placement,
+            context.metadata.isClaimed,
+            context.metadata.isRefunded
+        );
+
+        return string.concat(
+            _jsonIdentity(
+                context,
+                image,
+                assetName,
+                directionName,
+                cadenceName
+            ),
+            _jsonAttributes(
+                context,
+                assetName,
+                directionName,
+                cadenceName,
+                statusName
+            )
+        );
+    }
+
+    function _jsonIdentity(
+        RenderContext memory context,
+        string memory image,
+        string memory assetName,
+        string memory directionName,
+        string memory cadenceName
+    ) internal pure returns (string memory) {
+        return string.concat(
             '{"name":"EXTREMA ',
             assetName,
             ' ',
@@ -80,23 +203,43 @@ contract ExtremaRenderer {
             ' ',
             directionName,
             ' #',
-            _toString(tokenId),
+            _toString(context.tokenId),
             '","description":"Fully onchain EXTREMA prediction ticket.","image":"',
             image,
-            '","attributes":[',
-            '{"trait_type":"Asset","value":"', assetName, '"},',
-            '{"trait_type":"Direction","value":"', directionName, '"},',
-            '{"trait_type":"Cadence","value":"', cadenceName, '"},',
-            '{"trait_type":"Round","value":', _toString(metadata.roundId), '},',
-            '{"trait_type":"Prediction Cents","value":', _toString(metadata.predictionPriceCents), '},',
-            '{"trait_type":"Entry Sequence","value":', _toString(metadata.entrySequence), '},',
-            '{"trait_type":"Status","value":"', statusName, '"}',
-            ']}'
+            '","attributes":['
         );
+    }
 
+    function _jsonAttributes(
+        RenderContext memory context,
+        string memory assetName,
+        string memory directionName,
+        string memory cadenceName,
+        string memory statusName
+    ) internal pure returns (string memory) {
         return string.concat(
-            "data:application/json;base64,",
-            _base64(bytes(json))
+            '{"trait_type":"Asset","value":"',
+            assetName,
+            '"},',
+            '{"trait_type":"Direction","value":"',
+            directionName,
+            '"},',
+            '{"trait_type":"Cadence","value":"',
+            cadenceName,
+            '"},',
+            '{"trait_type":"Round","value":',
+            _toString(context.metadata.roundId),
+            '},',
+            '{"trait_type":"Prediction Cents","value":',
+            _toString(context.metadata.predictionPriceCents),
+            '},',
+            '{"trait_type":"Entry Sequence","value":',
+            _toString(context.metadata.entrySequence),
+            '},',
+            '{"trait_type":"Status","value":"',
+            statusName,
+            '"}',
+            ']}'
         );
     }
 
