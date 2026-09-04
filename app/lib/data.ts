@@ -75,7 +75,7 @@ export const results: Result[] = [
     sourceSymbol: "ETHUSDT",
     interval: "15m",
     winners: [
-      { rank: 1, wallet: "0x7a8...3f1e", prediction: 2085, distance: 1.43, rewardUsdc: 5400, sharePercent: 54, ticketId: 1842 },
+      { rank: 1, wallet: "0x3aF...92E1", prediction: 2085, distance: 1.43, rewardUsdc: 5400, sharePercent: 54, ticketId: 1842 },
       { rank: 2, wallet: "0x9cD...8A21", prediction: 2090, distance: 3.57, rewardUsdc: 2250, sharePercent: 22.5, ticketId: 1921 },
       { rank: 3, wallet: "0x4ef...7D2c", prediction: 2078, distance: 8.43, rewardUsdc: 1350, sharePercent: 13.5, ticketId: 1902 },
     ],
