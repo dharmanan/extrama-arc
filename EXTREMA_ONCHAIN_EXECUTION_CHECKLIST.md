@@ -129,34 +129,36 @@ Target token:
 
 No pool entry, NFT, settlement, refund, or claim is considered real until this section is complete.
 
+Architecture specification: `contracts/ARCHITECTURE.md`
+
 ## 2.1 Contract architecture locked
 
-- [ ] Define final contract responsibilities
-- [ ] Define immutable/constants:
+- [x] Define final contract responsibilities
+- [x] Define immutable/constants:
   - Arc Testnet chain ID
   - USDC token address
   - treasury address
   - stake amount = exactly 1 USDC
   - payout percentages
-- [ ] Define round state machine
+- [x] Define round state machine
   - `ENTRY_OPEN`
   - `LOCKED`
   - `SETTLED`
   - `CANCELLED`
-- [ ] Define round identity by `roundId`, not market slug
-- [ ] Define one-entry-per-wallet-per-round rule
-- [ ] Define one-exact-price-per-round rule
-- [ ] Define minimum 3 entries or cancel/refund
-- [ ] Define winner ordering:
+- [x] Define round identity by `roundId`, not market slug
+- [x] Define one-entry-per-wallet-per-round rule
+- [x] Define one-exact-price-per-round rule
+- [x] Define minimum 3 entries or cancel/refund
+- [x] Define winner ordering:
   1. absolute distance
   2. earlier onchain entry
   3. transaction/log index
-- [ ] Define payout split:
+- [x] Define payout split:
   - 1st: 54%
   - 2nd: 22.5%
   - 3rd: 13.5%
   - treasury: 10%
-- [ ] Define ERC-721 ticket ownership as claim-right ownership
+- [x] Define ERC-721 ticket ownership as claim-right ownership
 
 ## 2.2 Contract tests
 
@@ -610,8 +612,8 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 2.1 — Contract architecture locked.**
+**Section 2.2 — Contract implementation and unit tests.**
 
-Sections 1.2 and 1.3 are complete with real Arc Testnet proof.
+Section 2.1 is locked in `contracts/ARCHITECTURE.md`.
 
-Next, lock the contract responsibilities, state machine, round identity, entry uniqueness rules, payout math, cancellation/refund semantics, and ERC-721 claim-right ownership before writing deployment code.
+Next, implement the Solidity contracts and prove the contract rules with automated tests before any Arc Testnet deployment.
