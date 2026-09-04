@@ -22,12 +22,12 @@ function slugify(asset: string, cadence: string, direction: string) {
   return `${asset.toLowerCase()}-${cadence.toLowerCase()}-${direction.toLowerCase()}`;
 }
 
-let roundCounter = 184;
-
 export const pools: Pool[] = cadences.flatMap((cadence, cadenceIndex) =>
   assets.flatMap((asset, assetIndex) =>
     directions.map((direction, directionIndex) => {
-      const roundId = roundCounter++;
+      const generatedRoundId = 160 + cadenceIndex * 8 + assetIndex * 2 + directionIndex;
+      const isDemoRound = cadence === "Weekly" && asset === "ETH" && direction === "Low";
+      const roundId = isDemoRound ? 184 : generatedRoundId;
       const referencePrice = basePrice[asset];
       const multiplier = cadenceIndex === 0 ? 0.03 : cadenceIndex === 1 ? 0.08 : 0.2;
       const spread = referencePrice * multiplier;
@@ -41,7 +41,7 @@ export const pools: Pool[] = cadences.flatMap((cadence, cadenceIndex) =>
         asset,
         cadence,
         direction,
-        status: cadence === "Weekly" && asset === "ETH" && direction === "Low" ? "LIVE" : "ENTRY_OPEN",
+        status: isDemoRound ? "LIVE" : "ENTRY_OPEN",
         referencePrice,
         players: 160 + cadenceIndex * 120 + assetIndex * 61 + directionIndex * 37,
         poolSizeUsdc: 160 + cadenceIndex * 120 + assetIndex * 61 + directionIndex * 37,
@@ -53,7 +53,7 @@ export const pools: Pool[] = cadences.flatMap((cadence, cadenceIndex) =>
         sourceSymbol: assetConfigs[asset].sourceSymbol,
         predictionMin: Number((referencePrice - spread).toFixed(2)),
         predictionMax: Number((referencePrice + spread).toFixed(2)),
-        ...(cadence === "Weekly" && asset === "ETH" && direction === "Low" ? { userPrediction: 2085 } : {}),
+        ...(isDemoRound ? { userPrediction: 2085 } : {}),
       };
     })
   )
