@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
-import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
+import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { arcTestnet } from "../lib/web3";
 import { shortAddress, useDemoState } from "../demo-state";
 import { backendApi } from "../lib/backend-api";
@@ -22,6 +21,7 @@ export default function WalletPage() {
   } = useDemoState();
 
   const { address: connectedAddress, isConnected, chain } = useAccount();
+  const { connectors, connectAsync } = useConnect();
   const { disconnect } = useDisconnect();
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
@@ -43,6 +43,21 @@ export default function WalletPage() {
       if (step !== "recovery" && step !== "ready") setStep("owner");
     }
   }, [isConnected, connectedAddress, step]);
+
+
+  async function handleConnectInjected() {
+    setError("");
+    setBusy("Connecting wallet...");
+    try {
+      const connector = connectors[0];
+      if (!connector) throw new Error("No injected EVM wallet connector is available.");
+      await connectAsync({ connector });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -241,7 +256,9 @@ export default function WalletPage() {
               <b>Network</b>
               <div>{chain?.name || "—"}</div>
             </div>
-            <ConnectButton showBalance={false} chainStatus="icon" accountStatus="address" />
+            <button className="wf-action" type="button" onClick={isConnected ? () => disconnect() : handleConnectInjected}>
+              {isConnected ? "Disconnect" : "Connect wallet"}
+            </button>
           </div>
           <p>STEP 1</p>
           <h1>Connect your owner wallet</h1>
@@ -253,7 +270,9 @@ export default function WalletPage() {
           <section className="wf-panel wf-section">
             <h2>Owner wallet required</h2>
             <p>MetaMask, Rabby or another injected EVM wallet can be used.</p>
-            <ConnectButton showBalance={false} chainStatus="full" accountStatus="full" />
+            <button className="wf-action" type="button" onClick={handleConnectInjected} disabled={Boolean(busy)}>
+              {busy || "Connect owner wallet"}
+            </button>
             {error && <p className="wf-message">{error}</p>}
           </section>
         </section>
