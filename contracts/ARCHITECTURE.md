@@ -1,52 +1,198 @@
-# EXTREMA Smart Contract Architecture v1
+# EXTREMA Smart Contract Architecture v2
 
 Status: **LOCKED FOR IMPLEMENTATION**
 
-This document defines the v1 Arc Testnet contract architecture. Any change to these rules after implementation begins must be recorded explicitly in this file and in `EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md`.
+This document supersedes v1 before any Arc Testnet contract deployment.
 
-## 1. Contracts
+## 1. High-level deployment topology
 
-### ExtremaPool
+EXTREMA uses exactly 24 standard pool contracts:
 
-Single source of truth for:
+- 4 assets: BTC, ETH, SOL, HYPE
+- 2 directions: HIGH, LOW
+- 3 cadences: DAILY, WEEKLY, QUARTERLY
+
+Therefore:
+
+`4 × 2 × 3 = 24 ExtremaPool contracts`
+
+Each pool contract has a fixed immutable identity.
+
+Example:
+
+- BTC Daily High pool contract
+- BTC Daily Low pool contract
+- ETH Weekly High pool contract
+- HYPE Quarterly Low pool contract
+
+Each pool contract runs its own sequential rounds:
+
+```
+ETH Weekly Low Pool
+├── Round #1
+├── Round #2
+├── Round #3
+└── ...
+```
+
+Asset, direction, and cadence do **not** change between rounds.
+
+## 2. Contract set
+
+### ExtremaFactory / Registry
+
+Responsibilities:
+
+- deploy/register the 24 standard pool instances
+- prevent duplicate asset + direction + cadence pools
+- expose pool lookup by asset/direction/cadence
+- expose the paired ticket collection for every pool
+- provide canonical onchain registry for frontend/backend discovery
+
+### 24 × ExtremaPool
+
+Each instance is immutable for:
+
+- asset
+- direction
+- cadence
+- Arc Testnet USDC token
+- ExtremaTreasury address
+- its paired ExtremaTicket collection
+
+Each pool is the financial source of truth for:
 
 - round creation and lifecycle
-- 1 USDC entry escrow
-- prediction uniqueness
+- exactly 1 USDC entry escrow
 - one-entry-per-wallet-per-round
+- exact prediction-price uniqueness
 - entry ordering
-- settlement result
+- settlement
 - winner ticket IDs
 - cancellation
 - refunds
 - claims
-- treasury accounting
+- per-round escrow accounting
 
-### ExtremaTicket
+There is no owner/admin function that can withdraw player escrow.
 
-ERC-721 prediction ticket.
+### 24 × ExtremaTicket
+
+Every pool has its **own separate ERC-721 collection**.
+
+Examples:
+
+- BTC Daily High Ticket collection
+- BTC Daily Low Ticket collection
+- ETH Weekly High Ticket collection
+- SOL Quarterly Low Ticket collection
+
+A pool instance deploys or is permanently paired with exactly one ticket collection.
+
+Consequences:
+
+- NFTs from different pools cannot be confused by collection address
+- token IDs may safely begin from 1 inside each collection
+- asset/direction/cadence identity is fixed at collection level
+- every NFT still records its own round and prediction data
+- current NFT owner controls claim/refund rights
+
+### ExtremaTreasury
+
+Only the protocol's 10% settlement share is sent here.
+
+Treasury controller addresses:
+
+- Controller A: `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
+- Controller B: `0x99677aab4b168c274A34525D526346fC47Fab72c`
+
+Rules:
+
+- either controller may withdraw treasury funds independently
+- withdrawals go only to the controller that called withdraw
+- controller A cannot redirect controller B's withdrawal to an arbitrary third party
+- controller B can still recover treasury funds if controller A is unavailable, and vice versa
+- treasury controllers have **no authority over pool escrow**
+- pool contracts have no generic admin withdrawal/sweep of player funds
+
+Security tradeoff:
+
+- this is intentionally 1-of-2 availability for treasury funds
+- compromise of either controller can expose treasury funds held in ExtremaTreasury
+- compromise of a treasury controller cannot expose player escrow held in ExtremaPool
+
+For mainnet, a threshold multisig/timelocked recovery design should be evaluated separately.
+
+### ExtremaRenderer
+
+NFT visuals and JSON/SVG metadata are separated from financial logic.
 
 Responsibilities:
 
-- mint exactly one ticket for every accepted prediction
-- expose standard ERC-721 ownership and transfer behavior
-- allow `ExtremaPool` to query current `ownerOf(ticketId)`
-- ticket ownership is the claim/refund ownership right wherever the round rules require a ticket holder
+- generate fully onchain SVG
+- generate fully onchain JSON metadata
+- render different visual variants for:
+  - BTC / ETH / SOL / HYPE
+  - HIGH / LOW
+  - DAILY / WEEKLY / QUARTERLY
+- render token-specific data:
+  - pool identity
+  - round ID
+  - prediction price
+  - entry sequence
+  - ticket ID
+  - live/settled/cancelled state
+  - winner placement
+  - claimed/refunded state
 
-The ticket contract does not hold pool funds.
+Renderer replacement may be allowed by a narrowly-scoped metadata/admin role so NFT visual design can evolve without changing economic ownership or pool rules.
 
-## 2. Arc Testnet constants
+Renderer authority must never be able to:
+
+- transfer NFTs
+- mint unauthorized NFTs
+- change predictions
+- change round results
+- claim funds
+- access pool escrow
+
+## 3. Arc Testnet constants
 
 - Chain ID: `5042002`
 - USDC token: `0x3600000000000000000000000000000000000000`
-- USDC decimals: `6`
-- Entry stake: `1_000_000` token units = exactly `1 USDC`
+- ERC-20 decimals: `6`
+- entry stake: `1_000_000` token units = exactly `1 USDC`
 
-Treasury is an immutable constructor/configuration address supplied at deployment and recorded in the deployment proof.
+## 4. Pool identity
 
-## 3. Prediction price representation
+Each ExtremaPool stores immutable:
 
-Prediction values are stored as integer cents.
+- `ASSET`
+- `DIRECTION`
+- `CADENCE`
+- `USDC`
+- `TREASURY`
+- `TICKET`
+
+A round does not repeat those values because they are inherited from the pool contract.
+
+## 5. Round identity
+
+Each pool has its own monotonically increasing `roundId`.
+
+Therefore these are distinct:
+
+- BTC Daily High Pool / Round #1
+- BTC Daily Low Pool / Round #1
+- ETH Weekly Low Pool / Round #1
+
+Canonical identity is:
+
+`pool contract address + roundId`
+
+## 6. Prediction representation
+
+Prediction prices use integer cents.
 
 Examples:
 
@@ -54,67 +200,22 @@ Examples:
 - `$73,421.00 -> 7342100`
 - `$42.80 -> 4280`
 
-Type target: `uint64`.
+Target type: `uint64`.
 
-Consequences:
+Exact-price uniqueness is scoped to:
 
-- exact-price uniqueness is deterministic
-- no floating-point arithmetic exists onchain
-- adjacent available slots differ by exactly `$0.01`
-- UI must normalize user input to exactly two decimal places before transaction construction
+`pool address + roundId + predictionPriceCents`
 
-Settlement prices submitted by the resolver must use the same cents representation.
+## 7. Round state machine
 
-## 4. Round identity
-
-Every actual contest instance has a unique monotonically increasing `roundId`.
-
-Market slug/template is not round identity.
-
-A round records at minimum:
-
-- `roundId`
-- asset
-- direction
-- cadence
-- entryOpenAt
-- entryCloseAt
-- observationStartAt
-- observationEndAt
-- status
-- entryCount
-- totalStake
-- resolvedPriceCents
-- winner ticket IDs after settlement
-
-Assets:
-
-- BTC
-- ETH
-- SOL
-- HYPE
-
-Directions:
-
-- HIGH
-- LOW
-
-Cadences:
-
-- DAILY
-- WEEKLY
-- QUARTERLY
-
-## 5. Round state machine
-
-Allowed states:
+States:
 
 1. `ENTRY_OPEN`
 2. `LOCKED`
 3. `SETTLED`
 4. `CANCELLED`
 
-Allowed transitions:
+Transitions:
 
 `ENTRY_OPEN -> LOCKED -> SETTLED`
 
@@ -124,204 +225,243 @@ or
 
 Rules:
 
-- entries accepted only while state is `ENTRY_OPEN`
-- entry transaction must also require `block.timestamp < entryCloseAt`
-- settlement/cancellation cannot happen before observation end
-- fewer than 3 accepted entries results in `CANCELLED`
-- 3 or more accepted entries are eligible for settlement
-- settled/cancelled rounds are terminal
+- entries only during ENTRY_OPEN
+- entry must occur before entryCloseAt
+- settlement/cancellation only after observationEndAt
+- fewer than 3 accepted entries => CANCELLED
+- 3 or more => settlement eligible
+- settled/cancelled are terminal
 
-## 6. Entry rules
+## 8. Entry
 
-An accepted entry must satisfy all of the following:
+Accepted entry conditions:
 
-- round exists
-- round is `ENTRY_OPEN`
-- current time is before `entryCloseAt`
-- entrant has not previously entered this `roundId`
-- prediction price is not already taken in this `roundId`
-- stake transferred successfully: exactly `1_000_000` USDC units
+- valid round
+- ENTRY_OPEN
+- before entryCloseAt
+- wallet has not entered this round
+- exact prediction slot not already taken
+- exactly 1 USDC transferred successfully
 
 On success:
 
-1. mark wallet as entered for the round
-2. mark prediction cents as taken for the round
-3. increment deterministic entry sequence
-4. mint one ERC-721 ticket
-5. store entry record
-6. increment round entry count
-7. increment round stake accounting
-8. emit entry event
+1. escrow 1 USDC
+2. record entry
+3. increment entry sequence
+4. mint one NFT from this pool's dedicated ExtremaTicket collection
+5. update round entry count
+6. update round reserved escrow
+7. emit PredictionEntered
 
-Entry record contains at minimum:
+## 9. Per-round escrow accounting
 
-- ticketId
-- roundId
-- original entrant
-- predictionPriceCents
-- entrySequence
+Every round records its remaining reserved obligation.
 
-The transaction/log position remains independently available from chain history for audit proof.
+Required state includes:
 
-## 7. Entry ordering and tie breaking
+- `round.totalStake`
+- `round.escrowRemaining`
+- contract-level `totalReservedUSDC`
 
-Winner ordering is:
+Invariant:
 
-1. smallest absolute distance from resolved price
-2. earlier accepted onchain entry
-3. transaction/log index as final audit tie break
+`USDC.balanceOf(pool) >= totalReservedUSDC`
 
-The contract stores a monotonically increasing `entrySequence` for every accepted entry.
+Direct accidental USDC transfers to the pool do not become round stake and do not change reserved accounting.
 
-Because contract execution is sequential, `entrySequence` provides deterministic onchain ordering. Transaction/log index remains part of the external verification record.
+No generic withdrawal function may reduce reserved player funds.
 
-## 8. Settlement
+Any future rescue function for accidental excess tokens must be limited to:
 
-Resolver submits one final `resolvedPriceCents` after the observation period.
+`contract balance - totalReservedUSDC`
 
-Offchain source:
+and must never touch reserved escrow.
+
+## 10. Settlement source
+
+Offchain resolver source:
 
 **Binance USDⓈ-M Futures Mark Price Klines**
 
-Resolution rule:
+Symbols:
 
-- HIGH = maximum candle high during the defined observation period
-- LOW = minimum candle low during the defined observation period
+- BTCUSDT
+- ETHUSDT
+- SOLUSDT
+- HYPEUSDT
 
-The resolver proof pipeline remains separate from the contract. The contract receives the final integer-cent result.
+Rules:
 
-Settlement requirements:
+- HIGH = maximum candle high in observation window
+- LOW = minimum candle low in observation window
 
-- round is `LOCKED`
-- observation period has ended
-- entry count >= 3
-- round has never been settled
-- resolver caller is authorized
+The pool identity already determines which asset/direction rule applies.
 
-Settlement stores:
+## 11. Winner ranking
 
-- resolved price
-- winner #1 ticketId
-- winner #2 ticketId
-- winner #3 ticketId
-- terminal `SETTLED` status
+1. smallest absolute distance from resolved price
+2. earlier accepted onchain entry sequence
+3. transaction/log position for independent audit proof
 
-Winner selection must be deterministic from accepted onchain entries.
-
-## 9. Payout accounting
+## 12. Payout accounting
 
 Basis points:
 
-- first: `5400` = 54%
-- second: `2250` = 22.5%
-- third: `1350` = 13.5%
-- treasury: `1000` = 10%
+- first: 5400 = 54%
+- second: 2250 = 22.5%
+- third: 1350 = 13.5%
+- treasury: 1000 = 10%
 
-Total: `10000` basis points.
+Total = 10000 basis points.
 
-For a standard pool of N entries:
+On settlement:
 
-`grossPool = N * 1_000_000 USDC units`
+- winner entitlements remain claimable from pool escrow
+- protocol share is transferred to ExtremaTreasury
+- ExtremaTreasury is the only place the two treasury controllers can withdraw from
 
-Entitlements are calculated from the gross pool.
+No treasury controller can call a pool withdrawal function because no such player-escrow withdrawal function exists.
 
-Integer rounding policy:
+## 13. Treasury withdrawal behavior
 
-- first, second, and third entitlements use integer division
-- treasury receives the remainder after the three winner entitlements
+ExtremaTreasury exposes controller-only withdrawal.
 
-Therefore all escrowed USDC is accounted for exactly and no dust is stranded by payout rounding.
+Conceptually:
 
-## 10. NFT ownership and claim right
+```
+controller A -> withdraw(amount) -> USDC goes to controller A
+controller B -> withdraw(amount) -> USDC goes to controller B
+```
 
-The prediction ticket is transferable.
+No arbitrary destination parameter is required.
 
-At claim time:
+This gives availability redundancy without granting either controller direct pool access.
 
-- contract queries `ExtremaTicket.ownerOf(ticketId)`
-- claimant must be the current NFT owner
-- original entrant identity does not override current NFT ownership
-- if ticket changed hands after entry, claim right moved with the NFT
+## 14. NFT collection model
 
-A ticket can only be claimed once.
+There are 24 separate collections, one per pool.
 
-Claim state is stored by ticket ID.
+Collection identity examples:
 
-## 11. Cancellation and refunds
+- `EXTREMA BTC DAILY HIGH`
+- `EXTREMA BTC DAILY LOW`
+- `EXTREMA ETH WEEKLY HIGH`
+- `EXTREMA HYPE QUARTERLY LOW`
 
-If a round reaches its observation end with fewer than 3 accepted entries:
+Within each collection, each token contains dynamic onchain data:
 
-- round becomes `CANCELLED`
-- no treasury allocation exists
-- no winners exist
-- each accepted ticket represents exactly 1 USDC refundable principal
+- ticket ID
+- round ID
+- prediction
+- entry sequence
+- current owner
+- live/settled/cancelled
+- winner placement
+- claim/refund state
 
-Refund ownership follows current NFT ownership:
+## 15. NFT visual system
 
-- current `ownerOf(ticketId)` may refund
-- original entrant cannot refund after transferring the NFT
-- each ticket may refund once
-- refund transfers exactly `1_000_000` USDC units
+All NFT data and artwork are generated onchain.
 
-This keeps ownership semantics consistent between settled and cancelled rounds.
+Base visual variants:
 
-## 12. Double-spend protections
+### Asset layer
 
-Required mappings/state:
+- BTC visual family
+- ETH visual family
+- SOL visual family
+- HYPE visual family
 
-- wallet entered by `roundId + wallet`
-- prediction taken by `roundId + priceCents`
-- claimed by `ticketId`
-- refunded by `ticketId`
-- round terminal status prevents repeated settlement/cancellation
+### Direction layer
 
-Checks-effects-interactions order must be used for claim/refund.
+- HIGH: upward directional motif
+- LOW: downward directional motif
 
-Reentrancy protection is required for state-changing fund-transfer methods.
+### Cadence layer
 
-## 13. Access control
+- DAILY
+- WEEKLY
+- QUARTERLY
 
-At minimum:
+This produces 24 recognizable visual families while retaining one EXTREMA brand system.
 
-- admin/owner role: deployment configuration and round creation
-- resolver role: settlement/cancellation result finalization
-- ticket minter: only `ExtremaPool`
+Example identity:
 
-No user-facing entry/claim/refund endpoint may depend solely on backend JWT authorization.
+```
+BTC
+DAILY · HIGH
+↑
 
-Backend signer actions must later be protected by the separately specified fresh passkey step-up flow.
+Prediction
+$73,421.00
 
-## 14. Events
+Round #28
+Ticket #184
+Entry #37
 
-Minimum event set:
+LIVE
+```
 
-- `RoundCreated`
-- `RoundLocked`
-- `PredictionEntered`
-- `RoundSettled`
-- `RoundCancelled`
-- `RewardClaimed`
-- `RefundClaimed`
-- `TreasuryAllocated`
+The renderer can later change visual styling while the ticket collection address, ownership, prediction, and economic rights remain unchanged.
 
-ERC-721 standard `Transfer` events remain the ticket ownership history.
+## 16. NFT claim/refund right
 
-## 15. Onchain truth vs indexer
+Current `ownerOf(ticketId)` controls the economic right.
 
-Contract state and events are financial truth.
+If a ticket is transferred:
 
-Backend/Postgres may index chain state for fast UI reads, but it must never become an independent financial source of truth.
+- original entrant loses the claim/refund right
+- new NFT owner receives the claim/refund right
 
-If indexed state disagrees with chain state, chain state wins.
+Settled winner:
 
-## 16. Implementation acceptance gate
+- current NFT owner may claim prize once
 
-Architecture is considered implemented only after:
+Cancelled round:
 
-- Solidity contracts compile
-- unit tests cover all checklist cases
-- Arc Testnet deployment succeeds
-- deployment transaction hashes are recorded
-- contract addresses are recorded
-- at least one real round is created onchain
-- subsequent entry/NFT/settlement/claim/refund steps pass their own proof gates
+- current NFT owner may claim 1 USDC refund once
+
+## 17. Access control
+
+Roles are isolated:
+
+- Factory admin: pool deployment/registry only
+- Pool owner/admin: round creation/configuration only
+- Resolver: settlement/cancellation only
+- Ticket minter: paired pool only
+- Renderer admin: metadata/art renderer only
+- Treasury controllers: treasury withdrawal only
+
+No treasury controller is a pool escrow controller.
+
+No renderer authority has financial authority.
+
+## 18. Deployment count
+
+Target architecture:
+
+- 1 ExtremaFactory / Registry
+- 1 ExtremaTreasury
+- 1 ExtremaRenderer
+- 24 ExtremaPool
+- 24 ExtremaTicket
+
+Total target addresses: **51 contracts**
+
+The 24 ticket contracts may be created by their paired pool contracts, so pool deployment can atomically establish the pool + its NFT collection.
+
+## 19. Implementation acceptance gate
+
+Before Arc Testnet deployment:
+
+- contracts compile
+- all unit tests pass
+- treasury isolation tests pass
+- either treasury controller can withdraw treasury funds
+- neither treasury controller can withdraw pool escrow
+- 24 unique pool identities are enforced
+- each pool has a distinct ticket collection
+- ticket transfer moves economic right
+- per-round escrow invariant tests pass
+- renderer produces deterministic onchain metadata/SVG
+- no deployment occurs until these gates pass
