@@ -213,6 +213,7 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 
 ## 2.3 Arc Testnet deployment
 
+- [x] Full Arc Testnet deployment simulation completed without broadcast
 - [ ] Deploy pool/round contract(s) to Arc Testnet
 - [ ] Deploy ERC-721 ticket contract if separate
 - [ ] Configure treasury
@@ -220,7 +221,22 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 - [ ] Verify deployed bytecode/contracts
 - [ ] Record deployment transactions
 
-### Proof record
+### Simulation proof
+
+- Verification date: 2026-09-05
+- Chain ID: `5042002`
+- Command: `forge script script/DeployArcTestnet.s.sol:DeployArcTestnet --rpc-url https://rpc.testnet.arc.network -vvv`
+- Result: `SIMULATION COMPLETE`
+- Broadcast: **NO**
+- Predicted Factory: `0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A`
+- Predicted Treasury: `0x1D00C89Ed4AF7227a858D305183B4037f732b87e`
+- Predicted Renderer: `0x1C52E55B8CC91A8E327BDDA8E0FAE33bC41fEe1c`
+- Estimated total gas used: `121050442`
+- Estimated amount required: `5.44726989 USDC`
+- Dry-run artifact: `broadcast/DeployArcTestnet.s.sol/5042002/dry-run/run-latest.json`
+- Note: predicted dry-run addresses are not considered deployed addresses until broadcast succeeds.
+
+### Onchain proof record
 
 - Pool contract:
 - Ticket contract:
