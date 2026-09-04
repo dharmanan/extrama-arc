@@ -162,18 +162,42 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 
 ## 2.2 Contract tests
 
-- [ ] Unit tests for round creation
-- [ ] Unit tests for entry
-- [ ] Unit tests for duplicate-wallet rejection
-- [ ] Unit tests for duplicate-price rejection
-- [ ] Unit tests for entry close
-- [ ] Unit tests for settlement
-- [ ] Unit tests for winner ranking
-- [ ] Unit tests for payout accounting
-- [ ] Unit tests for cancellation
-- [ ] Unit tests for refunds
-- [ ] Unit tests for NFT transfer and claim-right transfer
-- [ ] Unit tests for double-claim prevention
+- [x] Unit tests for round creation
+- [x] Unit tests for entry
+- [x] Unit tests for duplicate-wallet rejection
+- [x] Unit tests for duplicate-price rejection
+- [x] Unit tests for entry close
+- [x] Unit tests for settlement
+- [x] Unit tests for winner ranking
+- [x] Unit tests for payout accounting
+- [x] Unit tests for cancellation
+- [x] Unit tests for refunds
+- [x] Unit tests for NFT transfer and claim-right transfer
+- [x] Unit tests for double-claim prevention
+
+### Proof record
+
+- Verification date: 2026-09-04
+- Command: `forge test -vv`
+- Result: `23 passed; 0 failed; 0 skipped`
+- Suites:
+  - `ExtremaPoolLifecycleTest`: 8/8 PASS
+  - `ExtremaFactoryTest`: 5/5 PASS
+  - `ExtremaPoolEntryTest`: 5/5 PASS
+  - `ExtremaTreasuryTest`: 3/3 PASS
+  - `ExtremaRendererTest`: 2/2 PASS
+- Covered additionally:
+  - all 24 unique pool identities
+  - separate NFT collection per pool
+  - dual treasury controller withdrawals
+  - treasury isolation from player escrow
+  - resolver rotation without escrow authority
+  - renderer rotation
+  - per-round escrow accounting and invariant
+  - accidental excess USDC rescue only
+  - fully onchain tokenURI
+  - HIGH/LOW artwork separation
+- Deployment remains blocked until lint/security cleanup is reviewed and the Arc Testnet deployment gate is executed.
 
 ## 2.3 Arc Testnet deployment
 
