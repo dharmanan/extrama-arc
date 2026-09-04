@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { AssetMark, ProductHeader } from "../../product-components";
 import { formatUsd, getPoolBySlug } from "../../lib/data";
+import RoundUserState from "./RoundUserState";
 
 export default async function LiveRoundPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
@@ -45,6 +46,10 @@ export default async function LiveRoundPage({ params }: { params: Promise<{ slug
           <section className="wf-card"><small>Players</small><strong>{pool.players}</strong></section>
           <section className="wf-card"><small>Pool size</small><strong>{pool.poolSizeUsdc} USDC</strong></section>
           <section className="wf-card"><small>Observation ends</small><strong>{pool.observationEndAt}</strong></section>
+        </div>
+
+        <div className="wf-section">
+          <RoundUserState poolSlug={pool.slug} />
         </div>
 
         <section className="wf-section wf-row">
