@@ -6,3 +6,7 @@ node_modules/
 .env.local
 backend/.env
 backend/node_modules/
+contracts/out/
+contracts/cache/
+broadcast/
+foundry-pp/
