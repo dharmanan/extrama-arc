@@ -17,7 +17,12 @@ async function proxy(
 
   const headers = new Headers();
   headers.set("content-type", request.headers.get("content-type") || "application/json");
-  headers.set("x-extrema-origin", request.headers.get("origin") || request.nextUrl.origin);
+  headers.set(
+    "x-extrema-origin",
+    request.headers.get("x-extrema-browser-origin") ||
+      request.headers.get("origin") ||
+      request.nextUrl.origin,
+  );
 
   const session = request.cookies.get(COOKIE_NAME)?.value;
   if (session) headers.set("authorization", `Bearer ${session}`);
