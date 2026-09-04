@@ -203,6 +203,7 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
     const ticket: Ticket = {
       tokenId: ticketId,
       roundId: pool.roundId,
+      owner: wallet.address,
       poolSlug,
       asset: pool.asset,
       cadence: pool.cadence,
@@ -232,6 +233,9 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
 
     const ticket = tickets.find((item) => item.tokenId === ticketId);
     if (!ticket) return { ok: false, message: "Ticket not found." };
+    if (ticket.owner.toLowerCase() !== wallet.address.toLowerCase()) {
+      return { ok: false, message: "The connected wallet does not own this NFT ticket." };
+    }
     if (ticket.claimableUsdc <= 0) {
       return { ok: false, message: ticket.status === "Claimed" ? "Reward already claimed." : "This ticket has no claimable reward." };
     }
