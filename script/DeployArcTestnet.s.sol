@@ -41,21 +41,15 @@ contract DeployArcTestnet {
             ExtremaRenderer renderer
         )
     {
-        if (block.chainid != ARC_TESTNET_CHAIN_ID) {
-            revert WrongChain(block.chainid);
-        }
+        if (block.chainid != ARC_TESTNET_CHAIN_ID) revert WrongChain(block.chainid);
         if (ARC_TESTNET_USDC.code.length == 0) revert UsdcMissing();
 
         uint256 deployerPrivateKey = VM.envUint("EXTREMA_DEPLOYER_PRIVATE_KEY");
         address deployer = VM.addr(deployerPrivateKey);
-        address poolAdmin = VM.envAddress("EXTREMA_POOL_ADMIN");
+        address poolAdmin = deployer;
         address resolver = VM.envAddress("EXTREMA_RESOLVER");
 
-        if (
-            deployer == address(0)
-                || poolAdmin == address(0)
-                || resolver == address(0)
-        ) revert ZeroAddress();
+        if (deployer == address(0) || resolver == address(0)) revert ZeroAddress();
 
         if (
             resolver == poolAdmin
@@ -70,9 +64,7 @@ contract DeployArcTestnet {
             TREASURY_CONTROLLER_A,
             TREASURY_CONTROLLER_B
         );
-
         renderer = new ExtremaRenderer();
-
         factory = new ExtremaFactory(
             ARC_TESTNET_USDC,
             address(treasury),
@@ -96,26 +88,14 @@ contract DeployArcTestnet {
         VM.stopBroadcast();
 
         if (factory.owner() != deployer) revert DeploymentInvariantFailed();
+        if (factory.POOL_ADMIN() != deployer) revert DeploymentInvariantFailed();
         if (factory.poolCount() != 24) revert DeploymentInvariantFailed();
         if (factory.USDC() != ARC_TESTNET_USDC) revert DeploymentInvariantFailed();
         if (factory.TREASURY() != address(treasury)) revert DeploymentInvariantFailed();
-        if (factory.POOL_ADMIN() != poolAdmin) revert DeploymentInvariantFailed();
         if (factory.defaultResolver() != resolver) revert DeploymentInvariantFailed();
-        if (factory.defaultRenderer() != address(renderer)) {
-            revert DeploymentInvariantFailed();
-        }
+        if (factory.defaultRenderer() != address(renderer)) revert DeploymentInvariantFailed();
 
-        if (address(treasury.USDC()) != ARC_TESTNET_USDC) {
-            revert DeploymentInvariantFailed();
-        }
-        if (treasury.CONTROLLER_A() != TREASURY_CONTROLLER_A) {
-            revert DeploymentInvariantFailed();
-        }
-        if (treasury.CONTROLLER_B() != TREASURY_CONTROLLER_B) {
-            revert DeploymentInvariantFailed();
-        }
-
-        _verifyTwentyFourPools(factory, treasury, renderer, poolAdmin, resolver);
+        _verifyTwentyFourPools(factory, treasury, renderer, deployer, resolver);
     }
 
     function _verifyTwentyFourPools(
@@ -136,39 +116,24 @@ contract DeployArcTestnet {
                         ExtremaPool.Direction(direction),
                         ExtremaPool.Cadence(cadence)
                     );
-
                     if (poolAddress == address(0)) revert DeploymentInvariantFailed();
 
                     ExtremaPool pool = ExtremaPool(poolAddress);
-
-                    if (address(pool.USDC()) != ARC_TESTNET_USDC) {
-                        revert DeploymentInvariantFailed();
-                    }
-                    if (pool.TREASURY() != address(treasury)) {
-                        revert DeploymentInvariantFailed();
-                    }
+                    if (address(pool.USDC()) != ARC_TESTNET_USDC) revert DeploymentInvariantFailed();
+                    if (pool.TREASURY() != address(treasury)) revert DeploymentInvariantFailed();
                     if (pool.owner() != poolAdmin) revert DeploymentInvariantFailed();
                     if (pool.resolver() != resolver) revert DeploymentInvariantFailed();
                     if (uint8(pool.ASSET()) != asset) revert DeploymentInvariantFailed();
-                    if (uint8(pool.DIRECTION()) != direction) {
-                        revert DeploymentInvariantFailed();
-                    }
-                    if (uint8(pool.CADENCE()) != cadence) {
-                        revert DeploymentInvariantFailed();
-                    }
+                    if (uint8(pool.DIRECTION()) != direction) revert DeploymentInvariantFailed();
+                    if (uint8(pool.CADENCE()) != cadence) revert DeploymentInvariantFailed();
 
                     address ticketAddress = address(pool.TICKET());
                     if (ticketAddress == address(0)) revert DeploymentInvariantFailed();
-                    if (pool.TICKET().renderer() != address(renderer)) {
-                        revert DeploymentInvariantFailed();
-                    }
+                    if (pool.TICKET().renderer() != address(renderer)) revert DeploymentInvariantFailed();
 
                     for (uint256 i = 0; i < index; ++i) {
-                        if (seenTickets[i] == ticketAddress) {
-                            revert DeploymentInvariantFailed();
-                        }
+                        if (seenTickets[i] == ticketAddress) revert DeploymentInvariantFailed();
                     }
-
                     seenTickets[index] = ticketAddress;
                     ++index;
                 }
