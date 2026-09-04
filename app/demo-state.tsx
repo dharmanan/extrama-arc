@@ -20,9 +20,9 @@ type DemoState = {
   fundWallet: (amount?: number) => void;
   enterPrediction: (poolSlug: string, prediction: number) => EnterPredictionResult;
   claimTicket: (ticketId: number) => ClaimResult;
-  isPredictionTaken: (poolSlug: string, prediction: number) => boolean;
-  hasEnteredPool: (poolSlug: string) => boolean;
-  getTicketForPool: (poolSlug: string) => Ticket | undefined;
+  isPredictionTaken: (roundId: number, prediction: number) => boolean;
+  hasEnteredRound: (roundId: number) => boolean;
+  getTicketForRound: (roundId: number) => Ticket | undefined;
   resetDemo: () => void;
 };
 
@@ -142,21 +142,21 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
     });
   }
 
-  function isPredictionTaken(poolSlug: string, prediction: number) {
+  function isPredictionTaken(roundId: number, prediction: number) {
     return entries.some(
-      (entry) => entry.poolSlug === poolSlug && Number(entry.prediction.toFixed(2)) === Number(prediction.toFixed(2)),
+      (entry) => entry.roundId === roundId && Number(entry.prediction.toFixed(2)) === Number(prediction.toFixed(2)),
     );
   }
 
-  function hasEnteredPool(poolSlug: string) {
+  function hasEnteredRound(roundId: number) {
     if (!wallet.address) return false;
     return entries.some(
-      (entry) => entry.poolSlug === poolSlug && entry.wallet.toLowerCase() === wallet.address?.toLowerCase(),
+      (entry) => entry.roundId === roundId && entry.wallet.toLowerCase() === wallet.address?.toLowerCase(),
     );
   }
 
-  function getTicketForPool(poolSlug: string) {
-    return tickets.find((ticket) => ticket.poolSlug === poolSlug);
+  function getTicketForRound(roundId: number) {
+    return tickets.find((ticket) => ticket.roundId === roundId);
   }
 
   function enterPrediction(poolSlug: string, prediction: number): EnterPredictionResult {
@@ -178,10 +178,10 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
         message: `Prediction must be between ${pool.predictionMin.toFixed(2)} and ${pool.predictionMax.toFixed(2)}.`,
       };
     }
-    if (hasEnteredPool(poolSlug)) {
-      return { ok: false, message: "This wallet already entered this pool." };
+    if (hasEnteredRound(pool.roundId)) {
+      return { ok: false, message: "This wallet already entered this round." };
     }
-    if (isPredictionTaken(poolSlug, normalized)) {
+    if (isPredictionTaken(pool.roundId, normalized)) {
       return { ok: false, message: "That exact price is already taken. Choose another price." };
     }
     if (wallet.balanceUsdc < 1) {
@@ -271,8 +271,8 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
       enterPrediction,
       claimTicket,
       isPredictionTaken,
-      hasEnteredPool,
-      getTicketForPool,
+      hasEnteredRound,
+      getTicketForRound,
       resetDemo,
     }),
     [wallet, tickets, entries],
