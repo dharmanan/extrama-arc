@@ -13,7 +13,7 @@ const schema = z.object({
   WEBAUTHN_RP_ID: z.string().optional().default(''),
   WEBAUTHN_ORIGINS: z.string().default('http://localhost:3000'),
   JWT_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
-  ALLOW_CODESPACE_ORIGINS: z.coerce.boolean().default(false),
+  ALLOW_CODESPACE_ORIGINS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
 });
 
 const parsed = schema.safeParse(process.env);
