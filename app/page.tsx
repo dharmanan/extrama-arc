@@ -31,7 +31,7 @@ export default function Home() {
           <h1>
             Small<br />
             Predictions.<br />
-            Real Rewards.
+            <span className={styles.rewardLine}>Real Rewards.</span>
           </h1>
 
           <p className={styles.body}>
