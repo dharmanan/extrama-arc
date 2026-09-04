@@ -4,10 +4,10 @@ import Link from "next/link";
 import { formatUsd } from "../../lib/data";
 import { useDemoState } from "../../demo-state";
 
-export default function RoundUserState({ poolSlug }: { poolSlug: string }) {
-  const { wallet, getTicketForPool, hasEnteredPool } = useDemoState();
-  const entered = hasEnteredPool(poolSlug);
-  const ticket = entered ? getTicketForPool(poolSlug) : undefined;
+export default function RoundUserState({ poolSlug, roundId }: { poolSlug: string; roundId: number }) {
+  const { wallet, getTicketForRound, hasEnteredRound } = useDemoState();
+  const entered = hasEnteredRound(roundId);
+  const ticket = entered ? getTicketForRound(roundId) : undefined;
 
   if (wallet.status !== "ready") {
     return (
