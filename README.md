@@ -4,64 +4,142 @@ ETHOnline 2026 Arc hackathon project.
 
 ## Current phase
 
-The product structure is being completed first with neutral wireframes, typed domain data, and a shared functional demo state.
+Product structure and backend infrastructure first. Visual design is intentionally deferred until the full flow is stable.
 
-Visual design is intentionally deferred until the complete product flow is stable and tested.
+## Architecture
+
+### Frontend
+- Next.js
+- prediction/pool/ticket/result routes
+- owner wallet connection
+- WebAuthn client
+- one-time recovery disclosure UI
+
+### Backend
+- Express
+- PostgreSQL
+- WebAuthn challenge and credential storage
+- JWT sessions
+- encrypted EXTREMA EVM private keys
+- one EXTREMA wallet per owner account
+
+### Deployment
+- Frontend: Vercel later
+- Backend: Railway
+- Database: Railway PostgreSQL
+
+## Wallet flow
+
+New user:
+
+1. Connect owner EVM wallet.
+2. Request EXTREMA registration challenge.
+3. Sign the challenge with the owner wallet.
+4. Register a platform passkey.
+5. Backend verifies the passkey and creates an authenticated session.
+6. Backend creates a fresh EXTREMA EVM wallet.
+7. Private key is encrypted at rest in PostgreSQL.
+8. Plaintext private key is returned only in the wallet creation response.
+9. User must save the key before continuing.
+
+Returning user:
+
+1. Connect the same owner wallet.
+2. Authenticate with the registered passkey.
+3. Backend restores the authenticated session.
+4. Existing EXTREMA wallet is loaded. No new private key is created or revealed.
 
 ## Product loop
 
-1. Choose an asset: BTC, ETH, SOL, or HYPE.
-2. Choose a cadence: Daily, Weekly, or Quarterly.
+1. Choose BTC, ETH, SOL, or HYPE.
+2. Choose Daily, Weekly, or Quarterly.
 3. Choose High or Low.
-4. Enter one unique price prediction.
+4. Enter one unique prediction.
 5. Pay exactly 1 USDC.
 6. Receive an NFT ticket.
-7. The round resolves from the source locked at round creation.
-8. Top 3 predictions receive 54%, 22.5%, and 13.5% of the gross pool.
+7. Round resolves using the locked official price source.
+8. Top 3 receive 54%, 22.5%, and 13.5% of the gross pool.
 9. 10% goes to treasury.
-10. Winning NFT owners claim USDC.
+10. Current owner of a winning NFT claims the reward.
 
-## Route map
+## Routes
 
 | Route | Purpose |
 | --- | --- |
-| `/` | Landing / home |
-| `/pools` | All 24 standard pools |
+| `/` | Landing |
+| `/pools` | 24 standard pools |
 | `/pools/[slug]` | Prediction entry |
-| `/rounds/[slug]` | Live pool / distribution |
-| `/results/[roundId]` | Settled result + winners + claim entry |
-| `/verify/[roundId]` | Deterministic settlement verification |
-| `/tickets` | User NFT tickets |
+| `/rounds/[slug]` | Live pool |
+| `/results/[roundId]` | Result and claim |
+| `/verify/[roundId]` | Settlement verification |
+| `/tickets` | NFT tickets |
 | `/leaderboard` | Rankings |
 | `/how-it-works` | Product explanation |
-| `/wallet` | Create wallet / connect wallet onboarding |
+| `/wallet` | Owner wallet + passkey + EXTREMA wallet |
 
-## Domain structure
+## Backend endpoints
 
-- `app/lib/domain.ts` — typed domain model
-- `app/lib/data.ts` — centralized typed mock data
-- `app/product-components.tsx` — shared neutral wireframe components
-- `app/wireframe.css` — temporary structural styles only
-- `app/home.module.css` — current landing experiment; final visual design will be replaced later
+### Health
+- `GET /readyz`
+- `GET /health`
 
-## Pool model
+### Authentication
+- `POST /api/auth/register/challenge`
+- `POST /api/auth/register/start`
+- `POST /api/auth/register/finish`
+- `POST /api/auth/login/start`
+- `POST /api/auth/login/finish`
+- `GET /api/auth/session`
+- `POST /api/auth/logout`
 
-4 assets × 2 directions × 3 cadences = 24 standard pools.
+### EXTREMA wallet
+- `GET /api/wallet`
+- `POST /api/wallet/create`
 
-Assets:
-- BTC
-- ETH
-- SOL
-- HYPE
+## Local development
 
-Directions:
-- High
-- Low
+Frontend:
 
-Cadences:
-- Daily
-- Weekly
-- Quarterly
+```bash
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Backend:
+
+```bash
+cp backend/.env.example backend/.env
+cd backend
+npm install
+npm run db:migrate
+npm run dev
+```
+
+Checks:
+
+```bash
+npm run check
+npm run backend:check
+npm run check:all
+```
+
+## Required backend secrets
+
+- `DATABASE_URL`
+- `ENCRYPTION_KEY`
+- `JWT_SECRET`
+- `CORS_ORIGINS`
+- `WEBAUTHN_ORIGINS`
+- `WEBAUTHN_RP_ID` in production
+
+Generate secrets:
+
+```bash
+openssl rand -hex 32
+```
+
+Use separate values for `ENCRYPTION_KEY` and `JWT_SECRET`.
 
 ## Official result source
 
@@ -75,68 +153,14 @@ Symbols:
 - SOLUSDT
 - HYPEUSDT
 
-The source, symbol, observation window, and methodology are locked before the round begins.
+## Design
 
-## Functional demo state
+The current UI is only a structural wireframe.
 
-The current browser demo already supports:
-- shared wallet state across routes
-- create/connect/lock/unlock/reset wallet flow
-- persistent localStorage state
-- test USDC funding
-- asset/cadence pool filters
-- exactly 1 USDC prediction entry
-- one wallet per round
-- duplicate-price rejection per round
-- NFT ticket creation after entry
-- My Tickets state
-- winner claim with NFT ownership check
-- balance update after claim
-- deterministic result and verification pages
-
-This demo state is temporary and will be replaced by real Arc contracts and wallet infrastructure before final delivery.
-
-## Wallet plan
-
-Primary:
-- Create EXTREMA Wallet
-- WebAuthn/passkey
-- fresh EOA
-- encrypted private key at rest
-- recovery information shown once
-- Arc Testnet ready
-
-Secondary:
-- Connect existing EVM wallet
-
-The current wallet page is only a wireframe. No real wallet/key implementation exists yet.
-
-## Design process
-
-1. Complete product structure and route flow.
-2. Confirm every screen and state.
-3. Design the full product in Figma.
-4. Replace wireframe styles with the approved Figma system.
-5. Add real wallet, Arc USDC, contracts, NFT, resolver, and claim logic.
-6. Add final motion/animation last.
-
-## Development
-
-```bash
-npm install
-npm run dev
-npm run typecheck
-npm run build
-npm run check
-```
-
-## Important
-
-Current content is mock UI data unless explicitly stated otherwise.
-
-Do not treat the current wireframe styles as the final design.
-
-
-## CI
-
-GitHub Actions runs `npm ci` and `npm run check` on pushes and pull requests to `main`.
+Final visual design begins only after:
+1. frontend checks pass,
+2. backend checks pass,
+3. PostgreSQL migration works,
+4. passkey registration/login works end-to-end,
+5. EXTREMA wallet creation/reconnect works,
+6. Arc contracts and USDC flow are stable.
