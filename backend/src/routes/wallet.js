@@ -3,6 +3,7 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const walletService = require('../services/walletService');
+const arcService = require('../services/arcService');
 
 const router = express.Router();
 
@@ -12,6 +13,20 @@ router.get('/', async (req, res, next) => {
   try {
     const wallet = await walletService.getWalletForUser(req.auth.userId);
     res.json({ wallet });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/chain-state', async (req, res, next) => {
+  try {
+    const wallet = await walletService.getWalletForUser(req.auth.userId);
+    if (!wallet?.address) {
+      return res.status(404).json({ error: 'wallet_not_found' });
+    }
+
+    const state = await arcService.readArcWalletState(wallet.address);
+    res.json(state);
   } catch (error) {
     next(error);
   }
