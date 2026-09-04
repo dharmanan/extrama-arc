@@ -177,15 +177,26 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 
 ### Proof record
 
-- Verification date: 2026-09-04
-- Command: `forge test -vv`
-- Result: `23 passed; 0 failed; 0 skipped`
+- Verification date: 2026-09-05
+- Commands:
+  - `forge test -vv`
+  - `forge build --sizes`
+- Test result: `31 passed; 0 failed; 0 skipped`
+- Test exit: `0`
+- Size exit: `0`
 - Suites:
   - `ExtremaPoolLifecycleTest`: 8/8 PASS
   - `ExtremaFactoryTest`: 5/5 PASS
   - `ExtremaPoolEntryTest`: 5/5 PASS
   - `ExtremaTreasuryTest`: 3/3 PASS
   - `ExtremaRendererTest`: 2/2 PASS
+  - `ExtremaTicketTest`: 8/8 PASS
+- Production contract sizes:
+  - `ExtremaFactory`: runtime 20,609 B; margin 3,967 B
+  - `ExtremaPool`: runtime 10,567 B; margin 14,009 B
+  - `ExtremaRenderer`: runtime 8,115 B; margin 16,461 B
+  - `ExtremaTicket`: runtime 3,865 B; margin 20,711 B
+  - `ExtremaTreasury`: runtime 1,368 B; margin 23,208 B
 - Covered additionally:
   - all 24 unique pool identities
   - separate NFT collection per pool
@@ -197,7 +208,8 @@ Architecture specification: `contracts/ARCHITECTURE.md`
   - accidental excess USDC rescue only
   - fully onchain tokenURI
   - HIGH/LOW artwork separation
-- Deployment remains blocked until lint/security cleanup is reviewed and the Arc Testnet deployment gate is executed.
+- Local contract gate passed. Remaining Foundry warnings are documented in `contracts/SECURITY_NOTES.md`; test-only style warnings do not block deployment.
+- Next gate: Arc Testnet deployment simulation and onchain deployment proof.
 
 ## 2.3 Arc Testnet deployment
 
@@ -636,8 +648,12 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 2.2 — Contract implementation and unit tests.**
+**Section 2.3 — Arc Testnet deployment.**
 
-Section 2.1 is locked in `contracts/ARCHITECTURE.md`.
+Local contract gate is complete with 31/31 tests passing and all production contracts within deployable size limits.
 
-Next, implement the Solidity contracts and prove the contract rules with automated tests before any Arc Testnet deployment.
+Next:
+1. compile the deployment scripts
+2. simulate the full Arc Testnet deployment without broadcasting
+3. verify the expected 1 Factory + 1 Treasury + 1 Renderer + 24 Pool + 24 Ticket topology
+4. only then broadcast and record every deployment transaction/address
