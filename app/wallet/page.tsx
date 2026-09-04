@@ -35,6 +35,7 @@ export default function WalletPage() {
   const [chainState, setChainState] = useState<Awaited<ReturnType<typeof backendApi.wallet.chainState>> | null>(null);
   const [chainBusy, setChainBusy] = useState("");
   const [chainError, setChainError] = useState("");
+  const [copiedAddress, setCopiedAddress] = useState(false);
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -58,6 +59,17 @@ export default function WalletPage() {
       setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
     } finally {
       setBusy("");
+    }
+  }
+
+  async function copyExtremaAddress() {
+    if (!wallet.address) return;
+    try {
+      await navigator.clipboard.writeText(wallet.address);
+      setCopiedAddress(true);
+      window.setTimeout(() => setCopiedAddress(false), 1500);
+    } catch {
+      setChainError("Wallet address could not be copied.");
     }
   }
 
@@ -233,7 +245,12 @@ export default function WalletPage() {
                 <p><b>Owner wallet:</b> {shortAddress(ownerAddress)}</p>
               )}
               <p><b>EXTREMA wallet:</b> {shortAddress(wallet.address)}</p>
-              <p className="wf-code">{wallet.address}</p>
+              <div className="wf-row" style={{ justifyContent: "flex-start", alignItems: "center" }}>
+                <p className="wf-code" style={{ margin: 0, flex: 1 }}>{wallet.address}</p>
+                <button className="wf-action" type="button" onClick={copyExtremaAddress}>
+                  {copiedAddress ? "Copied" : "Copy address"}
+                </button>
+              </div>
 
               {chainState ? (
                 <>
