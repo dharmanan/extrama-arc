@@ -121,9 +121,9 @@ export const results: Result[] = [
 ];
 
 export const tickets: Ticket[] = [
-  { tokenId: 1842, roundId: 184, poolSlug: "eth-weekly-low", asset: "ETH", cadence: "Weekly", direction: "Low", prediction: 2085, entryUsdc: 1, status: "Winner #1", claimableUsdc: 5400 },
-  { tokenId: 1281, roundId: 128, poolSlug: "btc-daily-high", asset: "BTC", cadence: "Daily", direction: "High", prediction: 73401, entryUsdc: 1, status: "Settled", claimableUsdc: 0 },
-  { tokenId: 961, roundId: 96, poolSlug: "sol-weekly-high", asset: "SOL", cadence: "Weekly", direction: "High", prediction: 243.2, entryUsdc: 1, status: "Claimed", claimableUsdc: 0 },
+  { tokenId: 1842, roundId: 184, owner: "0x3aF00000000000000000000000000000000092E1", poolSlug: "eth-weekly-low", asset: "ETH", cadence: "Weekly", direction: "Low", prediction: 2085, entryUsdc: 1, status: "Winner #1", claimableUsdc: 5400 },
+  { tokenId: 1281, roundId: 128, owner: "0x3aF00000000000000000000000000000000092E1", poolSlug: "btc-daily-high", asset: "BTC", cadence: "Daily", direction: "High", prediction: 73401, entryUsdc: 1, status: "Settled", claimableUsdc: 0 },
+  { tokenId: 961, roundId: 96, owner: "0x3aF00000000000000000000000000000000092E1", poolSlug: "sol-weekly-high", asset: "SOL", cadence: "Weekly", direction: "High", prediction: 243.2, entryUsdc: 1, status: "Claimed", claimableUsdc: 0 },
 ];
 
 export function getPoolBySlug(slug: string) {
