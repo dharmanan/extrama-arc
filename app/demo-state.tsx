@@ -17,6 +17,7 @@ type DemoState = {
   createWallet: () => void;
   connectExistingWallet: () => void;
   lockWallet: () => void;
+  unlockWallet: () => void;
   fundWallet: (amount?: number) => void;
   enterPrediction: (poolSlug: string, prediction: number) => EnterPredictionResult;
   claimTicket: (ticketId: number) => ClaimResult;
@@ -133,6 +134,10 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
 
   function lockWallet() {
     setWallet((current) => ({ ...current, status: "disconnected" }));
+  }
+
+  function unlockWallet() {
+    setWallet((current) => current.address ? { ...current, status: "ready" } : current);
   }
 
   function fundWallet(amount = 10) {
@@ -271,6 +276,7 @@ export function DemoStateProvider({ children }: { children: React.ReactNode }) {
       createWallet,
       connectExistingWallet,
       lockWallet,
+      unlockWallet,
       fundWallet,
       enterPrediction,
       claimTicket,
