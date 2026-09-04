@@ -2,11 +2,7 @@
 pragma solidity ^0.8.30;
 
 import {ExtremaTicket} from "./ExtremaTicket.sol";
-
-interface IERC20 {
-    function transfer(address to, uint256 amount) external returns (bool);
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-}
+import {IERC20} from "./interfaces/IERC20.sol";
 
 contract ExtremaPool {
     error ZeroAddress();
@@ -70,9 +66,9 @@ contract ExtremaPool {
         uint64 entrySequence;
     }
 
-    IERC20 public immutable usdc;
-    address public immutable treasury;
-    ExtremaTicket public immutable ticket;
+    IERC20 public immutable USDC;
+    address public immutable TREASURY;
+    ExtremaTicket public immutable TICKET;
 
     address public owner;
     address public resolver;
@@ -138,30 +134,46 @@ contract ExtremaPool {
             revert ZeroAddress();
         }
 
-        usdc = IERC20(usdc_);
-        treasury = treasury_;
+        USDC = IERC20(usdc_);
+        TREASURY = treasury_;
         resolver = resolver_;
         owner = msg.sender;
-        ticket = new ExtremaTicket(address(this));
+        TICKET = new ExtremaTicket(address(this));
 
         emit OwnershipTransferred(address(0), msg.sender);
         emit ResolverUpdated(address(0), resolver_);
     }
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
+        _checkOwner();
         _;
     }
 
     modifier onlyResolver() {
-        if (msg.sender != resolver) revert NotResolver();
+        _checkResolver();
         _;
     }
 
     modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _checkOwner() internal view {
+        if (msg.sender != owner) revert NotOwner();
+    }
+
+    function _checkResolver() internal view {
+        if (msg.sender != resolver) revert NotResolver();
+    }
+
+    function _nonReentrantBefore() internal {
         if (_reentrancyState != 1) revert Reentrancy();
         _reentrancyState = 2;
-        _;
+    }
+
+    function _nonReentrantAfter() internal {
         _reentrancyState = 1;
     }
 
@@ -251,9 +263,6 @@ contract ExtremaPool {
         });
         _roundTicketIds[roundId].push(ticketId);
 
-        _safeTransferFrom(msg.sender, address(this), STAKE_AMOUNT);
-        ticket.mint(msg.sender, ticketId);
-
         emit PredictionEntered(
             roundId,
             ticketId,
@@ -261,6 +270,9 @@ contract ExtremaPool {
             predictionPriceCents,
             entrySequence
         );
+
+        _safeTransferFrom(msg.sender, address(this), STAKE_AMOUNT);
+        TICKET.mint(msg.sender, ticketId);
     }
 
     function lockRound(uint256 roundId) external {
@@ -279,7 +291,7 @@ contract ExtremaPool {
     function settleRound(
         uint256 roundId,
         uint64 resolvedPriceCents
-    ) external onlyResolver nonReentrant {
+    ) external nonReentrant onlyResolver {
         Round storage round = _requireRound(roundId);
 
         if (round.status != RoundStatus.LOCKED) revert RoundNotLocked();
@@ -303,9 +315,9 @@ contract ExtremaPool {
         claimableByTicket[winners[1]] = secondAmount;
         claimableByTicket[winners[2]] = thirdAmount;
 
-        _safeTransfer(treasury, treasuryAmount);
+        _safeTransfer(TREASURY, treasuryAmount);
 
-        emit TreasuryAllocated(roundId, treasury, treasuryAmount);
+        emit TreasuryAllocated(roundId, TREASURY, treasuryAmount);
         emit RoundSettled(
             roundId,
             resolvedPriceCents,
@@ -313,6 +325,8 @@ contract ExtremaPool {
             winners[1],
             winners[2]
         );
+
+        _safeTransfer(TREASURY, treasuryAmount);
     }
 
     function cancelRound(uint256 roundId) external onlyResolver {
@@ -336,15 +350,14 @@ contract ExtremaPool {
         uint256 amount = claimableByTicket[ticketId];
         if (amount == 0) revert NothingToClaim();
 
-        address currentOwner = ticket.ownerOf(ticketId);
+        address currentOwner = TICKET.ownerOf(ticketId);
         if (msg.sender != currentOwner) revert NotTicketOwner();
 
         claimed[ticketId] = true;
         claimableByTicket[ticketId] = 0;
 
-        _safeTransfer(currentOwner, amount);
-
         emit RewardClaimed(entry.roundId, ticketId, currentOwner, amount);
+        _safeTransfer(currentOwner, amount);
     }
 
     function refund(uint256 ticketId) external nonReentrant {
@@ -354,13 +367,12 @@ contract ExtremaPool {
         if (round.status != RoundStatus.CANCELLED) revert RoundNotCancelled();
         if (refunded[ticketId]) revert AlreadyRefunded();
 
-        address currentOwner = ticket.ownerOf(ticketId);
+        address currentOwner = TICKET.ownerOf(ticketId);
         if (msg.sender != currentOwner) revert NotTicketOwner();
 
         refunded[ticketId] = true;
-        _safeTransfer(currentOwner, STAKE_AMOUNT);
-
         emit RefundClaimed(entry.roundId, ticketId, currentOwner, STAKE_AMOUNT);
+        _safeTransfer(currentOwner, STAKE_AMOUNT);
     }
 
     function getRound(uint256 roundId) external view returns (Round memory) {
@@ -439,20 +451,10 @@ contract ExtremaPool {
     }
 
     function _safeTransfer(address to, uint256 amount) internal {
-        (bool success, bytes memory data) = address(usdc).call(
-            abi.encodeCall(IERC20.transfer, (to, amount))
-        );
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) {
-            revert TokenTransferFailed();
-        }
+        if (!USDC.transfer(to, amount)) revert TokenTransferFailed();
     }
 
     function _safeTransferFrom(address from, address to, uint256 amount) internal {
-        (bool success, bytes memory data) = address(usdc).call(
-            abi.encodeCall(IERC20.transferFrom, (from, to, amount))
-        );
-        if (!success || (data.length != 0 && !abi.decode(data, (bool)))) {
-            revert TokenTransferFailed();
-        }
+        if (!USDC.transferFrom(from, to, amount)) revert TokenTransferFailed();
     }
 }
