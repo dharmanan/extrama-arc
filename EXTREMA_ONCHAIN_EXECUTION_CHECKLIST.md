@@ -67,20 +67,21 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 
 ## 1.2 Real native balance
 
-Implementation status: native Arc gas balance is now read via `eth_getBalance` and displayed in the wallet UI. Proof is pending.
+Implementation status: verified on Arc Testnet.
 
-- [ ] Read EXTREMA wallet native Arc Testnet balance through RPC
+- [x] Read EXTREMA wallet native Arc Testnet balance through RPC
 - [x] Remove any mock/native demo balance from the product path
-- [ ] UI displays the real RPC result only
+- [x] UI displays the real RPC result only
 
 ### Proof record
 
-- Wallet:
-- RPC:
-- Balance before:
-- Balance after:
-- Block number:
-- Verification:
+- Wallet: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- RPC: `https://rpc.testnet.arc.network`
+- Balance: `40.0 USDC`
+- Native decimals: `18`
+- Balance raw: `40000000000000000000`
+- Block number: `60464221`
+- Verification: `backend/scripts/verify-native-balance.js` returned `verified: true`, chain ID `5042002`, native currency `USDC`, and formatted balance `40.0`.
 
 ## 1.3 Real Arc Testnet USDC balance
 
@@ -609,8 +610,8 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 1.2 — Real Arc Testnet native balance.**
+**Section 2.1 — Contract architecture locked.**
 
-Section 1.3 is complete with two verified faucet transactions totaling `40.0 USDC`.
+Sections 1.2 and 1.3 are complete with real Arc Testnet proof.
 
-Next, do not advance until the EXTREMA wallet's real native Arc Testnet balance is read through RPC and recorded with block-number proof.
+Next, lock the contract responsibilities, state machine, round identity, entry uniqueness rules, payout math, cancellation/refund semantics, and ERC-721 claim-right ownership before writing deployment code.
