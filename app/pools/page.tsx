@@ -1,5 +1,33 @@
-import Link from "next/link";
-import { AssetBadge, Header, PriceLine } from "../components";
-import { pools } from "../lib/mock-data";
+import { PoolSummary, ProductHeader } from "../product-components";
+import { pools } from "../lib/data";
+import type { Asset, Cadence } from "../lib/domain";
 
-export default function Pools() { return <main className="paper"><Header active="pools" /><section className="pools-wrap"><p className="eyebrow">PREDICT WHAT&apos;S NEXT</p><h1>Active Pools</h1><p className="sub">Four assets. Three timeframes. Two ways to win.</p><div className="filters"><div><b>All</b><span>BTC</span><span>ETH</span><span>SOL</span><span>HYPE</span></div><div><span>Daily</span><b>Weekly</b><span>Quarterly</span></div></div><div className="pool-grid">{pools.map((pool, index) => <article className="pool-card" key={`${pool.asset}-${pool.direction}`}><div className="pool-heading"><AssetBadge asset={pool.asset} /><span><b>{pool.asset} · {pool.cadence} {pool.direction}</b><small>Closes in {pool.closes}</small></span></div><strong className="pool-price">{pool.price}</strong><small>Reference Price</small><div className="pool-numbers"><span><b>{pool.players}</b>Players</span><span><b>{pool.pool}</b>Pool Size</span><Link href="/pools/eth-weekly-low" aria-label="Join pool">→</Link></div><PriceLine violet={index === 1 || index === 5} /></article>)}</div></section></main>; }
+const assets: ("All" | Asset)[] = ["All", "BTC", "ETH", "SOL", "HYPE"];
+const cadences: Cadence[] = ["Daily", "Weekly", "Quarterly"];
+
+export default function PoolsPage() {
+  return (
+    <main className="wf-page">
+      <ProductHeader />
+      <section className="wf-main">
+        <p>POOL OVERVIEW</p>
+        <h1>Active Pools</h1>
+        <p>4 assets × 2 directions × 3 cadences = 24 standard pools.</p>
+
+        <div className="wf-tabs">{assets.map((item) => <span key={item}>{item}</span>)}</div>
+        <div className="wf-tabs">{cadences.map((item) => <span key={item}>{item}</span>)}</div>
+
+        {cadences.map((cadence) => (
+          <section className="wf-section" key={cadence}>
+            <h2>{cadence}</h2>
+            <div className="wf-grid">
+              {pools.filter((pool) => pool.cadence === cadence).map((pool) => (
+                <PoolSummary pool={pool} key={pool.slug} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </section>
+    </main>
+  );
+}
