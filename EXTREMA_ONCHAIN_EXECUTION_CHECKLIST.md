@@ -94,20 +94,31 @@ Target token:
 - [x] Remove `Demo USDC balance`
 - [x] Remove `Get 10 demo USDC`
 - [x] UI displays only the real onchain USDC balance
-- [ ] Real testnet funding path established
-- [ ] Funding transaction verified onchain
+- [x] Real testnet funding path established
+- [x] Funding transaction verified onchain
 
 ### Proof record
 
 - Token address: `0x3600000000000000000000000000000000000000`
 - Decimals: `6`
 - Wallet: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
-- Balance before funding-proof transaction: `40.0 USDC`
-- RPC proof block: `60461390`
-- Funding tx hash: pending
-- Explorer: pending funding transaction
-- Balance after: pending
-- Verification: Real `balanceOf` returned 40.0 USDC and UI rendered the same onchain value. Funding transaction proof still required.
+- Balance before recorded faucet funding: `0 USDC`
+- Funding tx #1: `0x0e50444ff84050f6f32efe9d6d8a84e8c435d4c8bcc251556f27e695f11dd699`
+  - Status: success (`1`)
+  - Block: `60461373`
+  - Amount: `20.0 USDC`
+  - From: `0x3C3380cdFb94dFEEaA41cAD9F58254AE380d752D`
+  - To: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Funding tx #2: `0x9264cc9b2cda96b132fa053751b034fadf6f53d60b4a05d8d6c102d6d4d99b8a`
+  - Status: success (`1`)
+  - Block: `60461361`
+  - Amount: `20.0 USDC`
+  - From: `0x319dd63E0AC72e7Ac74443029d074032c043460F`
+  - To: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Explorer tx #1: `https://testnet.arcscan.app/tx/0x0e50444ff84050f6f32efe9d6d8a84e8c435d4c8bcc251556f27e695f11dd699`
+- Explorer tx #2: `https://testnet.arcscan.app/tx/0x9264cc9b2cda96b132fa053751b034fadf6f53d60b4a05d8d6c102d6d4d99b8a`
+- Balance after: `40.0 USDC`
+- Verification: `backend/scripts/verify-funding.js` returned `allVerified: true`, chain ID `5042002`, and `totalUsdcToWallet: 40.0`.
 
 ---
 
@@ -596,13 +607,8 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 1.3 — Real Arc Testnet funding proof.**
+**Section 1.2 — Real Arc Testnet native balance.**
 
-Current verified balance: `40.0 USDC`.
+Section 1.3 is complete with two verified faucet transactions totaling `40.0 USDC`.
 
-Do not advance to pool contracts until a new real Arc Testnet USDC funding transaction is recorded with:
-
-1. balance before,
-2. transaction hash,
-3. explorer proof,
-4. balance after.
+Next, do not advance until the EXTREMA wallet's real native Arc Testnet balance is read through RPC and recorded with block-number proof.
