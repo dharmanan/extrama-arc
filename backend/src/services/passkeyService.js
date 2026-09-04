@@ -42,9 +42,18 @@ function resolveWebAuthnContext(requestOrigin) {
     if (!config.webauthnOrigins.includes(origin) && !codespaceAllowed) {
       throw new Error('webauthn_origin_not_allowed');
     }
+
+    if (codespaceAllowed) {
+      return {
+        origin,
+        rpID: new URL(origin).hostname,
+      };
+    }
+
     if (!config.WEBAUTHN_RP_ID) {
       throw new Error('WEBAUTHN_RP_ID is required in production');
     }
+
     return {
       origin,
       rpID: config.WEBAUTHN_RP_ID,
