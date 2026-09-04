@@ -13,7 +13,7 @@ const steps = [
 ];
 
 export default function WalletPage() {
-  const { wallet, createWallet, connectExistingWallet, fundWallet, lockWallet, resetDemo } = useDemoState();
+  const { wallet, createWallet, connectExistingWallet, fundWallet, lockWallet, unlockWallet, resetDemo } = useDemoState();
   const [step, setStep] = useState(0);
   const current = steps[step];
 
@@ -51,6 +51,24 @@ export default function WalletPage() {
               <button className="wf-action" type="button" onClick={resetDemo}>Reset complete demo state</button>
             </section>
           </div>
+        </section>
+      </main>
+    );
+  }
+
+  if (wallet.address) {
+    return (
+      <main className="wf-page">
+        <ProductHeader />
+        <section className="wf-main">
+          <p>ARC TESTNET WALLET</p>
+          <h1>Wallet locked</h1>
+          <p>Your demo wallet state is preserved. Unlocking restores the same address, balance and ticket history.</p>
+          <section className="wf-panel wf-section">
+            <p className="wf-code">{wallet.address}</p>
+            <p>Stored balance: {wallet.balanceUsdc.toFixed(2)} USDC</p>
+            <button className="wf-action" type="button" onClick={unlockWallet}>Unlock wallet</button>
+          </section>
         </section>
       </main>
     );
