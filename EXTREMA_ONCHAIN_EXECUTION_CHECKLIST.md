@@ -764,4 +764,9 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 Section 2.3 is complete on Arc Testnet.
 
-UTC cadence boundaries are now locked. Next, implement deterministic standard-round timestamp generation for Daily / Weekly / Quarterly and prove the first real Arc Testnet round creation transaction.
+UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run scripts are implemented:
+- `script/prepare-standard-rounds.sh`
+- `script/simulate-standard-rounds.sh`
+- `script/CreateStandardRounds.s.sol`
+
+Next: run the no-broadcast simulation. Only after it passes should the first 24 standard Round #1 transactions be broadcast to Arc Testnet.

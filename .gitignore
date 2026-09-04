@@ -10,3 +10,4 @@ contracts/out/
 contracts/cache/
 broadcast/
 foundry-pp/
+.extrema-round-plan.env
