@@ -26,7 +26,6 @@ export const pools: Pool[] = cadences.flatMap((cadence, cadenceIndex) =>
   assets.flatMap((asset, assetIndex) =>
     directions.map((direction, directionIndex) => {
       const roundId = 160 + cadenceIndex * 8 + assetIndex * 2 + directionIndex;
-      const isLiveDemoRound = cadence === "Weekly" && asset === "ETH" && direction === "Low";
       const referencePrice = basePrice[asset];
       const multiplier = cadenceIndex === 0 ? 0.03 : cadenceIndex === 1 ? 0.08 : 0.2;
       const spread = referencePrice * multiplier;
@@ -40,7 +39,7 @@ export const pools: Pool[] = cadences.flatMap((cadence, cadenceIndex) =>
         asset,
         cadence,
         direction,
-        status: isLiveDemoRound ? "LIVE" : "ENTRY_OPEN",
+        status: "ENTRY_OPEN",
         referencePrice,
         players: 160 + cadenceIndex * 120 + assetIndex * 61 + directionIndex * 37,
         poolSizeUsdc: 160 + cadenceIndex * 120 + assetIndex * 61 + directionIndex * 37,
@@ -67,7 +66,7 @@ export const results: Result[] = [
     observationStartAt: "2026-09-07T00:00:00Z",
     observationEndAt: "2026-09-13T23:59:59Z",
     resolvedPrice: 2086.43,
-    resolvedAt: "2026-09-13T00:03:21Z",
+    resolvedAt: "2026-09-14T00:03:21Z",
     evidenceHash: "0x7d219f4eab87c3384d91bdaea3a90b1d7f1a91ce0c6b10d38dd35e55a2a9a184",
     source: "Binance USDⓈ-M Futures Mark Price",
     sourceSymbol: "ETHUSDT",
