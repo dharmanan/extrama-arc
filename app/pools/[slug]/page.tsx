@@ -12,7 +12,7 @@ export default function PoolDetailPage() {
   const pool = useMemo(() => getPoolBySlug(params.slug), [params.slug]);
   const { wallet, enterPrediction, getTicketForRound, hasEnteredRound, isPredictionTaken } = useDemoState();
 
-  const initialValue = pool ? activePool.referencePrice.toFixed(2) : "0.00";
+  const initialValue = pool ? pool.referencePrice.toFixed(2) : "0.00";
   const [prediction, setPrediction] = useState(initialValue);
   const [message, setMessage] = useState("");
 
