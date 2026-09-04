@@ -76,6 +76,30 @@ export const backendApi = {
     get() {
       return request<{ wallet: { id: string; address: string; createdAt: string } | null }>("/wallet");
     },
+    chainState() {
+      return request<{
+        chain: {
+          id: number;
+          name: string;
+          rpcUrl: string;
+          explorerUrl: string;
+          blockNumber: number;
+        };
+        usdc: {
+          address: string;
+          name: string;
+          symbol: string;
+          decimals: number;
+          balanceRaw: string;
+          balanceFormatted: string;
+          contractCodePresent: boolean;
+        };
+        wallet: {
+          address: string;
+          explorerUrl: string;
+        };
+      }>("/wallet/chain-state");
+    },
     create() {
       return post<{
         created: boolean;
