@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
+import { arcTestnet } from "../lib/web3";
 import { shortAddress, useDemoState } from "../demo-state";
 import { backendApi } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
-import { connectOwnerWallet, signOwnerMessage } from "../lib/owner-wallet";
 
 type Step = "owner" | "choice" | "create" | "recovery" | "ready";
 
@@ -19,6 +21,11 @@ export default function WalletPage() {
     resetDemo,
   } = useDemoState();
 
+  const { address: connectedAddress, isConnected, chain } = useAccount();
+  const { disconnect } = useDisconnect();
+  const { signMessageAsync } = useSignMessage();
+  const { switchChainAsync } = useSwitchChain();
+
   const [ownerAddress, setOwnerAddress] = useState<string | null>(null);
   const [step, setStep] = useState<Step>(wallet.status === "ready" ? "ready" : "owner");
   const [deviceName, setDeviceName] = useState("My Device");
@@ -27,18 +34,19 @@ export default function WalletPage() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
-  async function handleConnectOwner() {
-    setError("");
-    setBusy("Connecting owner wallet...");
-    try {
-      const address = await connectOwnerWallet();
-      setOwnerAddress(address);
-      setStep("choice");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Owner wallet connection failed.");
-    } finally {
-      setBusy("");
+  useEffect(() => {
+    if (isConnected && connectedAddress) {
+      setOwnerAddress(connectedAddress);
+      if (step === "owner") setStep("choice");
+    } else if (!isConnected) {
+      setOwnerAddress(null);
+      if (step !== "recovery" && step !== "ready") setStep("owner");
     }
+  }, [isConnected, connectedAddress, step]);
+
+  async function ensureArcTestnet() {
+    if (chain?.id === arcTestnet.id) return;
+    await switchChainAsync({ chainId: arcTestnet.id });
   }
 
   async function handleCreate() {
@@ -51,7 +59,8 @@ export default function WalletPage() {
         deviceName,
         async (message) => {
           setBusy("Waiting for owner wallet signature...");
-          const signature = await signOwnerMessage(ownerAddress, message);
+          await ensureArcTestnet();
+          const signature = await signMessageAsync({ message });
           setBusy("Registering passkey...");
           return signature;
         },
@@ -107,6 +116,7 @@ export default function WalletPage() {
       // Session may already be expired; local lock must still succeed.
     }
     lockWallet();
+    disconnect();
     setOwnerAddress(null);
     setPrivateKey("");
     setRecoveryConfirmed(false);
@@ -222,6 +232,17 @@ export default function WalletPage() {
       <main className="wf-page">
         <ProductHeader />
         <section className="wf-main">
+          <div className="wf-row" style={{ marginBottom: 24 }}>
+            <div>
+              <b>Owner wallet</b>
+              <div>{isConnected && connectedAddress ? shortAddress(connectedAddress) : "Not connected"}</div>
+            </div>
+            <div>
+              <b>Network</b>
+              <div>{chain?.name || "—"}</div>
+            </div>
+            <ConnectButton showBalance={false} chainStatus="icon" accountStatus="address" />
+          </div>
           <p>STEP 1</p>
           <h1>Connect your owner wallet</h1>
           <p>
@@ -232,9 +253,7 @@ export default function WalletPage() {
           <section className="wf-panel wf-section">
             <h2>Owner wallet required</h2>
             <p>MetaMask, Rabby or another injected EVM wallet can be used.</p>
-            <button className="wf-action" type="button" onClick={handleConnectOwner} disabled={Boolean(busy)}>
-              {busy || "Connect owner wallet"}
-            </button>
+            <ConnectButton showBalance={false} chainStatus="full" accountStatus="full" />
             {error && <p className="wf-message">{error}</p>}
           </section>
         </section>
@@ -247,6 +266,18 @@ export default function WalletPage() {
       <main className="wf-page">
         <ProductHeader />
         <section className="wf-main">
+          <div className="wf-row" style={{ marginBottom: 24 }}>
+            <div><b>Owner wallet</b><div>{connectedAddress ? shortAddress(connectedAddress) : "Not connected"}</div></div>
+            <div><b>Network</b><div>{chain?.name || "—"}</div></div>
+            <div className="wf-row">
+              {chain?.id !== arcTestnet.id && (
+                <button className="wf-action" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
+                  Switch to Arc Testnet
+                </button>
+              )}
+              <button className="wf-action" type="button" onClick={() => disconnect()}>Disconnect</button>
+            </div>
+          </div>
           <p>STEP 3</p>
           <h1>Create EXTREMA wallet</h1>
           <p>Owner: {shortAddress(ownerAddress)}</p>
@@ -287,6 +318,18 @@ export default function WalletPage() {
     <main className="wf-page">
       <ProductHeader />
       <section className="wf-main">
+        <div className="wf-row" style={{ marginBottom: 24 }}>
+          <div><b>Owner wallet</b><div>{connectedAddress ? shortAddress(connectedAddress) : "Not connected"}</div></div>
+          <div><b>Network</b><div>{chain?.name || "—"}</div></div>
+          <div className="wf-row">
+            {chain?.id !== arcTestnet.id && (
+              <button className="wf-action" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
+                Switch to Arc Testnet
+              </button>
+            )}
+            <button className="wf-action" type="button" onClick={() => disconnect()}>Disconnect</button>
+          </div>
+        </div>
         <p>STEP 2</p>
         <h1>EXTREMA wallet</h1>
         <p>Owner wallet connected: <b>{ownerAddress ? shortAddress(ownerAddress) : "—"}</b></p>
@@ -318,6 +361,7 @@ export default function WalletPage() {
         </div>
 
         <button className="wf-action" type="button" onClick={() => {
+          disconnect();
           setOwnerAddress(null);
           setStep("owner");
         }}>
