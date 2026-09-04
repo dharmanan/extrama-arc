@@ -315,8 +315,6 @@ contract ExtremaPool {
         claimableByTicket[winners[1]] = secondAmount;
         claimableByTicket[winners[2]] = thirdAmount;
 
-        _safeTransfer(TREASURY, treasuryAmount);
-
         emit TreasuryAllocated(roundId, TREASURY, treasuryAmount);
         emit RoundSettled(
             roundId,
