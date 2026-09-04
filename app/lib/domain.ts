@@ -3,6 +3,8 @@ export type Cadence = "Daily" | "Weekly" | "Quarterly";
 export type Direction = "High" | "Low";
 export type RoundStatus = "ENTRY_OPEN" | "LIVE" | "RESOLVABLE" | "SETTLED" | "CANCELLED";
 export type TicketStatus = "Live" | "Settled" | "Winner #1" | "Winner #2" | "Winner #3" | "Claimed";
+export type WalletMode = "extrema" | "external";
+export type WalletStatus = "disconnected" | "ready";
 
 export type AssetConfig = {
   symbol: Asset;
@@ -31,7 +33,6 @@ export type Pool = {
   sourceSymbol: string;
   predictionMin: number;
   predictionMax: number;
-  userPrediction?: number;
 };
 
 export type Winner = {
@@ -47,6 +48,11 @@ export type Winner = {
 export type Result = {
   roundId: number;
   poolSlug: string;
+  asset: Asset;
+  cadence: Cadence;
+  direction: Direction;
+  observationStartAt: string;
+  observationEndAt: string;
   resolvedPrice: number;
   resolvedAt: string;
   evidenceHash: string;
@@ -67,4 +73,29 @@ export type Ticket = {
   entryUsdc: 1;
   status: TicketStatus;
   claimableUsdc: number;
+  enteredAt?: string;
 };
+
+export type PredictionEntry = {
+  ticketId: number;
+  roundId: number;
+  poolSlug: string;
+  wallet: string;
+  prediction: number;
+  enteredAt: string;
+};
+
+export type DemoWallet = {
+  status: WalletStatus;
+  mode: WalletMode | null;
+  address: string | null;
+  balanceUsdc: number;
+};
+
+export type EnterPredictionResult =
+  | { ok: true; ticketId: number; message: string }
+  | { ok: false; message: string };
+
+export type ClaimResult =
+  | { ok: true; amountUsdc: number; message: string }
+  | { ok: false; message: string };
