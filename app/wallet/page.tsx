@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
 import { shortAddress, useDemoState } from "../demo-state";
-import { backendApi, setSessionToken } from "../lib/backend-api";
+import { backendApi } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
 import { connectOwnerWallet, signOwnerMessage } from "../lib/owner-wallet";
 
@@ -106,7 +106,6 @@ export default function WalletPage() {
     } catch {
       // Session may already be expired; local lock must still succeed.
     }
-    setSessionToken(null);
     lockWallet();
     setOwnerAddress(null);
     setPrivateKey("");
@@ -115,7 +114,6 @@ export default function WalletPage() {
   }
 
   function handleReset() {
-    setSessionToken(null);
     resetDemo();
     setOwnerAddress(null);
     setPrivateKey("");
