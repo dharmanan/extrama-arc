@@ -2,7 +2,6 @@
 
 import {
   backendApi,
-  setSessionToken,
   type PublicKeyCredentialCreationOptionsJSON,
   type PublicKeyCredentialRequestOptionsJSON,
 } from "./backend-api";
@@ -119,7 +118,6 @@ export async function registerPasskey(
     deviceName,
   );
 
-  setSessionToken(result.token);
   return result;
 }
 
