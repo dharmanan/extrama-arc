@@ -70,18 +70,19 @@
   z-index:4;
   left:clamp(34px,4.8vw,110px);
   top:clamp(142px,15vh,190px);
-  width:min(38vw,610px);
+  width:min(52vw,920px);
 }
 
 .copy h1{
   margin:0;
-  max-width:8.6ch;
+  max-width:none;
   font:400 clamp(74px,5.4vw,112px)/.86 "Instrument Serif",Georgia,serif;
   letter-spacing:-.052em;
 }
 
+.rewardLine{white-space:nowrap}
 .body{
-  max-width:38ch;
+  max-width:46ch;
   margin:clamp(22px,2vw,32px) 0 0;
   font-size:clamp(14px,.82vw,17px);
   line-height:1.52;
@@ -200,7 +201,7 @@
 .usdc{color:#b7d0ff!important}
 
 @media(max-width:1100px){
-  .copy{width:min(46vw,560px)}
+  .copy{width:min(56vw,680px)}
   .manifesto{right:42px}
   .rail{left:56%}
 }
