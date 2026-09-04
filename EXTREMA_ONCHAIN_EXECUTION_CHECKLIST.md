@@ -276,11 +276,28 @@ Architecture specification: `contracts/ARCHITECTURE.md`
 - Broadcast artifact: `broadcast/DeployArcTestnet.s.sol/5042002/run-latest.json`
 - Note: each pool deployment creates its paired ExtremaTicket internally; ticket addresses still require explicit topology verification/readout.
 
-### Verification pending
+### Verification proof
 
-- Run `VerifyArcDeployment.s.sol` against the deployed Factory/Treasury/Renderer.
-- Read and record all 24 pool addresses and all 24 ticket addresses.
-- Confirm every pool has the expected immutable asset/direction/cadence, treasury, resolver, USDC, and distinct ticket collection.
+- Verification date: 2026-09-05
+- Command: `forge script script/VerifyArcDeployment.s.sol:VerifyArcDeployment --rpc-url https://rpc.testnet.arc.network -vvv`
+- Result: `Script ran successfully.`
+- The verification script checked onchain:
+  - factory pool count = 24
+  - Arc Testnet USDC address
+  - treasury address
+  - pool admin
+  - resolver
+  - renderer
+  - all 24 pool identities
+  - all 24 pools use the expected treasury/USDC/admin/resolver
+  - every pool has a nonzero ticket collection
+  - all 24 ticket collection addresses are distinct
+  - every ticket collection uses the expected renderer
+- Treasury controller direct reads:
+  - `CONTROLLER_A() -> 0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
+  - `CONTROLLER_B() -> 0x99677aab4b168c274A34525D526346fC47Fab72c`
+- Remaining evidence task:
+  - print and record the explicit 24 pool addresses and 24 ticket addresses in the checklist for auditability.
 
 ---
 
