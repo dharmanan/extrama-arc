@@ -1,137 +1,217 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
 import { shortAddress, useDemoState } from "../demo-state";
-import {
-  clearSecureWallet,
-  connectInjectedWallet,
-  createSecurePasskeyWallet,
-  hasSecureWallet,
-  unlockSecurePasskeyWallet,
-} from "../lib/secure-wallet";
+import { backendApi, setSessionToken } from "../lib/backend-api";
+import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
+import { connectOwnerWallet, signOwnerMessage } from "../lib/owner-wallet";
+
+type Step = "owner" | "choice" | "create" | "recovery" | "ready";
 
 export default function WalletPage() {
   const {
     wallet,
     createWallet,
-    connectExistingWallet,
     fundWallet,
     lockWallet,
-    unlockWallet,
     resetDemo,
   } = useDemoState();
 
-  const [vaultExists, setVaultExists] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [created, setCreated] = useState<{ address: string; privateKey: string } | null>(null);
+  const [ownerAddress, setOwnerAddress] = useState<string | null>(null);
+  const [step, setStep] = useState<Step>(wallet.status === "ready" ? "ready" : "owner");
+  const [deviceName, setDeviceName] = useState("My Device");
+  const [privateKey, setPrivateKey] = useState("");
   const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
+  const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    setVaultExists(hasSecureWallet());
-  }, []);
-
-  async function handleCreateWallet() {
+  async function handleConnectOwner() {
     setError("");
-    setCreating(true);
+    setBusy("Connecting owner wallet...");
     try {
-      const result = await createSecurePasskeyWallet();
-      setCreated(result);
-      setVaultExists(true);
+      const address = await connectOwnerWallet();
+      setOwnerAddress(address);
+      setStep("choice");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Wallet creation failed.");
+      setError(cause instanceof Error ? cause.message : "Owner wallet connection failed.");
     } finally {
-      setCreating(false);
+      setBusy("");
     }
   }
 
-  function finishCreateWallet() {
-    if (!created || !recoveryConfirmed) return;
-    const address = created.address;
-    setCreated(null);
-    setRecoveryConfirmed(false);
-    createWallet(address);
-  }
-
-  async function handleUnlock() {
+  async function handleCreate() {
+    if (!ownerAddress) return;
     setError("");
-    setUnlocking(true);
+    setBusy("Waiting for wallet signature...");
     try {
-      if (wallet.mode === "extrema") {
-        const result = await unlockSecurePasskeyWallet();
-        if (wallet.address && result.address.toLowerCase() !== wallet.address.toLowerCase()) {
-          throw new Error("The passkey unlocked a different wallet.");
-        }
-      } else {
-        const address = await connectInjectedWallet();
-        if (wallet.address && address.toLowerCase() !== wallet.address.toLowerCase()) {
-          throw new Error("Connect the same wallet that was used previously.");
-        }
+      await registerPasskey(
+        ownerAddress,
+        deviceName,
+        async (message) => {
+          setBusy("Waiting for owner wallet signature...");
+          const signature = await signOwnerMessage(ownerAddress, message);
+          setBusy("Registering passkey...");
+          return signature;
+        },
+      );
+
+      setBusy("Creating EXTREMA wallet...");
+      const result = await backendApi.wallet.create();
+
+      if (!result.wallet?.address) {
+        throw new Error("Backend did not return an EXTREMA wallet.");
       }
-      unlockWallet();
+
+      createWallet(result.wallet.address);
+
+      if (result.created && result.privateKey) {
+        setPrivateKey(result.privateKey);
+        setStep("recovery");
+      } else {
+        setStep("ready");
+      }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Wallet unlock failed.");
+      setError(cause instanceof Error ? cause.message : "EXTREMA wallet creation failed.");
     } finally {
-      setUnlocking(false);
+      setBusy("");
     }
   }
 
-  async function handleConnectExisting() {
+  async function handleReconnect() {
+    if (!ownerAddress) return;
     setError("");
-    setConnecting(true);
+    setBusy("Authenticating with passkey...");
     try {
-      const address = await connectInjectedWallet();
-      connectExistingWallet(address);
+      await authenticatePasskey(ownerAddress);
+      const result = await backendApi.wallet.get();
+
+      if (!result.wallet?.address) {
+        throw new Error("No EXTREMA wallet exists for this owner wallet.");
+      }
+
+      createWallet(result.wallet.address);
+      setStep("ready");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
+      setError(cause instanceof Error ? cause.message : "Reconnect failed.");
     } finally {
-      setConnecting(false);
+      setBusy("");
     }
+  }
+
+  async function handleLock() {
+    try {
+      await backendApi.auth.logout();
+    } catch {
+      // Session may already be expired; local lock must still succeed.
+    }
+    setSessionToken(null);
+    lockWallet();
+    setOwnerAddress(null);
+    setPrivateKey("");
+    setRecoveryConfirmed(false);
+    setStep("owner");
   }
 
   function handleReset() {
-    clearSecureWallet();
+    setSessionToken(null);
     resetDemo();
-    setCreated(null);
+    setOwnerAddress(null);
+    setPrivateKey("");
     setRecoveryConfirmed(false);
-    setVaultExists(false);
     setError("");
+    setStep("owner");
   }
 
-  if (wallet.status === "ready" && wallet.address) {
+  if (step === "recovery" && wallet.address && privateKey) {
+    return (
+      <main className="wf-page">
+        <ProductHeader />
+        <section className="wf-main">
+          <p>ONE-TIME DISCLOSURE</p>
+          <h1>Save your EXTREMA private key</h1>
+          <p>
+            This private key is returned only when the backend creates the wallet.
+            It will not be shown again by EXTREMA after you continue.
+          </p>
+
+          <section className="wf-panel wf-section">
+            <p><b>EXTREMA wallet address</b></p>
+            <p className="wf-code">{wallet.address}</p>
+
+            <p><b>Private key</b></p>
+            <p className="wf-code">{privateKey}</p>
+
+            <p>
+              Store it in a password manager or another secure vault.
+              Anyone with this key controls the wallet.
+            </p>
+
+            <label className="wf-row" style={{ justifyContent: "flex-start" }}>
+              <input
+                type="checkbox"
+                checked={recoveryConfirmed}
+                onChange={(event) => setRecoveryConfirmed(event.target.checked)}
+              />
+              I have saved the private key securely.
+            </label>
+
+            <button
+              className="wf-action"
+              type="button"
+              disabled={!recoveryConfirmed}
+              onClick={() => {
+                setPrivateKey("");
+                setRecoveryConfirmed(false);
+                setStep("ready");
+              }}
+            >
+              I have saved the key · Continue
+            </button>
+          </section>
+        </section>
+      </main>
+    );
+  }
+
+  if (step === "ready" && wallet.status === "ready" && wallet.address) {
     return (
       <main className="wf-page">
         <ProductHeader />
         <section className="wf-main">
           <p>ARC TESTNET WALLET</p>
-          <h1>Wallet ready</h1>
+          <h1>EXTREMA wallet ready</h1>
 
           <div className="wf-two-col wf-section">
             <section className="wf-panel">
-              <p><b>Mode:</b> {wallet.mode === "extrema" ? "EXTREMA Passkey Wallet" : "Existing EVM Wallet"}</p>
-              <p><b>Address:</b> {shortAddress(wallet.address)}</p>
+              {ownerAddress && (
+                <p><b>Owner wallet:</b> {shortAddress(ownerAddress)}</p>
+              )}
+              <p><b>EXTREMA wallet:</b> {shortAddress(wallet.address)}</p>
               <p className="wf-code">{wallet.address}</p>
-              <p><b>Balance:</b> {wallet.balanceUsdc.toFixed(2)} USDC</p>
+              <p><b>Demo USDC balance:</b> {wallet.balanceUsdc.toFixed(2)} USDC</p>
 
               <div className="wf-row">
-                <button className="wf-action" type="button" onClick={() => fundWallet(10)}>Get 10 test USDC</button>
+                <button className="wf-action" type="button" onClick={() => fundWallet(10)}>
+                  Get 10 demo USDC
+                </button>
                 <Link className="wf-action" href="/pools">Explore pools</Link>
               </div>
             </section>
 
             <section className="wf-panel">
-              <h2>Wallet controls</h2>
-              <button className="wf-action" type="button" onClick={lockWallet}>Lock wallet</button>
+              <h2>Session</h2>
               <p>
-                {wallet.mode === "extrema"
-                  ? "Unlocking this wallet requires the same passkey again."
-                  : "Unlocking requires reconnecting the same browser wallet."}
+                The EXTREMA wallet private key is encrypted on the backend.
+                Returning sessions authenticate with the owner wallet plus passkey.
               </p>
-              <button className="wf-action" type="button" onClick={handleReset}>Reset complete demo state</button>
+              <button className="wf-action" type="button" onClick={handleLock}>
+                Disconnect session
+              </button>
+              <button className="wf-action" type="button" onClick={handleReset}>
+                Reset local demo state
+              </button>
             </section>
           </div>
         </section>
@@ -139,24 +219,23 @@ export default function WalletPage() {
     );
   }
 
-  if (wallet.address) {
+  if (step === "owner") {
     return (
       <main className="wf-page">
         <ProductHeader />
         <section className="wf-main">
-          <p>ARC TESTNET WALLET</p>
-          <h1>Wallet locked</h1>
-          <p>Your address, balance and tickets are preserved.</p>
+          <p>STEP 1</p>
+          <h1>Connect your owner wallet</h1>
+          <p>
+            This wallet proves account ownership. It is separate from the EXTREMA wallet
+            that will be created for predictions.
+          </p>
 
           <section className="wf-panel wf-section">
-            <p className="wf-code">{wallet.address}</p>
-            <p>Stored balance: {wallet.balanceUsdc.toFixed(2)} USDC</p>
-            <button className="wf-action" type="button" onClick={handleUnlock} disabled={unlocking}>
-              {unlocking
-                ? "Unlocking..."
-                : wallet.mode === "extrema"
-                  ? "Unlock with passkey"
-                  : "Reconnect wallet"}
+            <h2>Owner wallet required</h2>
+            <p>MetaMask, Rabby or another injected EVM wallet can be used.</p>
+            <button className="wf-action" type="button" onClick={handleConnectOwner} disabled={Boolean(busy)}>
+              {busy || "Connect owner wallet"}
             </button>
             {error && <p className="wf-message">{error}</p>}
           </section>
@@ -165,42 +244,41 @@ export default function WalletPage() {
     );
   }
 
-  if (created) {
+  if (step === "create" && ownerAddress) {
     return (
       <main className="wf-page">
         <ProductHeader />
         <section className="wf-main">
-          <p>RECOVERY KEY · SHOWN ONCE</p>
-          <h1>Save your private key now</h1>
-          <p>
-            This private key controls the wallet. EXTREMA will not show it again after you continue.
-            Do not share it with anyone.
-          </p>
+          <p>STEP 3</p>
+          <h1>Create EXTREMA wallet</h1>
+          <p>Owner: {shortAddress(ownerAddress)}</p>
 
           <section className="wf-panel wf-section">
-            <p><b>Wallet address</b></p>
-            <p className="wf-code">{created.address}</p>
-
-            <p><b>Private key</b></p>
-            <p className="wf-code">{created.privateKey}</p>
-
-            <label className="wf-row" style={{justifyContent:"flex-start"}}>
+            <label className="wf-field">
+              Device name
               <input
-                type="checkbox"
-                checked={recoveryConfirmed}
-                onChange={(event) => setRecoveryConfirmed(event.target.checked)}
+                value={deviceName}
+                maxLength={100}
+                onChange={(event) => setDeviceName(event.target.value)}
+                placeholder="e.g. My MacBook"
               />
-              I saved this private key somewhere safe.
             </label>
 
-            <button
-              className="wf-action"
-              type="button"
-              disabled={!recoveryConfirmed}
-              onClick={finishCreateWallet}
-            >
-              I saved it · Continue
-            </button>
+            <p>
+              Next, your owner wallet will ask you to sign an EXTREMA registration message.
+              Only after that succeeds will the browser ask you to register a passkey.
+            </p>
+
+            <div className="wf-row">
+              <button className="wf-action" type="button" onClick={handleCreate} disabled={Boolean(busy)}>
+                {busy || "Sign, register passkey & create wallet"}
+              </button>
+              <button className="wf-action" type="button" onClick={() => setStep("choice")} disabled={Boolean(busy)}>
+                Back
+              </button>
+            </div>
+
+            {error && <p className="wf-message">{error}</p>}
           </section>
         </section>
       </main>
@@ -211,49 +289,42 @@ export default function WalletPage() {
     <main className="wf-page">
       <ProductHeader />
       <section className="wf-main">
-        <p>ARC TESTNET WALLET</p>
-        <h1>Create or connect a wallet</h1>
-        <p>
-          EXTREMA Wallet creates a real EVM key locally. The private key is encrypted in this browser
-          with a passkey-backed WebAuthn PRF key. The unencrypted private key is shown only once during creation.
-        </p>
+        <p>STEP 2</p>
+        <h1>EXTREMA wallet</h1>
+        <p>Owner wallet connected: <b>{ownerAddress ? shortAddress(ownerAddress) : "—"}</b></p>
 
         <div className="wf-two-col wf-section">
           <section className="wf-panel">
-            <h2>Create EXTREMA Wallet</h2>
+            <h2>Create new EXTREMA wallet</h2>
             <p>
-              Your browser will request a passkey using Touch ID, Face ID, Windows Hello or your device PIN.
-              No wallet is created if passkey authentication is cancelled.
+              Register a passkey, then create a fresh server-managed EVM wallet.
+              Its private key will be shown exactly once.
             </p>
-
-            {vaultExists ? (
-              <>
-                <p><b>An EXTREMA passkey vault already exists in this browser.</b></p>
-                <button className="wf-action" type="button" onClick={handleUnlock} disabled={unlocking}>
-                  {unlocking ? "Unlocking..." : "Unlock existing passkey wallet"}
-                </button>
-              </>
-            ) : (
-              <button className="wf-action" type="button" onClick={handleCreateWallet} disabled={creating}>
-                {creating ? "Waiting for passkey..." : "Create Wallet with Passkey"}
-              </button>
-            )}
+            <button className="wf-action" type="button" onClick={() => {
+              setError("");
+              setStep("create");
+            }}>
+              Create new wallet
+            </button>
           </section>
 
           <section className="wf-panel">
-            <h2>Connect existing wallet</h2>
-            <p>Use an injected EVM wallet already installed in this browser.</p>
-            <ul>
-              <li>MetaMask</li>
-              <li>Rabby</li>
-              <li>Coinbase Wallet</li>
-              <li>Other EIP-1193 browser wallets</li>
-            </ul>
-            <button className="wf-action" type="button" onClick={handleConnectExisting} disabled={connecting}>
-              {connecting ? "Connecting..." : "Connect existing wallet"}
+            <h2>Reconnect existing EXTREMA wallet</h2>
+            <p>
+              Already created one? Authenticate with the registered passkey and restore the session.
+            </p>
+            <button className="wf-action" type="button" onClick={handleReconnect} disabled={Boolean(busy)}>
+              {busy || "Authenticate with passkey"}
             </button>
           </section>
         </div>
+
+        <button className="wf-action" type="button" onClick={() => {
+          setOwnerAddress(null);
+          setStep("owner");
+        }}>
+          Change owner wallet
+        </button>
 
         {error && <p className="wf-message">{error}</p>}
       </section>
