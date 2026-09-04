@@ -15,7 +15,6 @@ export default function WalletPage() {
   const {
     wallet,
     createWallet,
-    fundWallet,
     lockWallet,
     resetDemo,
   } = useDemoState();
@@ -33,6 +32,9 @@ export default function WalletPage() {
   const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [chainState, setChainState] = useState<Awaited<ReturnType<typeof backendApi.wallet.chainState>> | null>(null);
+  const [chainBusy, setChainBusy] = useState("");
+  const [chainError, setChainError] = useState("");
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -58,6 +60,25 @@ export default function WalletPage() {
       setBusy("");
     }
   }
+
+  async function refreshChainState() {
+    setChainError("");
+    setChainBusy("Reading Arc Testnet...");
+    try {
+      const state = await backendApi.wallet.chainState();
+      setChainState(state);
+    } catch (cause) {
+      setChainError(cause instanceof Error ? cause.message : "Arc Testnet state read failed.");
+    } finally {
+      setChainBusy("");
+    }
+  }
+
+  useEffect(() => {
+    if (step === "ready" && wallet.status === "ready" && wallet.address) {
+      void refreshChainState();
+    }
+  }, [step, wallet.status, wallet.address]);
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -213,12 +234,44 @@ export default function WalletPage() {
               )}
               <p><b>EXTREMA wallet:</b> {shortAddress(wallet.address)}</p>
               <p className="wf-code">{wallet.address}</p>
-              <p><b>Demo USDC balance:</b> {wallet.balanceUsdc.toFixed(2)} USDC</p>
+
+              {chainState ? (
+                <>
+                  <p><b>Network:</b> {chainState.chain.name} · Chain ID {chainState.chain.id}</p>
+                  <p><b>Block:</b> {chainState.chain.blockNumber}</p>
+                  <p><b>USDC contract:</b></p>
+                  <p className="wf-code">{chainState.usdc.address}</p>
+                  <p><b>USDC decimals:</b> {chainState.usdc.decimals}</p>
+                  <p><b>Real USDC balance:</b> {chainState.usdc.balanceFormatted} {chainState.usdc.symbol}</p>
+                </>
+              ) : (
+                <p>{chainBusy || "Arc Testnet balance not loaded yet."}</p>
+              )}
+
+              {chainError && <p className="wf-message">{chainError}</p>}
 
               <div className="wf-row">
-                <button className="wf-action" type="button" onClick={() => fundWallet(10)}>
-                  Get 10 demo USDC
+                <button className="wf-action" type="button" onClick={refreshChainState} disabled={Boolean(chainBusy)}>
+                  {chainBusy || "Refresh onchain balance"}
                 </button>
+                <a
+                  className="wf-action"
+                  href="https://faucet.circle.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Open Circle Faucet
+                </a>
+                {chainState && (
+                  <a
+                    className="wf-action"
+                    href={chainState.wallet.explorerUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View on ArcScan
+                  </a>
+                )}
                 <Link className="wf-action" href="/pools">Explore pools</Link>
               </div>
             </section>
