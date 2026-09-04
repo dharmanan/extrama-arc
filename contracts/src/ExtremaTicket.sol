@@ -48,24 +48,6 @@ contract ExtremaTicket {
         symbol = symbol_;
     }
 
-    modifier onlyMinter() {
-        _checkMinter();
-        _;
-    }
-
-    modifier onlyRendererAdmin() {
-        _checkRendererAdmin();
-        _;
-    }
-
-    function _checkMinter() internal view {
-        if (msg.sender != MINTER) revert NotMinter();
-    }
-
-    function _checkRendererAdmin() internal view {
-        if (msg.sender != RENDERER_ADMIN) revert NotRendererAdmin();
-    }
-
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
         return interfaceId == 0x01ffc9a7
             || interfaceId == 0x80ac58cd
@@ -88,7 +70,8 @@ contract ExtremaTicket {
         return IExtremaRenderer(renderer).tokenURI(MINTER, tokenId);
     }
 
-    function setRenderer(address newRenderer) external onlyRendererAdmin {
+    function setRenderer(address newRenderer) external {
+        if (msg.sender != RENDERER_ADMIN) revert NotRendererAdmin();
         if (newRenderer == address(0)) revert ZeroAddress();
         address previousRenderer = renderer;
         renderer = newRenderer;
@@ -129,7 +112,12 @@ contract ExtremaTicket {
             revert NotAuthorized();
         }
 
+        address approved = _tokenApprovals[tokenId];
         delete _tokenApprovals[tokenId];
+
+        if (approved != address(0)) {
+            emit Approval(owner_, address(0), tokenId);
+        }
 
         unchecked {
             _balances[from] -= 1;
@@ -166,7 +154,8 @@ contract ExtremaTicket {
         }
     }
 
-    function mint(address to, uint256 tokenId) external onlyMinter {
+    function mint(address to, uint256 tokenId) external {
+        if (msg.sender != MINTER) revert NotMinter();
         if (to == address(0)) revert ZeroAddress();
         if (_owners[tokenId] != address(0)) revert TokenAlreadyExists();
 
