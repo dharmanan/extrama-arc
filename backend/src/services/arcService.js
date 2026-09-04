@@ -27,10 +27,11 @@ async function readArcWalletState(address) {
   }
 
   const provider = getProvider();
-  const [network, blockNumber, code] = await Promise.all([
+  const [network, blockNumber, code, nativeBalanceRaw] = await Promise.all([
     provider.getNetwork(),
     provider.getBlockNumber(),
     provider.getCode(ARC_TESTNET_USDC_ADDRESS),
+    provider.getBalance(address),
   ]);
 
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
@@ -56,6 +57,12 @@ async function readArcWalletState(address) {
       rpcUrl: config.ARC_TESTNET_RPC_URL,
       explorerUrl: 'https://testnet.arcscan.app',
       blockNumber,
+    },
+    native: {
+      symbol: 'USDC',
+      decimals: 18,
+      balanceRaw: nativeBalanceRaw.toString(),
+      balanceFormatted: ethers.formatUnits(nativeBalanceRaw, 18),
     },
     usdc: {
       address: ARC_TESTNET_USDC_ADDRESS,
