@@ -13,6 +13,8 @@ contract ExtremaTreasury {
     address public immutable CONTROLLER_A;
     address public immutable CONTROLLER_B;
 
+    uint256 private _reentrancyState = 1;
+
     event TreasuryWithdrawal(address indexed controller, uint256 amount);
 
     constructor(address usdc_, address controllerA_, address controllerB_) {
@@ -31,31 +33,34 @@ contract ExtremaTreasury {
         _;
     }
 
+    modifier nonReentrant() {
+        if (_reentrancyState != 1) revert TokenTransferFailed();
+        _reentrancyState = 2;
+        _;
+        _reentrancyState = 1;
+    }
+
     function balance() external view returns (uint256) {
         return _balance();
     }
 
-    function withdraw(uint256 amount) external onlyController {
+    function withdraw(uint256 amount) external onlyController nonReentrant {
         uint256 available = _balance();
         if (amount == 0 || amount > available) revert InvalidAmount();
 
-        if (!USDC.transfer(msg.sender, amount)) revert TokenTransferFailed();
         emit TreasuryWithdrawal(msg.sender, amount);
+        if (!USDC.transfer(msg.sender, amount)) revert TokenTransferFailed();
     }
 
-    function withdrawAll() external onlyController {
+    function withdrawAll() external onlyController nonReentrant {
         uint256 amount = _balance();
         if (amount == 0) revert InvalidAmount();
 
-        if (!USDC.transfer(msg.sender, amount)) revert TokenTransferFailed();
         emit TreasuryWithdrawal(msg.sender, amount);
+        if (!USDC.transfer(msg.sender, amount)) revert TokenTransferFailed();
     }
 
     function _balance() internal view returns (uint256) {
-        (bool success, bytes memory data) = address(USDC).staticcall(
-            abi.encodeWithSignature("balanceOf(address)", address(this))
-        );
-        if (!success || data.length < 32) return 0;
-        return abi.decode(data, (uint256));
+        return USDC.balanceOf(address(this));
     }
 }

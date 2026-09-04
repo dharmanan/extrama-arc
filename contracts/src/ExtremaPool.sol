@@ -4,10 +4,6 @@ pragma solidity ^0.8.30;
 import {ExtremaTicket} from "./ExtremaTicket.sol";
 import {IERC20} from "./interfaces/IERC20.sol";
 
-interface IERC20Balance is IERC20 {
-    function balanceOf(address account) external view returns (uint256);
-}
-
 contract ExtremaPool {
     error ZeroAddress();
     error NotOwner();
@@ -79,9 +75,10 @@ contract ExtremaPool {
         bool isRefunded;
     }
 
-    IERC20Balance public immutable USDC;
+    IERC20 public immutable USDC;
     address public immutable TREASURY;
     ExtremaTicket public immutable TICKET;
+    address public immutable CONFIG_ADMIN;
 
     Asset public immutable ASSET;
     Direction public immutable DIRECTION;
@@ -151,7 +148,7 @@ contract ExtremaPool {
         address resolver_,
         address owner_,
         address renderer_,
-        address rendererAdmin_,
+        address configAdmin_,
         Asset asset_,
         Direction direction_,
         Cadence cadence_
@@ -162,13 +159,14 @@ contract ExtremaPool {
                 || resolver_ == address(0)
                 || owner_ == address(0)
                 || renderer_ == address(0)
-                || rendererAdmin_ == address(0)
+                || configAdmin_ == address(0)
         ) revert ZeroAddress();
 
-        USDC = IERC20Balance(usdc_);
+        USDC = IERC20(usdc_);
         TREASURY = treasury_;
         resolver = resolver_;
         owner = owner_;
+        CONFIG_ADMIN = configAdmin_;
 
         ASSET = asset_;
         DIRECTION = direction_;
@@ -176,7 +174,7 @@ contract ExtremaPool {
 
         TICKET = new ExtremaTicket(
             address(this),
-            rendererAdmin_,
+            configAdmin_,
             renderer_,
             _collectionName(asset_, direction_, cadence_),
             _collectionSymbol(asset_, direction_, cadence_)
@@ -212,7 +210,8 @@ contract ExtremaPool {
         emit OwnershipTransferred(previousOwner, newOwner);
     }
 
-    function setResolver(address newResolver) external onlyOwner {
+    function setResolver(address newResolver) external {
+        if (msg.sender != owner && msg.sender != CONFIG_ADMIN) revert NotOwner();
         if (newResolver == address(0)) revert ZeroAddress();
 
         address previousResolver = resolver;
