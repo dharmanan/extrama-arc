@@ -1,6 +1,58 @@
 "use client";
 
+import type { Asset } from "./domain";
+
 const API_URL = "/api/extrema";
+
+export type LiveRoundState = {
+  roundId: number;
+  contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
+  canEnter: boolean;
+  entryOpenAt: string;
+  entryCloseAt: string;
+  observationStartAt: string;
+  observationEndAt: string;
+  entryCount: number;
+  totalStakeRaw: string;
+  totalStakeUsdc: string;
+  escrowRemainingRaw: string;
+  escrowRemainingUsdc: string;
+  resolvedPriceCents: string;
+};
+
+export type LivePool = {
+  slug: string;
+  poolAddress: string;
+  ticketAddress: string;
+  asset: Asset;
+  direction: "HIGH" | "LOW";
+  cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+  source: string;
+  sourceSymbol: string;
+  round: LiveRoundState;
+};
+
+export type LiveRoundsResponse = {
+  chain: {
+    id: number;
+    name: string;
+    blockNumber: number;
+    timestamp: number;
+    timestampIso: string;
+    explorerUrl: string;
+  };
+  factory: {
+    address: string;
+    poolCount: number;
+  };
+  pools: LivePool[];
+};
+
+export type LiveRoundResponse = {
+  chain: LiveRoundsResponse["chain"];
+  factory: LiveRoundsResponse["factory"];
+  pool: LivePool;
+};
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
@@ -70,6 +122,14 @@ export const backendApi = {
     },
     logout() {
       return post<{ ok: true }>("/auth/logout", {});
+    },
+  },
+  rounds: {
+    list() {
+      return request<LiveRoundsResponse>("/rounds");
+    },
+    get(slug: string) {
+      return request<LiveRoundResponse>(`/rounds/${encodeURIComponent(slug)}`);
     },
   },
   wallet: {

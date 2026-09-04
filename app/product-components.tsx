@@ -3,9 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { assetConfigs, formatUsd } from "./lib/data";
-import type { Asset, Pool, Ticket } from "./lib/domain";
+import type { Asset, Ticket } from "./lib/domain";
 import { shortAddress, useDemoState } from "./demo-state";
-import { backendApi } from "./lib/backend-api";
+import { backendApi, type LivePool } from "./lib/backend-api";
 
 export function ProductHeader() {
   const { wallet } = useDemoState();
@@ -60,25 +60,30 @@ export function AssetMark({ asset }: { asset: Asset }) {
   );
 }
 
-export function PoolSummary({ pool }: { pool: Pool }) {
-  const { hasEnteredRound } = useDemoState();
-  const entered = hasEnteredRound(pool.roundId);
+function titleCase(value: string) {
+  return value.charAt(0) + value.slice(1).toLowerCase();
+}
 
+export function PoolSummary({ pool }: { pool: LivePool }) {
   return (
     <article className="wf-card">
       <div className="wf-row">
         <AssetMark asset={pool.asset} />
-        <span>{pool.cadence} · {pool.direction}</span>
+        <span>{titleCase(pool.cadence)} · {titleCase(pool.direction)}</span>
       </div>
-      <strong>{formatUsd(pool.referencePrice)}</strong>
-      <small>Reference price</small>
+
+      <p>Round <b>#{pool.round.roundId}</b></p>
+
       <dl className="wf-stats">
-        <div><dt>{pool.players}</dt><dd>Players</dd></div>
-        <div><dt>{pool.poolSizeUsdc} USDC</dt><dd>Pool</dd></div>
+        <div><dt>{pool.round.entryCount}</dt><dd>Players</dd></div>
+        <div><dt>{pool.round.totalStakeUsdc} USDC</dt><dd>Pool</dd></div>
       </dl>
-      <p>Status: <b>{pool.status}</b>{entered ? " · You entered" : ""}</p>
+
+      <p>Status: <b>{pool.round.contractStatus}</b></p>
+      <p>Entry closes: {pool.round.entryCloseAt}</p>
+
       <Link href={`/pools/${pool.slug}`} className="wf-action">
-        {entered ? "View entry" : "Open pool"}
+        Open pool
       </Link>
     </article>
   );

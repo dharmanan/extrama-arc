@@ -1,25 +1,57 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PoolSummary } from "../product-components";
-import { pools } from "../lib/data";
+import { backendApi, type LivePool } from "../lib/backend-api";
 import type { Asset, Cadence } from "../lib/domain";
 
 const assets: ("All" | Asset)[] = ["All", "BTC", "ETH", "SOL", "HYPE"];
 const cadences: ("All" | Cadence)[] = ["All", "Daily", "Weekly", "Quarterly"];
 
+function cadenceKey(value: Cadence) {
+  return value.toUpperCase() as LivePool["cadence"];
+}
+
 export default function PoolsClient() {
   const [asset, setAsset] = useState<"All" | Asset>("All");
   const [cadence, setCadence] = useState<"All" | Cadence>("All");
+  const [pools, setPools] = useState<LivePool[]>([]);
+  const [blockNumber, setBlockNumber] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    backendApi.rounds.list()
+      .then((state) => {
+        if (cancelled) return;
+        setPools(state.pools);
+        setBlockNumber(state.chain.blockNumber);
+        setError("");
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setPools([]);
+        setError(err instanceof Error ? err.message : "Unable to read Arc Testnet rounds.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const filtered = useMemo(
     () =>
       pools.filter(
         (pool) =>
           (asset === "All" || pool.asset === asset) &&
-          (cadence === "All" || pool.cadence === cadence),
+          (cadence === "All" || pool.cadence === cadenceKey(cadence)),
       ),
-    [asset, cadence],
+    [asset, cadence, pools],
   );
 
   return (
@@ -52,11 +84,26 @@ export default function PoolsClient() {
         ))}
       </div>
 
-      <p>{filtered.length} pools shown.</p>
+      {loading && <p>Reading live Arc Testnet rounds…</p>}
 
-      <div className="wf-grid wf-section">
-        {filtered.map((pool) => <PoolSummary pool={pool} key={pool.slug} />)}
-      </div>
+      {!loading && error && (
+        <section className="wf-panel wf-section">
+          <h2>Arc round data unavailable</h2>
+          <p>{error}</p>
+          <p>No mock pool data is shown as a fallback.</p>
+        </section>
+      )}
+
+      {!loading && !error && (
+        <>
+          <p>
+            {filtered.length} pools shown · Arc Testnet block {blockNumber ?? "—"}.
+          </p>
+          <div className="wf-grid wf-section">
+            {filtered.map((pool) => <PoolSummary pool={pool} key={pool.poolAddress} />)}
+          </div>
+        </>
+      )}
     </>
   );
 }

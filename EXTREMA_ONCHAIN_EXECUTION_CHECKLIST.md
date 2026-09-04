@@ -362,7 +362,7 @@ Cadences:
 
 Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
-- [ ] Backend round model connected to onchain `roundId`
+- [x] Backend round model connected to onchain `roundId`
 - [x] Daily round creation verified
 - [x] Weekly round creation verified
 - [x] Quarterly round creation verified
@@ -444,6 +444,32 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - #22: `0xadbe77a1c2a88aaf118487b4039acfbf1346fb970658d8379dad6c0888f6e965`
   - #23: `0x2ab6a455a49fcacd4ed7ad217ad7ad683c46b88b4dba267c80bce273d46608b0`
   - #24: `0x5b39ca15a7a4d74d95ef1d1896af5fe71cf083931a9750108dfcac1acd3f8d50`
+
+#### Backend live-round read proof
+
+- Verification date: 2026-09-05
+- Command: `npm --prefix backend run verify:rounds`
+- Result: `verified: true`
+- Chain ID: `5042002`
+- Factory: `0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A`
+- Pool count: `24`
+- Verified assets: BTC, ETH, SOL, HYPE
+- Verified directions: HIGH, LOW
+- Verified cadences: DAILY, WEEKLY, QUARTERLY
+- Sample `btc-daily-high`:
+  - pool: `0xc724050511Df7CC0cb7aFC688cbcc9C2A16dC36d`
+  - ticket: `0x3c04c15025731A07772018e8609a8af7212d8801`
+  - roundId: `1`
+  - status: `ENTRY_OPEN`
+  - canEnter: `true`
+  - entryOpenAt: `2026-09-04T23:04:57.000Z`
+  - entryCloseAt: `2026-09-05T20:00:00.000Z`
+  - observation: `2026-09-06T00:00:00.000Z -> 2026-09-07T00:00:00.000Z`
+  - entryCount: `0`
+  - totalStake: `0.0 USDC`
+  - escrowRemaining: `0.0 USDC`
+- Public Arc RPC rate-limit handling was verified by replacing burst reads with sequential reads plus retry only for explicit `-32005` rate-limit responses.
+- No mock/fallback round state is used by this backend read path.
 
 #### Arc Testnet Round #1 verification proof
 
@@ -844,4 +870,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Round #1 creation is now broadcast and verified across all 24 standard pools on Arc Testnet. Next: connect the backend round model/indexing path to these real onchain round IDs and states, then replace hardcoded pool/player/status values in the UI.
+Round #1 creation and backend live-round reads are verified across all 24 standard pools. Frontend pool and live-round routes are now wired to the backend live-round API with no mock fallback; next run the frontend typecheck/build and browser verification before marking the UI items complete.
