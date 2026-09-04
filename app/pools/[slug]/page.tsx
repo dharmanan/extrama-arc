@@ -10,7 +10,7 @@ import { useDemoState } from "../../demo-state";
 export default function PoolDetailPage() {
   const params = useParams<{ slug: string }>();
   const pool = useMemo(() => getPoolBySlug(params.slug), [params.slug]);
-  const { wallet, enterPrediction, getTicketForPool, hasEnteredPool, isPredictionTaken } = useDemoState();
+  const { wallet, enterPrediction, getTicketForRound, hasEnteredRound, isPredictionTaken } = useDemoState();
 
   const initialValue = pool ? pool.referencePrice.toFixed(2) : "0.00";
   const [prediction, setPrediction] = useState(initialValue);
@@ -26,8 +26,8 @@ export default function PoolDetailPage() {
   }
 
   const numericPrediction = Number(prediction);
-  const existingTicket = getTicketForPool(pool.slug);
-  const alreadyEntered = hasEnteredPool(pool.slug);
+  const existingTicket = getTicketForRound(pool.roundId);
+  const alreadyEntered = hasEnteredRound(pool.roundId);
 
   function nearbyAvailable() {
     const base = Number.isFinite(numericPrediction) ? numericPrediction : pool.referencePrice;
@@ -37,7 +37,7 @@ export default function PoolDetailPage() {
       .filter((value, index, values) =>
         value >= pool.predictionMin &&
         value <= pool.predictionMax &&
-        !isPredictionTaken(pool.slug, value) &&
+        !isPredictionTaken(pool.roundId, value) &&
         values.indexOf(value) === index,
       )
       .slice(0, 4);
@@ -71,7 +71,7 @@ export default function PoolDetailPage() {
 
           <section className="wf-panel">
             <h2>Make a prediction</h2>
-            <p>Every entry costs exactly 1 USDC. The same wallet can enter this pool once, and the same exact price cannot be taken twice.</p>
+            <p>Every entry costs exactly 1 USDC. The same wallet can enter this round once, and the same exact price cannot be taken twice.</p>
 
             {wallet.status !== "ready" && (
               <p><b>Wallet required.</b> <Link href="/wallet">Create or connect a wallet</Link>.</p>
@@ -99,7 +99,7 @@ export default function PoolDetailPage() {
                   Allowed demo range: {formatUsd(pool.predictionMin)} – {formatUsd(pool.predictionMax)}
                 </p>
 
-                {Number.isFinite(numericPrediction) && isPredictionTaken(pool.slug, Number(numericPrediction.toFixed(2))) && (
+                {Number.isFinite(numericPrediction) && isPredictionTaken(pool.roundId, Number(numericPrediction.toFixed(2))) && (
                   <p><b>{formatUsd(numericPrediction)} is already taken.</b></p>
                 )}
 
