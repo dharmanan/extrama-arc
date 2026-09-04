@@ -12,44 +12,72 @@ export default function Home() {
   return (
     <main className={styles.page}>
       <header className={styles.header}>
-        <Link className={styles.brand} href="/" aria-label="EXTREMA ana sayfa"><span aria-hidden="true">✦</span> EXTREMA</Link>
-        <nav className={styles.nav} aria-label="Ana navigasyon">
+        <Link className={styles.brand} href="/" aria-label="EXTREMA home">
+          <span aria-hidden="true">✦</span>
+          EXTREMA
+        </Link>
+
+        <nav className={styles.nav} aria-label="Main navigation">
           <Link className={styles.active} href="/">Play</Link>
           <Link href="/pools">Pools</Link>
           <Link href="/results/184">Leaderboard</Link>
           <a href="#how">How it works</a>
         </nav>
+
         <Link className={styles.wallet} href="/wallet">Connect Wallet</Link>
       </header>
 
       <section className={styles.hero} aria-labelledby="home-title">
+        <div className={styles.mountainLayer} aria-hidden="true" />
+
         <div className={styles.copy}>
-          <p className={styles.eyebrow}>REAL PRICES. REAL PREDICTIONS.</p>
-          <h1 id="home-title">Small Predictions.<br />Real Rewards.</h1>
-          <p className={styles.body}>Predict the next high or low of BTC, ETH, SOL or HYPE. 1 USDC entry. Onchain. Transparent. For everyone.</p>
-          <Link className={styles.cta} href="/pools">Start Predicting <span aria-hidden="true">→</span></Link>
-          <dl className={styles.stats}>
-            <div><dt>24</dt><dd>Active Pools</dd></div>
-            <div><dt>12,438</dt><dd>Players</dd></div>
-            <div><dt>$12,438</dt><dd>Total Pool Volume</dd></div>
-          </dl>
-          <p className={styles.trust}>Built on <b>✦ Arc</b><i /> Powered by <b>◎ USDC</b></p>
+          <p className={styles.eyebrow}>REAL PRICES. REAL PLAYERS.</p>
+          <h1 id="home-title">Predict<br />what&apos;s next.</h1>
+          <p className={styles.body}>
+            1 USDC. Four assets. Daily, weekly or quarterly.<br />
+            Closest predictions win the pool.
+          </p>
+          <Link className={styles.cta} href="/pools">
+            Start Playing
+            <span aria-hidden="true">→</span>
+          </Link>
         </div>
 
-        <div className={styles.visual} aria-label="Dört aktif varlık">
-          <div className={styles.visualShade} />
-          <p className={styles.manifesto}>SAME<br />MARKETS.<br />BIGGER<br />STORIES.</p>
-          <div className={styles.panes}>
-            {assets.map((asset, index) => (
-              <article className={`${styles.pane} ${styles[asset.tone]}`} key={asset.name}>
-                <span className={styles.paneIndex}>0{index + 1}</span>
-                <div className={styles.logoWrap}><img src={asset.src} alt={`${asset.label} logo`} /></div>
-                <div className={styles.paneMeta}><b>{asset.name}</b><small>{asset.label}</small></div>
-              </article>
-            ))}
-          </div>
-          <div className={styles.rail}><span>Predict</span><span>Explore</span><span>Compete</span><span>Own</span></div>
+        <div className={styles.assetField} aria-label="Prediction assets">
+          {assets.map((asset) => (
+            <Link
+              className={`${styles.assetPane} ${styles[asset.tone]}`}
+              href="/pools"
+              key={asset.name}
+              aria-label={`Explore ${asset.label} pools`}
+            >
+              <span className={styles.assetLogo}>
+                <img src={asset.src} alt="" />
+              </span>
+              <span className={styles.assetMeta}>
+                <b>{asset.name}</b>
+                <small>{asset.label}</small>
+              </span>
+            </Link>
+          ))}
         </div>
+
+        <dl className={styles.stats}>
+          <div><dt>24</dt><dd>Active Pools</dd></div>
+          <div><dt>12,438</dt><dd>Players</dd></div>
+          <div><dt>$12,438</dt><dd>Total Volume</dd></div>
+        </dl>
+
+        <p className={styles.trust}>
+          Built on <b>✦ Arc</b>
+          <i aria-hidden="true" />
+          Powered by <b className={styles.usdc}>◎ USDC</b>
+        </p>
+
+        <p className={styles.note} aria-hidden="true">
+          Different<br />outlooks.<br />
+          <span>A brighter<br />tomorrow.</span>
+        </p>
       </section>
     </main>
   );
