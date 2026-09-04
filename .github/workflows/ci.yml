@@ -19,8 +19,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install
+      - name: Install frontend
         run: npm ci
 
-      - name: Typecheck and build
+      - name: Check frontend
         run: npm run check
+
+      - name: Install backend
+        run: npm --prefix backend install
+
+      - name: Check backend
+        run: npm run backend:check
