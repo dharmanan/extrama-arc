@@ -38,7 +38,8 @@ function resolveWebAuthnContext(requestOrigin) {
   const origin = normalizeOrigin(requestOrigin);
 
   if (config.NODE_ENV === 'production') {
-    if (!config.webauthnOrigins.includes(origin)) {
+    const codespaceAllowed = config.ALLOW_CODESPACE_ORIGINS && isAllowedDevOrigin(origin);
+    if (!config.webauthnOrigins.includes(origin) && !codespaceAllowed) {
       throw new Error('webauthn_origin_not_allowed');
     }
     if (!config.WEBAUTHN_RP_ID) {
