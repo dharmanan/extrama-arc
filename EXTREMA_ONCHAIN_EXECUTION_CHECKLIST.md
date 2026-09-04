@@ -406,15 +406,51 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - observation: `2026-10-01T00:00:00Z -> 2027-01-01T00:00:00Z`
 - Dry-run artifact: `broadcast/CreateStandardRounds.s.sol/5042002/dry-run/run-latest.json`
 
-#### Onchain proof pending
+#### Arc Testnet Round #1 broadcast proof
 
-- Example Daily roundId:
-- Example Weekly roundId:
-- Example Quarterly roundId:
-- Creation tx hashes:
-- Explorer:
-- Contract reads:
-- Verification:
+- Verification date: 2026-09-05
+- Chain ID: `5042002`
+- Result: `createdRounds: 24`
+- Result: `ONCHAIN EXECUTION COMPLETE & SUCCESSFUL`
+- Result: `STANDARD_ROUND_BROADCAST=COMPLETE`
+- Successful transactions: `24`
+- Blocks: `60484923` and `60484925`
+- Total paid: `0.04617 USDC`
+- Total gas: `1,846,800`
+- Average gas price: `25 gwei`
+- Broadcast artifact: `broadcast/CreateStandardRounds.s.sol/5042002/run-latest.json`
+- Creation transaction hashes:
+  - #1: `0x6c0898099e77944c80d62c65513d464d497b6e659faa9e1aa9577b201858ed8b`
+  - #2: `0x02a0ad77a71148be589489618914e65a9948390761a841a703fc6be2ace98591`
+  - #3: `0xc000170d9b2968099b20d768431664e64940581fac284d59d444f663aa41c7b7`
+  - #4: `0xd51d13d5674b6c71418ed36516ccda1f49c821ad6a2595d089899170fc1433e2`
+  - #5: `0xd3bcca15e0157b226f7d1b633bc1111e2598b3f780c1d05dc3d03f1bec7e72b3`
+  - #6: `0x28ea47c6349433fca2ce56d3c63b99c53c6c1e203fd0e9f4266070ba06667112`
+  - #7: `0x3732fe8c82b8816ff663fd1a4acb32b038702ba0562db22106dd5841b69d8314`
+  - #8: `0x1a9353677d96a08cb616f9dad519ee12719151a732eabe338dff19a7ebeb3b08`
+  - #9: `0x69f979904850ed7efce36571f1eb70124601d8f10e642e61e3fa259ec85d38a7`
+  - #10: `0x7732b5af116e7fd96cc27fbc59777f08390551aa18e9a2d5ef8656c298a47aad`
+  - #11: `0x64e680a5605e5aa9c71195fb79f59fee432b5b23921c8262663bb65272987117`
+  - #12: `0x9b245c3a1df6048b513977a7516c463d57686ce386ebc2ee57085ddbdaf3f76c`
+  - #13: `0xf10a70683319f0fcb9ba26777b8bbc299e8f5da8ce2f4d8026570c0a438f9fee`
+  - #14: `0x0c23365722ccbe0ea2d9852e0d5a39eb9c686b0f4ff14105cb9969d1622f5ecd`
+  - #15: `0xf783f4d09f4281b68334d0dfa21f51dd8a49ba62c87a6340f520194c810cd86c`
+  - #16: `0xf9e8bb35439bb3df14eb0688018c8876957f10474792a8e04d0ad28445065ac6`
+  - #17: `0x30f87f390e11173fecbd88b8706288a089db8ea75fa788335adfc567103f1da2`
+  - #18: `0x006bf8665adb4e9afc55af544e25c29658de5c99138834fb11d0fe2e8b8d30e0`
+  - #19: `0xa426ce6f1bf98cfbe2837e61dba1a99e484e016fd1983849c70d9349f6984614`
+  - #20: `0xa07584119ab36328e955db484f3b9b4cbc9115c5b9d7817e98587a730d967909`
+  - #21: `0xf747ba14ce4aa6199e8969c39afeb3a275f69b7bf9871be078dd73869cb2cf8c`
+  - #22: `0xadbe77a1c2a88aaf118487b4039acfbf1346fb970658d8379dad6c0888f6e965`
+  - #23: `0x2ab6a455a49fcacd4ed7ad217ad7ad683c46b88b4dba267c80bce273d46608b0`
+  - #24: `0x5b39ca15a7a4d74d95ef1d1896af5fe71cf083931a9750108dfcac1acd3f8d50`
+
+#### Onchain verification pending
+
+- Run `./script/verify-standard-rounds.sh` against Arc Testnet.
+- Confirm all 24 pools now report `nextRoundId() == 2`.
+- Confirm Round #1 timestamps/status/entryCount/totalStake/escrow match the exact saved plan.
+- Only after that verification passes mark Daily/Weekly/Quarterly and all asset/direction creation checks complete.
 
 ---
 
@@ -793,4 +829,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-The no-broadcast simulation passed with all 24 Round #1 creations. Next: broadcast the exact saved plan to Arc Testnet, then run the dedicated onchain verification script before marking round-creation items complete.
+The exact saved Round #1 plan was broadcast successfully to all 24 pools on Arc Testnet. Next: run the dedicated onchain verification script and record the reads before marking round-creation items complete.
