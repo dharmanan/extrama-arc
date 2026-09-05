@@ -804,7 +804,14 @@ Planned intervals:
 
 ## 7.2 Settlement transaction
 
-- [ ] Resolver cannot settle before observation period ends
+- [x] Resolver cannot settle before observation period ends
+  - Fork smoke proof: PASS
+  - Real Arc Testnet ETH Daily High Round #1 was forked locally.
+  - Fork timestamp was set to post-entry-close but pre-`observationEndAt`.
+  - Round was locked on the local fork only.
+  - Read-only resolver `settleRound` reverted with `ObservationNotEnded`.
+  - Result: `SETTLEMENT_BEFORE_END_FORK_SMOKE=PASS`
+  - No Arc Testnet transaction was broadcast.
 - [ ] Resolver submits resolved price to Arc Testnet contract
 - [ ] Contract transitions to `SETTLED`
 - [ ] Settlement cannot be repeated
@@ -898,6 +905,23 @@ Planned intervals:
   - HIGH unchanged: exact `2545.71100000`, cents `254571`
   - LOW unchanged: exact `2430.93475140`, cents `243093`
   - result: DAILY resolver determinism = PASS
+
+#### Settlement-before-observation-end fork proof
+
+- Verification date: 2026-09-05
+- Command: `bash script/smoke-settlement-before-end-fork.sh`
+- Result: `SETTLEMENT_BEFORE_END_FORK_SMOKE=PASS`
+- Broadcast: **NO**
+- Source deployment: ETH Daily High Round #1
+- Pool: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Chain ID: `5042002`
+- Onchain resolver: `0x1EDC4594195fFb134315c3258DE974563Ed9762A`
+- Onchain `entryCloseAt`: `1788638400`
+- Onchain `observationEndAt`: `1788739200`
+- Local fork timestamp: `1788638401`
+- Local fork status after `lockRound(1)`: `LOCKED`
+- Read-only `settleRound(1, 250000)` result: reverted with `ObservationNotEnded`
+- Verification: early settlement rejection = PASS.
 
 #### Live settlement proof
 
@@ -1202,9 +1226,10 @@ Only begin after Sections 1–16 are functionally complete and proven.
 Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
 
 Next proof gate:
-1. Run `bash script/smoke-settlement-before-end-fork.sh`.
-2. The script forks the real ETH Daily High Round #1 deployment locally, advances only past entry close, locks the round on the local fork, then performs a read-only resolver `settleRound` call before `observationEndAt`.
-3. Expected revert: `ObservationNotEnded`.
-4. No Arc Testnet transaction is broadcast.
+1. Run `bash script/smoke-underfilled-settlement-fork.sh`.
+2. The script forks the real ETH Daily High Round #1 deployment locally and advances to just after `observationEndAt`.
+3. It locks the round on the fork, then calls `settleRound` from the real resolver address.
+4. Because Round #1 has only 1 entry, expected revert: `NotEnoughEntries`.
+5. No Arc Testnet transaction is broadcast.
 
 The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.
