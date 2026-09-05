@@ -236,12 +236,6 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       </dl>
 
       <p><b>{poolStatusLabel(pool, locale)}</b></p>
-      <RoundCountdown
-        entryOpenAt={pool.round.entryOpenAt}
-        entryCloseAt={pool.round.entryCloseAt}
-        observationStartAt={pool.round.observationStartAt}
-        observationEndAt={pool.round.observationEndAt}
-      />
       <p>{t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
 
       <Link href={`/pools/${pool.slug}`} className="wf-action">
