@@ -13,6 +13,32 @@ TICKET_ID=1
 FROM_BLOCK=60500000
 CHUNK_SIZE=5000
 
+pad_topic_address() {
+  local value="${1#0x}"
+  printf '0x%064s' "$value" | tr ' ' '0'
+}
+
+uint_topic() {
+  local value="$1"
+  printf '0x%064x' "$value"
+}
+
+hex_block() {
+  printf '0x%x' "$1"
+}
+
+rpc_logs() {
+  local address="$1"
+  local from="$2"
+  local to="$3"
+  shift 3
+
+  local topics_json
+  topics_json="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
+
+  cast rpc eth_getLogs     "$(jq -nc       --arg address "$address"       --arg fromBlock "$(hex_block "$from")"       --arg toBlock "$(hex_block "$to")"       --argjson topics "$topics_json"       '{address:$address,fromBlock:$fromBlock,toBlock:$toBlock,topics:$topics}')"     --rpc-url "$RPC"
+}
+
 echo "EXTREMA ETH Daily High entry + rejection proof"
 echo "Chain ID: $(cast chain-id --rpc-url "$RPC")"
 echo
@@ -48,30 +74,40 @@ cast call "$USDC" "balanceOf(address)(uint256)" "$POOL" --rpc-url "$RPC"
 LATEST_RAW="$(cast block latest --field number --rpc-url "$RPC")"
 LATEST=$((LATEST_RAW))
 
+ENTRY_TOPIC0="$(cast keccak "PredictionEntered(uint256,uint256,address,uint64,uint64)")"
+ENTRY_TOPIC1="$(uint_topic "$ROUND_ID")"
+ENTRY_TOPIC2="$(uint_topic "$TICKET_ID")"
+ENTRY_TOPIC3="$(pad_topic_address "$WALLET")"
+
 echo
-echo "PredictionEntered logs (chunked to respect Arc RPC range limits):"
-FOUND_ENTRY_LOG=0
+echo "PredictionEntered event:"
+ENTRY_LOGS='[]'
 START=$FROM_BLOCK
 while (( START <= LATEST )); do
   END=$((START + CHUNK_SIZE - 1))
   if (( END > LATEST )); then END=$LATEST; fi
 
-  OUT="$(cast logs     --rpc-url "$RPC"     --address "$POOL"     --from-block "$START"     --to-block "$END"     "PredictionEntered(uint256,uint256,address,uint64,uint64)" 2>&1 || true)"
+  OUT="$(rpc_logs "$POOL" "$START" "$END"     "$ENTRY_TOPIC0" "$ENTRY_TOPIC1" "$ENTRY_TOPIC2" "$ENTRY_TOPIC3")"
 
-  if [[ -n "$OUT" ]]; then
-    echo "$OUT"
-    if [[ "$OUT" == *"transactionHash:"* ]]; then
-      FOUND_ENTRY_LOG=1
-    fi
-  fi
-
+  ENTRY_LOGS="$(jq -nc --argjson a "$ENTRY_LOGS" --argjson b "$OUT" '$a + $b')"
   START=$((END + 1))
 done
 
-if [[ $FOUND_ENTRY_LOG -ne 1 ]]; then
-  echo "ERROR: PredictionEntered log not found" >&2
+ENTRY_COUNT="$(jq 'length' <<<"$ENTRY_LOGS")"
+if [[ "$ENTRY_COUNT" -ne 1 ]]; then
+  echo "ERROR: expected exactly 1 PredictionEntered log, got $ENTRY_COUNT" >&2
   exit 1
 fi
+
+ENTRY_TX="$(jq -r '.[0].transactionHash' <<<"$ENTRY_LOGS")"
+ENTRY_BLOCK_HEX="$(jq -r '.[0].blockNumber' <<<"$ENTRY_LOGS")"
+ENTRY_BLOCK="$(cast to-dec "$ENTRY_BLOCK_HEX")"
+ENTRY_DATA="$(jq -r '.[0].data' <<<"$ENTRY_LOGS")"
+
+echo "  tx: $ENTRY_TX"
+echo "  block: $ENTRY_BLOCK"
+echo "  data: $ENTRY_DATA"
+echo "  explorer: https://testnet.arcscan.app/tx/$ENTRY_TX"
 
 echo
 echo "Duplicate-wallet eth_call simulation (expected revert AlreadyEntered):"
@@ -97,17 +133,30 @@ if [[ $DUP_PRICE_EXIT -eq 0 ]]; then
   exit 1
 fi
 
+APPROVAL_TOPIC0="$(cast keccak "Approval(address,address,uint256)")"
+APPROVAL_TOPIC1="$(pad_topic_address "$WALLET")"
+APPROVAL_TOPIC2="$(pad_topic_address "$POOL")"
+
 echo
-echo "Approval logs from wallet to this pool (chunked):"
+echo "Approval from EXTREMA wallet to this pool:"
+APPROVAL_LOGS='[]'
 START=$FROM_BLOCK
 while (( START <= LATEST )); do
   END=$((START + CHUNK_SIZE - 1))
   if (( END > LATEST )); then END=$LATEST; fi
 
-  cast logs     --rpc-url "$RPC"     --address "$USDC"     --from-block "$START"     --to-block "$END"     "Approval(address,address,uint256)"     "$WALLET" "$POOL" 2>/dev/null || true
+  OUT="$(rpc_logs "$USDC" "$START" "$END"     "$APPROVAL_TOPIC0" "$APPROVAL_TOPIC1" "$APPROVAL_TOPIC2")"
 
+  APPROVAL_LOGS="$(jq -nc --argjson a "$APPROVAL_LOGS" --argjson b "$OUT" '$a + $b')"
   START=$((END + 1))
 done
+
+APPROVAL_COUNT="$(jq 'length' <<<"$APPROVAL_LOGS")"
+if [[ "$APPROVAL_COUNT" -eq 0 ]]; then
+  echo "  no matching Approval log found in scanned range"
+else
+  jq -r '.[] | "  tx: \(.transactionHash)\n  block: \(.blockNumber)\n  amountRaw: \(.data)"' <<<"$APPROVAL_LOGS"
+fi
 
 echo
 echo "SECOND_ENTRY_AND_REJECTIONS_READS_COMPLETE=PASS"
