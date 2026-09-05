@@ -9,10 +9,13 @@ import {
   type OwnedTicket,
   type OwnedTicketsResponse,
   type RefundExecutionMode,
+  type ClaimExecutionMode,
 } from "../lib/backend-api";
 import { humanRoundStatus } from "../lib/display";
 import {
   authenticatePasskey,
+  confirmClaimWithPasskey,
+  confirmExternalClaimReceipt,
   confirmExternalRefundReceipt,
   confirmRefundWithPasskey,
   confirmTicketTransferWithPasskey,
@@ -54,6 +57,15 @@ function isRefundEligible(ticket: OwnedTicket) {
   return ticket.roundStatus === "CANCELLED" && !ticket.isRefunded;
 }
 
+function isClaimEligible(ticket: OwnedTicket) {
+  return (
+    ticket.roundStatus === "SETTLED" &&
+    ticket.placement > 0 &&
+    !ticket.isClaimed &&
+    BigInt(ticket.claimableRaw) > 0n
+  );
+}
+
 const ARC_TESTNET_CHAIN_ID = 5042002;
 
 export default function TicketsPage() {
@@ -76,6 +88,15 @@ export default function TicketsPage() {
   const [refundSuccess, setRefundSuccess] = useState<{
     executionMode: RefundExecutionMode;
     explorerUrl: string;
+  } | null>(null);
+
+  const [claimTicketKey, setClaimTicketKey] = useState<string | null>(null);
+  const [claimBusy, setClaimBusy] = useState("");
+  const [claimStatusText, setClaimStatusText] = useState("");
+  const [claimSuccess, setClaimSuccess] = useState<{
+    executionMode: ClaimExecutionMode;
+    explorerUrl: string;
+    amountRaw: string;
   } | null>(null);
 
   const loadTickets = useCallback(async () => {
@@ -263,11 +284,98 @@ export default function TicketsPage() {
     }
   }
 
+
+  function openClaim(ticket: OwnedTicket) {
+    setClaimTicketKey(ticketKey(ticket));
+    setClaimSuccess(null);
+    setError("");
+  }
+
+  function cancelClaim() {
+    setClaimTicketKey(null);
+    setClaimBusy("");
+    setClaimStatusText("");
+  }
+
+  async function handleClaim(ticket: OwnedTicket) {
+    const key = ticketKey(ticket);
+    setClaimBusy(key);
+    setError("");
+    setClaimStatusText("Confirming with passkey...");
+
+    try {
+      const outcome = await confirmClaimWithPasskey({
+        poolAddress: ticket.poolAddress,
+        ticketAddress: ticket.ticketAddress,
+        tokenId: ticket.tokenId,
+        roundId: ticket.roundId,
+      });
+
+      if (outcome.executionMode === "BACKEND_WALLET") {
+        setClaimSuccess({
+          executionMode: "BACKEND_WALLET",
+          explorerUrl: outcome.result.explorerUrl,
+          amountRaw: outcome.result.amountRaw,
+        });
+      } else {
+        if (
+          !isConnected ||
+          !ownerAddress ||
+          ownerAddress.toLowerCase() !== outcome.currentOwner.toLowerCase()
+        ) {
+          throw new Error(
+            `Connect wallet ${outcome.currentOwner} in your browser wallet to complete this reward claim.`,
+          );
+        }
+
+        const chainIdHex = await getOwnerChainId();
+        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error("Switch your connected wallet to Arc Testnet (chain 5042002).");
+        }
+
+        setClaimStatusText("Waiting for wallet transaction...");
+        const txHash = await sendOwnerTransaction({
+          to: outcome.transactionRequest.to,
+          data: outcome.transactionRequest.data,
+          value: outcome.transactionRequest.value,
+          from: outcome.transactionRequest.from,
+        });
+
+        setClaimStatusText("Waiting for transaction confirmation...");
+        await waitForOwnerTransactionReceipt(txHash);
+
+        setClaimStatusText("Verifying reward receipt...");
+        const result = await confirmExternalClaimReceipt(outcome.actionId, txHash);
+
+        setClaimSuccess({
+          executionMode: "EXTERNAL_OWNER",
+          explorerUrl: result.explorerUrl,
+          amountRaw: result.amountRaw,
+        });
+      }
+
+      setClaimTicketKey(null);
+      await loadTickets();
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
+        setError("");
+      } else {
+        setError(cause instanceof Error ? cause.message : "Reward claim failed.");
+      }
+    } finally {
+      setClaimBusy("");
+      setClaimStatusText("");
+    }
+  }
+
   function renderTicketCard(ticket: OwnedTicket, options: { showTransfer: boolean }) {
     const key = ticketKey(ticket);
     const transferOpen = transferTicketKey === key;
     const refundOpen = refundTicketKey === key;
     const refundEligible = isRefundEligible(ticket);
+    const claimOpen = claimTicketKey === key;
+    const claimEligible = isClaimEligible(ticket);
 
     return (
       <article className="wf-card" key={key}>
@@ -307,7 +415,7 @@ export default function TicketsPage() {
               className="wf-action"
               type="button"
               onClick={() => openTransfer(ticket)}
-              disabled={Boolean(transferBusy) || Boolean(refundBusy)}
+              disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}
             >
               Transfer NFT
             </button>
@@ -320,6 +428,16 @@ export default function TicketsPage() {
               disabled={Boolean(transferBusy) || Boolean(refundBusy)}
             >
               Claim refund
+            </button>
+          )}
+          {claimEligible && (
+            <button
+              className="wf-action"
+              type="button"
+              onClick={() => openClaim(ticket)}
+              disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}
+            >
+              Claim reward
             </button>
           )}
         </div>
@@ -353,6 +471,34 @@ export default function TicketsPage() {
                 type="button"
                 onClick={cancelTransfer}
                 disabled={Boolean(transferBusy)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {claimOpen && (
+          <div className="wf-section">
+            <p>
+              This ticket is a winning NFT. The current owner (<code>{ticket.owner}</code>) can
+              claim <b>{ticket.claimableUsdc} USDC</b> once. This requires a fresh passkey confirmation
+              {!options.showTransfer ? " and a transaction from your connected wallet" : ""}.
+            </p>
+            <div className="wf-row">
+              <button
+                className="wf-action"
+                type="button"
+                onClick={() => void handleClaim(ticket)}
+                disabled={Boolean(claimBusy)}
+              >
+                {claimBusy === key ? claimStatusText || "Confirming reward..." : "Confirm reward"}
+              </button>
+              <button
+                className="wf-action"
+                type="button"
+                onClick={cancelClaim}
+                disabled={Boolean(claimBusy)}
               >
                 Cancel
               </button>
@@ -408,6 +554,25 @@ export default function TicketsPage() {
             <a
               className="wf-action"
               href={transferSuccess.explorerUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Verify transaction
+            </a>
+          </section>
+        )}
+
+        {claimSuccess && (
+          <section className="wf-panel wf-section">
+            <h2>Reward claimed</h2>
+            <p>
+              {(Number(claimSuccess.amountRaw) / 1_000_000).toLocaleString(undefined, {
+                maximumFractionDigits: 6,
+              })} USDC has been sent to the ticket&apos;s current owner.
+            </p>
+            <a
+              className="wf-action"
+              href={claimSuccess.explorerUrl}
               target="_blank"
               rel="noreferrer"
             >
@@ -495,8 +660,8 @@ export default function TicketsPage() {
             <h2>Tickets held by your connected wallet</h2>
             <p>
               These tickets are owned directly by <code>{state.ownerWallet.wallet.address}</code>,
-              not your EXTREMA-managed wallet. Refunds for these tickets are sent from your
-              connected wallet, not the backend.
+              not your EXTREMA-managed wallet. Reward claims and refunds for these tickets are
+              sent from your connected wallet, not the backend.
             </p>
             <div className="wf-grid-3 wf-section">
               {state.ownerWallet.tickets.map((ticket) =>
