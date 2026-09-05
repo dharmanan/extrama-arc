@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { AssetMark, ProductHeader } from "../../product-components";
+import { AssetMark, ProductHeader, RoundCountdown } from "../../product-components";
 import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
 import { confirmEntryWithPasskey } from "../../lib/passkey-client";
 import { useCopy, useLocale } from "../../i18n";
@@ -11,7 +11,6 @@ import { applyBinanceLiveMarketToPool, readBinanceLiveMarket } from "../../lib/l
 import {
   formatEntryCount,
   formatLocalDateTime,
-  formatTimeUntil,
   formatUsdc,
   humanRoundStatus,
 } from "../../lib/display";
@@ -184,12 +183,12 @@ export default function PoolDetailPage() {
 
             <p>{t.round} <b>#{pool.round.roundId}</b></p>
             <p><b>{humanRoundStatus(pool.round.contractStatus, locale)}</b></p>
-            {pool.round.canEnter && (
-              <p>
-                {t.predictionsClose} {formatLocalDateTime(pool.round.entryCloseAt, locale)}
-                {" · "}{formatTimeUntil(pool.round.entryCloseAt, locale)}
-              </p>
-            )}
+            <RoundCountdown
+              entryOpenAt={pool.round.entryOpenAt}
+              entryCloseAt={pool.round.entryCloseAt}
+              observationStartAt={pool.round.observationStartAt}
+              observationEndAt={pool.round.observationEndAt}
+            />
 
             <p>{formatEntryCount(pool.round.entryCount, locale)}</p>
             <p>{t.prizePool}: <b>{formatUsdc(pool.round.totalStakeUsdc, locale)}</b></p>
