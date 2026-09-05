@@ -140,8 +140,14 @@ with its own review, independent of this readiness pass.
    engineering effort and matches "no live Arc transaction without an
    explicit, reviewed action" already in effect for this task.
 
-**Until one of these (or an equivalent reviewed mechanism) is intentionally
-established, live settlement and live cancellation remain blocked.** The
+**Manual resolver signing is now intentionally established for this hackathon run.**
+The deployed resolver was imported into a local Foundry keystore as account
+`extrema-resolver`, the derived address was verified against the deployed
+pool resolver, and the resolver was funded with 20 Arc Testnet USDC for gas.
+The private key was not added to the repository or env files. This establishes
+the previously listed manual-signing option for controlled live
+`lockRound`/`cancelRound` operations; it does not add an automated
+production signer service to the repo. The
 refund/cancellation code added in this pass is ready to be exercised once a
 legitimate cancellation transaction lands on-chain, but nothing in this repo
 should attempt to produce that transaction on its own.
@@ -156,8 +162,14 @@ should attempt to produce that transaction on its own.
   `cancelRound`, both rounds are expected to become eligible for
   **cancellation**, not settlement, once `observationEndAt` passes and
   `lockRound` is called.
-- **This has not been executed.** No `lockRound`, `cancelRound`, or `refund`
-  transaction has been sent to Arc Testnet as part of this work. Doing so
+- **Locking has now been executed on Arc Testnet.** ETH Daily High Round #1
+  was locked in tx
+  `0x0b9f2de2fa221a734b7877904c71348bc7eaf16845ed88fe215c93c2d00644a7`
+  (block `60637750`), and ETH Daily Low Round #1 was locked in tx
+  `0xac32dde62e060f5fadbb5384ee6fcc528c2828d9637b9e7fb700639d20529219`
+  (block `60638205`). Both receipts succeeded and both rounds now read
+  `LOCKED` onchain.
+- No `cancelRound` or `refund` transaction has been sent yet. Doing so
   requires the resolver signing path above to exist first (for
   `cancelRound`, which is `onlyResolver`), plus an explicit decision to
   proceed with a live transaction.
