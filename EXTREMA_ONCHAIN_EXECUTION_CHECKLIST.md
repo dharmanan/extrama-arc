@@ -1037,8 +1037,8 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
 - [ ] Round with 1 entry cancels correctly
 - [ ] Round with 2 entries cancels correctly
 - [ ] Round with 3 entries does not cancel for minimum-participant rule
-- [ ] Refund entitlement linked to ticket/current ownership rule as finalized
-- [ ] Fresh passkey step-up required for refund transaction
+- [x] Refund entitlement linked to ticket/current ownership rule as finalized
+- [x] Fresh passkey step-up required for refund transaction
 - [ ] Real Arc Testnet refund transaction verified
 - [ ] Double refund prevented
 
@@ -1060,6 +1060,50 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
 - `escrowRemaining` after cancellation: `1000000`
 - Verification: underfilled cancellation transition and preservation of refund escrow = PASS at fork safety level.
 - This does **not** mark the real Arc Testnet cancellation/refund checklist complete.
+
+#### Refund authorization + execution code readiness (no chain evidence)
+
+- `POST /actions/refund/start|finish|verify` now exist in
+  `backend/src/routes/actions.js`, backed by a new
+  `backend/src/services/refundExecutionService.js`, mirroring the existing
+  `TRANSFER_TICKET` step-up pattern. Server derives `executionMode`
+  (`BACKEND_WALLET` vs `EXTERNAL_OWNER`) from on-chain `currentOwner` only —
+  never from client input.
+- `script/smoke-transferred-refund-fork.sh` was hardened this session:
+  `TRANSFERRED_REFUND_ACCESS_CONTROL_FORK=PASS` is reported for the
+  ownership-gating half independently of the USDC-movement half. The
+  owner's net USDC balance is no longer used as a pass/fail gate (it pays
+  its own gas from the same coupled balance, so it is diagnostic-only); the
+  pool USDC balance decrease and the round `escrowRemaining` decrease
+  (both computed as exact deltas, not absolute end-values) are the hard
+  gates, plus `refunded(tokenId) == true` and a double-refund
+  `AlreadyRefunded` rejection. A best-effort, non-fatal check independently
+  confirms the USDC `Transfer` event via `cast logs`. On a failed
+  current-owner send, the script now distinguishes two outcomes instead of
+  collapsing every failure into one conclusion: a failure pattern
+  consistent with the known gas-estimation/empty-`0x` Arc coupling issue
+  reports `ARC_SYSTEM_USDC_TRANSFER_FORK=UNSUPPORTED` /
+  `TRANSFERRED_REFUND_FORK=UNSUPPORTED`; any other, unrecognized failure
+  reports `CURRENT_OWNER_REFUND_FORK=FAILED_UNCLASSIFIED` /
+  `TRANSFERRED_REFUND_FORK=UNPROVEN` instead, so an unrelated bug is never
+  mislabeled as an Arc-system-token limitation.
+- This hardened script was **not re-executed in this session** — this
+  sandbox does not have `anvil`/`cast` installed, and this task intentionally
+  did not install Foundry. The actual historical result from the prior
+  environment (before this session's hardening) was: original entrant
+  refund attempt → rejected with `NotTicketOwner` (**PASS**); current-owner
+  refund send on generic Anvil → reverted during gas estimation/execution
+  with an empty `0x` (**not a success**); full USDC refund movement
+  (pool/escrow delta) → **not proven**; double-refund rejection after a
+  successful refund → **not proven in that run**, since no refund had
+  actually succeeded to double-refund against; no Arc Testnet transaction.
+  No PASS is claimed for the USDC-movement half of this proof until someone
+  runs the hardened script with Foundry available and records the actual
+  output below.
+- See [docs/REFUND_CANCELLATION_READINESS.md](docs/REFUND_CANCELLATION_READINESS.md)
+  for the full implementation breakdown and the outstanding resolver-signer
+  gap. This is code readiness only — it does not satisfy any "real Arc
+  Testnet" item above, and no Arc Testnet transaction has been broadcast.
 
 #### Live cancellation/refund proof
 
@@ -1120,7 +1164,7 @@ This section is not complete until every normal user path is backed by real test
 
 - [ ] Fresh passkey step-up implemented for entry
 - [ ] Fresh passkey step-up implemented for claim
-- [ ] Fresh passkey step-up implemented for refund
+- [x] Fresh passkey step-up implemented for refund
 - [ ] Action challenge bound to:
   - action type
   - chain ID

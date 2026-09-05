@@ -12,6 +12,7 @@ const passkeyService = require('../services/passkeyService');
 const actionAuthorizationService = require('../services/actionAuthorizationService');
 const entryExecutionService = require('../services/entryExecutionService');
 const ticketTransferExecutionService = require('../services/ticketTransferExecutionService');
+const refundExecutionService = require('../services/refundExecutionService');
 
 const router = express.Router();
 
@@ -46,6 +47,18 @@ const ticketTransferStartSchema = z.object({
 const finishSchema = z.object({
   actionId: z.string().uuid(),
   credential: credentialSchema,
+});
+
+const refundStartSchema = z.object({
+  poolAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  ticketAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  tokenId: z.string().regex(/^[1-9][0-9]*$/),
+  roundId: z.number().int().positive(),
+});
+
+const refundVerifySchema = z.object({
+  actionId: z.string().uuid(),
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
 });
 
 router.use(requireAuth);
@@ -233,6 +246,151 @@ router.post('/ticket-transfer/finish', finishLimiter, async (req, res, next) => 
       confirmed: true,
       actionId,
       payloadHash: action.payloadHash,
+      result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/refund/start', startLimiter, async (req, res, next) => {
+  try {
+    const input = refundStartSchema.parse(req.body);
+    const poolAddress = ethers.getAddress(input.poolAddress);
+    const ticketAddress = ethers.getAddress(input.ticketAddress);
+
+    const [wallet, state] = await Promise.all([
+      walletService.getWalletForUser(req.auth.userId),
+      arcService.readRefundAuthorizationState({
+        poolAddress,
+        ticketAddress,
+        tokenId: input.tokenId,
+        roundId: input.roundId,
+      }),
+    ]);
+
+    if (!wallet?.address) {
+      return res.status(404).json({ error: 'wallet_not_found' });
+    }
+
+    if (state.roundStatus !== 'CANCELLED') {
+      return res.status(409).json({ error: 'refund_round_not_cancelled' });
+    }
+    if (state.isRefunded) {
+      return res.status(409).json({ error: 'refund_already_refunded' });
+    }
+
+    const backendWalletAddress = ethers.getAddress(wallet.address);
+    const ownerAddress = req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
+      ? ethers.getAddress(req.auth.ownerAddress)
+      : null;
+
+    let executionMode;
+    let refundWalletAddress;
+
+    if (state.currentOwner.toLowerCase() === backendWalletAddress.toLowerCase()) {
+      executionMode = 'BACKEND_WALLET';
+      refundWalletAddress = backendWalletAddress;
+    } else if (ownerAddress && state.currentOwner.toLowerCase() === ownerAddress.toLowerCase()) {
+      executionMode = 'EXTERNAL_OWNER';
+      refundWalletAddress = ownerAddress;
+    } else {
+      return res.status(403).json({ error: 'refund_not_ticket_owner' });
+    }
+
+    const action = await actionAuthorizationService.createRefundRequest({
+      userId: req.auth.userId,
+      walletAddress: refundWalletAddress,
+      poolAddress: state.poolAddress,
+      ticketAddress: state.ticketAddress,
+      tokenId: state.tokenId,
+      roundId: state.roundId,
+      currentOwner: state.currentOwner,
+      executionMode,
+    });
+
+    res.json(await startPasskeyStepUp(req, action));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/refund/finish', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, credential } = finishSchema.parse(req.body);
+    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
+      req.auth.userId,
+      actionId,
+    );
+
+    await passkeyService.finishStepUpAuthentication(
+      req.auth.userId,
+      credential,
+      saved,
+    );
+
+    const action = await actionAuthorizationService.consumeVerifiedAction(
+      req.auth.userId,
+      actionId,
+      saved.payloadHash,
+      'REFUND_TICKET',
+    );
+
+    if (action.payload.executionMode === 'BACKEND_WALLET') {
+      const result = await refundExecutionService.executeBackendRefund(
+        req.auth.userId,
+        action.payload,
+      );
+
+      return res.json({
+        confirmed: true,
+        actionId,
+        payloadHash: action.payloadHash,
+        executionMode: 'BACKEND_WALLET',
+        result,
+      });
+    }
+
+    const transactionRequest = await refundExecutionService.buildExternalRefundTransactionRequest(
+      action.payload,
+    );
+
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: 'EXTERNAL_OWNER',
+      transactionRequest,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/refund/verify', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, txHash } = refundVerifySchema.parse(req.body);
+
+    const action = await actionAuthorizationService.getConsumedAction(
+      req.auth.userId,
+      actionId,
+      'REFUND_TICKET',
+    );
+
+    if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
+      return res.status(409).json({ error: 'refund_execution_mode_mismatch' });
+    }
+
+    const result = await refundExecutionService.verifyExternalRefundReceipt(
+      action.payload,
+      txHash,
+    );
+
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: 'EXTERNAL_OWNER',
       result,
     });
   } catch (error) {

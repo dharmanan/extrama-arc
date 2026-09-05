@@ -8,12 +8,20 @@ import {
   isAuthSessionError,
   type OwnedTicket,
   type OwnedTicketsResponse,
+  type RefundExecutionMode,
 } from "../lib/backend-api";
 import { humanRoundStatus } from "../lib/display";
 import {
   authenticatePasskey,
+  confirmExternalRefundReceipt,
+  confirmRefundWithPasskey,
   confirmTicketTransferWithPasskey,
 } from "../lib/passkey-client";
+import {
+  getOwnerChainId,
+  sendOwnerTransaction,
+  waitForOwnerTransactionReceipt,
+} from "../lib/owner-wallet";
 import { useAccount } from "wagmi";
 
 function titleCase(value: string) {
@@ -42,6 +50,12 @@ function ticketKey(ticket: OwnedTicket) {
   return `${ticket.ticketAddress}:${ticket.tokenId}`;
 }
 
+function isRefundEligible(ticket: OwnedTicket) {
+  return ticket.roundStatus === "CANCELLED" && !ticket.isRefunded;
+}
+
+const ARC_TESTNET_CHAIN_ID = 5042002;
+
 export default function TicketsPage() {
   const { address: ownerAddress, isConnected } = useAccount();
   const [state, setState] = useState<OwnedTicketsResponse | null>(null);
@@ -54,6 +68,13 @@ export default function TicketsPage() {
   const [transferBusy, setTransferBusy] = useState("");
   const [transferSuccess, setTransferSuccess] = useState<{
     destinationAddress: string;
+    explorerUrl: string;
+  } | null>(null);
+  const [refundTicketKey, setRefundTicketKey] = useState<string | null>(null);
+  const [refundBusy, setRefundBusy] = useState("");
+  const [refundStatusText, setRefundStatusText] = useState("");
+  const [refundSuccess, setRefundSuccess] = useState<{
+    executionMode: RefundExecutionMode;
     explorerUrl: string;
   } | null>(null);
 
@@ -123,8 +144,8 @@ export default function TicketsPage() {
     }
 
     if (
-      state?.wallet.address &&
-      destinationAddress.toLowerCase() === state.wallet.address.toLowerCase()
+      state?.backendWallet.wallet.address &&
+      destinationAddress.toLowerCase() === state.backendWallet.wallet.address.toLowerCase()
     ) {
       setError("The recipient already owns this NFT.");
       return;
@@ -160,6 +181,216 @@ export default function TicketsPage() {
     }
   }
 
+  function openRefund(ticket: OwnedTicket) {
+    setRefundTicketKey(ticketKey(ticket));
+    setRefundSuccess(null);
+    setError("");
+  }
+
+  function cancelRefund() {
+    setRefundTicketKey(null);
+    setRefundBusy("");
+    setRefundStatusText("");
+  }
+
+  async function handleRefund(ticket: OwnedTicket) {
+    const key = ticketKey(ticket);
+    setRefundBusy(key);
+    setError("");
+    setRefundStatusText("Confirming with passkey...");
+
+    try {
+      const outcome = await confirmRefundWithPasskey({
+        poolAddress: ticket.poolAddress,
+        ticketAddress: ticket.ticketAddress,
+        tokenId: ticket.tokenId,
+        roundId: ticket.roundId,
+      });
+
+      if (outcome.executionMode === "BACKEND_WALLET") {
+        setRefundSuccess({
+          executionMode: "BACKEND_WALLET",
+          explorerUrl: outcome.result.explorerUrl,
+        });
+      } else {
+        if (
+          !isConnected ||
+          !ownerAddress ||
+          ownerAddress.toLowerCase() !== outcome.currentOwner.toLowerCase()
+        ) {
+          throw new Error(
+            `Connect wallet ${outcome.currentOwner} in your browser wallet to complete this refund.`,
+          );
+        }
+
+        const chainIdHex = await getOwnerChainId();
+        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error("Switch your connected wallet to Arc Testnet (chain 5042002).");
+        }
+
+        setRefundStatusText("Waiting for wallet transaction...");
+        const txHash = await sendOwnerTransaction({
+          to: outcome.transactionRequest.to,
+          data: outcome.transactionRequest.data,
+          value: outcome.transactionRequest.value,
+          from: outcome.transactionRequest.from,
+        });
+
+        setRefundStatusText("Waiting for transaction confirmation...");
+        await waitForOwnerTransactionReceipt(txHash);
+
+        setRefundStatusText("Verifying refund receipt...");
+        const result = await confirmExternalRefundReceipt(outcome.actionId, txHash);
+
+        setRefundSuccess({
+          executionMode: "EXTERNAL_OWNER",
+          explorerUrl: result.explorerUrl,
+        });
+      }
+
+      setRefundTicketKey(null);
+      await loadTickets();
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
+        setError("");
+      } else {
+        setError(cause instanceof Error ? cause.message : "Refund failed.");
+      }
+    } finally {
+      setRefundBusy("");
+      setRefundStatusText("");
+    }
+  }
+
+  function renderTicketCard(ticket: OwnedTicket, options: { showTransfer: boolean }) {
+    const key = ticketKey(ticket);
+    const transferOpen = transferTicketKey === key;
+    const refundOpen = refundTicketKey === key;
+    const refundEligible = isRefundEligible(ticket);
+
+    return (
+      <article className="wf-card" key={key}>
+        <div className="wf-row">
+          <AssetMark asset={ticket.asset} />
+          <span>{ticketState(ticket)}</span>
+        </div>
+
+        <h3>
+          {ticket.asset} · {titleCase(ticket.cadence)} {titleCase(ticket.direction)}
+        </h3>
+
+        <strong>{formatPrediction(ticket.predictionPrice)}</strong>
+        <p>
+          Ticket #{ticket.tokenId} · Round #{ticket.roundId} · Entry #{ticket.entrySequence}
+        </p>
+        <p>Stake: 1 USDC</p>
+
+        {Number(ticket.claimableUsdc) > 0 && !ticket.isClaimed && (
+          <p><b>{ticket.claimableUsdc} USDC claimable</b></p>
+        )}
+
+        <div className="wf-row">
+          <Link className="wf-action" href={`/rounds/${ticket.slug}`}>
+            View round
+          </Link>
+          <a
+            className="wf-action"
+            href={ticket.explorerUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Verify NFT
+          </a>
+          {options.showTransfer && (
+            <button
+              className="wf-action"
+              type="button"
+              onClick={() => openTransfer(ticket)}
+              disabled={Boolean(transferBusy) || Boolean(refundBusy)}
+            >
+              Transfer NFT
+            </button>
+          )}
+          {refundEligible && (
+            <button
+              className="wf-action"
+              type="button"
+              onClick={() => openRefund(ticket)}
+              disabled={Boolean(transferBusy) || Boolean(refundBusy)}
+            >
+              Claim refund
+            </button>
+          )}
+        </div>
+
+        {transferOpen && (
+          <div className="wf-section">
+            <label className="wf-field">
+              Recipient wallet address
+              <input
+                value={transferAddress}
+                onChange={(event) => setTransferAddress(event.target.value)}
+                placeholder="0x..."
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <p>
+              Transferring this NFT also transfers any future claim or refund right.
+            </p>
+            <div className="wf-row">
+              <button
+                className="wf-action"
+                type="button"
+                onClick={() => void handleTransfer(ticket)}
+                disabled={Boolean(transferBusy)}
+              >
+                {transferBusy === key ? "Confirming transfer..." : "Confirm transfer"}
+              </button>
+              <button
+                className="wf-action"
+                type="button"
+                onClick={cancelTransfer}
+                disabled={Boolean(transferBusy)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {refundOpen && (
+          <div className="wf-section">
+            <p>
+              This round was cancelled. The current NFT owner (<code>{ticket.owner}</code>) can
+              claim a 1 USDC refund once. This requires a fresh passkey confirmation
+              {!options.showTransfer ? " and a transaction from your connected wallet" : ""}.
+            </p>
+            <div className="wf-row">
+              <button
+                className="wf-action"
+                type="button"
+                onClick={() => void handleRefund(ticket)}
+                disabled={Boolean(refundBusy)}
+              >
+                {refundBusy === key ? refundStatusText || "Confirming refund..." : "Confirm refund"}
+              </button>
+              <button
+                className="wf-action"
+                type="button"
+                onClick={cancelRefund}
+                disabled={Boolean(refundBusy)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </article>
+    );
+  }
+
   return (
     <main className="wf-page">
       <ProductHeader />
@@ -177,6 +408,21 @@ export default function TicketsPage() {
             <a
               className="wf-action"
               href={transferSuccess.explorerUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Verify transaction
+            </a>
+          </section>
+        )}
+
+        {refundSuccess && (
+          <section className="wf-panel wf-section">
+            <h2>Refund claimed</h2>
+            <p>1 USDC has been refunded to the ticket&apos;s current owner.</p>
+            <a
+              className="wf-action"
+              href={refundSuccess.explorerUrl}
               target="_blank"
               rel="noreferrer"
             >
@@ -218,7 +464,10 @@ export default function TicketsPage() {
           </section>
         )}
 
-        {!loading && state && state.ticketCount === 0 && (
+        {!loading &&
+          state &&
+          state.backendWallet.ticketCount === 0 &&
+          (!state.ownerWallet || state.ownerWallet.ticketCount === 0) && (
           <section className="wf-panel wf-section">
             <h2>No tickets yet</h2>
             <p>Your wallet does not currently own an EXTREMA prediction ticket.</p>
@@ -226,98 +475,33 @@ export default function TicketsPage() {
           </section>
         )}
 
-        {!loading && state && state.ticketCount > 0 && (
+        {!loading && state && state.backendWallet.ticketCount > 0 && (
           <>
             <p>
-              <b>{state.ticketCount}</b> onchain {state.ticketCount === 1 ? "ticket" : "tickets"} ·
-              Arc Testnet block {state.chain.blockNumber}
+              <b>{state.backendWallet.ticketCount}</b> onchain{" "}
+              {state.backendWallet.ticketCount === 1 ? "ticket" : "tickets"} · Arc Testnet block{" "}
+              {state.backendWallet.chain.blockNumber}
             </p>
             <div className="wf-grid-3 wf-section">
-              {state.tickets.map((ticket) => {
-                const key = ticketKey(ticket);
-                const transferOpen = transferTicketKey === key;
+              {state.backendWallet.tickets.map((ticket) =>
+                renderTicketCard(ticket, { showTransfer: true }),
+              )}
+            </div>
+          </>
+        )}
 
-                return (
-                  <article className="wf-card" key={key}>
-                    <div className="wf-row">
-                      <AssetMark asset={ticket.asset} />
-                      <span>{ticketState(ticket)}</span>
-                    </div>
-
-                    <h3>
-                      {ticket.asset} · {titleCase(ticket.cadence)} {titleCase(ticket.direction)}
-                    </h3>
-
-                    <strong>{formatPrediction(ticket.predictionPrice)}</strong>
-                    <p>
-                      Ticket #{ticket.tokenId} · Round #{ticket.roundId} · Entry #{ticket.entrySequence}
-                    </p>
-                    <p>Stake: 1 USDC</p>
-
-                    {Number(ticket.claimableUsdc) > 0 && !ticket.isClaimed && (
-                      <p><b>{ticket.claimableUsdc} USDC claimable</b></p>
-                    )}
-
-                    <div className="wf-row">
-                      <Link className="wf-action" href={`/rounds/${ticket.slug}`}>
-                        View round
-                      </Link>
-                      <a
-                        className="wf-action"
-                        href={ticket.explorerUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Verify NFT
-                      </a>
-                      <button
-                        className="wf-action"
-                        type="button"
-                        onClick={() => openTransfer(ticket)}
-                        disabled={Boolean(transferBusy)}
-                      >
-                        Transfer NFT
-                      </button>
-                    </div>
-
-                    {transferOpen && (
-                      <div className="wf-section">
-                        <label className="wf-field">
-                          Recipient wallet address
-                          <input
-                            value={transferAddress}
-                            onChange={(event) => setTransferAddress(event.target.value)}
-                            placeholder="0x..."
-                            autoComplete="off"
-                            spellCheck={false}
-                          />
-                        </label>
-                        <p>
-                          Transferring this NFT also transfers any future claim or refund right.
-                        </p>
-                        <div className="wf-row">
-                          <button
-                            className="wf-action"
-                            type="button"
-                            onClick={() => void handleTransfer(ticket)}
-                            disabled={Boolean(transferBusy)}
-                          >
-                            {transferBusy === key ? "Confirming transfer..." : "Confirm transfer"}
-                          </button>
-                          <button
-                            className="wf-action"
-                            type="button"
-                            onClick={cancelTransfer}
-                            disabled={Boolean(transferBusy)}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </article>
-                );
-              })}
+        {!loading && state?.ownerWallet && state.ownerWallet.ticketCount > 0 && (
+          <>
+            <h2>Tickets held by your connected wallet</h2>
+            <p>
+              These tickets are owned directly by <code>{state.ownerWallet.wallet.address}</code>,
+              not your EXTREMA-managed wallet. Refunds for these tickets are sent from your
+              connected wallet, not the backend.
+            </p>
+            <div className="wf-grid-3 wf-section">
+              {state.ownerWallet.tickets.map((ticket) =>
+                renderTicketCard(ticket, { showTransfer: false }),
+              )}
             </div>
           </>
         )}

@@ -76,7 +76,7 @@ export type OwnedTicket = {
   explorerUrl: string;
 };
 
-export type OwnedTicketsResponse = {
+export type WalletTicketsState = {
   chain: {
     id: number;
     name: string;
@@ -86,6 +86,11 @@ export type OwnedTicketsResponse = {
   wallet: { address: string };
   ticketCount: number;
   tickets: OwnedTicket[];
+};
+
+export type OwnedTicketsResponse = {
+  backendWallet: WalletTicketsState;
+  ownerWallet: WalletTicketsState | null;
 };
 
 export type EntryActionPayload = {
@@ -190,6 +195,100 @@ export type TicketTransferActionFinishResponse = {
   actionId: string;
   payloadHash: string;
   result: TicketTransferExecutionResult;
+};
+
+export type RefundExecutionMode = "BACKEND_WALLET" | "EXTERNAL_OWNER";
+
+export type RefundActionPayload = {
+  action: "REFUND_TICKET";
+  chainId: 5042002;
+  contract: string;
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+  amountRaw: "1000000";
+  currentOwner: string;
+  destination: string;
+  executionMode: RefundExecutionMode;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type RefundActionStartResponse = {
+  actionId: string;
+  action: RefundActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type RefundAccountingProof =
+  | {
+      available: true;
+      poolUsdcBefore: string;
+      poolUsdcAfter: string;
+      escrowRemainingBefore: string;
+      escrowRemainingAfter: string;
+      poolUsdcDeltaExact: boolean;
+      escrowDeltaExact: boolean;
+    }
+  | {
+      available: false;
+      reason: string;
+      detail: string;
+    };
+
+export type RefundExecutionResult = {
+  chainId: 5042002;
+  executionMode: RefundExecutionMode;
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+  currentOwner: string;
+  amountRaw: "1000000";
+  refundTxHash: string;
+  explorerUrl: string;
+  accounting?: RefundAccountingProof | {
+    poolUsdcBefore: string;
+    poolUsdcAfter: string;
+    escrowRemainingBefore: string;
+    escrowRemainingAfter: string;
+  };
+};
+
+export type RefundTransactionRequest = {
+  chainId: 5042002;
+  to: string;
+  data: string;
+  value: string;
+  from: string;
+};
+
+export type RefundActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: RefundExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_OWNER";
+      transactionRequest: RefundTransactionRequest;
+    };
+
+export type RefundVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  result: RefundExecutionResult;
 };
 
 export function isAuthSessionError(cause: unknown) {
@@ -304,6 +403,26 @@ export const backendApi = {
       return post<TicketTransferActionFinishResponse>("/actions/ticket-transfer/finish", {
         actionId,
         credential,
+      });
+    },
+    startRefund(input: {
+      poolAddress: string;
+      ticketAddress: string;
+      tokenId: string;
+      roundId: number;
+    }) {
+      return post<RefundActionStartResponse>("/actions/refund/start", input);
+    },
+    finishRefund(actionId: string, credential: unknown) {
+      return post<RefundActionFinishResponse>("/actions/refund/finish", {
+        actionId,
+        credential,
+      });
+    },
+    verifyRefund(actionId: string, txHash: string) {
+      return post<RefundVerifyResponse>("/actions/refund/verify", {
+        actionId,
+        txHash,
       });
     },
   },

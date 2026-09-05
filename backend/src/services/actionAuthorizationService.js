@@ -233,6 +233,33 @@ async function consumeVerifiedAction(
   };
 }
 
+async function getConsumedAction(userId, actionId, expectedActionType) {
+  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET'].includes(expectedActionType)) {
+    throw new Error('action_authorization_invalid');
+  }
+
+  const { rows } = await db.query(
+    `SELECT id, action_type, payload_hash, payload_json, consumed_at
+       FROM action_authorizations
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = $3
+        AND consumed_at IS NOT NULL
+      LIMIT 1`,
+    [actionId, userId, expectedActionType],
+  );
+
+  if (!rows.length) throw new Error('action_authorization_invalid');
+
+  return {
+    id: rows[0].id,
+    actionType: rows[0].action_type,
+    payloadHash: rows[0].payload_hash,
+    payload: rows[0].payload_json,
+    consumedAt: rows[0].consumed_at,
+  };
+}
+
 module.exports = {
   createEntryRequest,
   createTicketTransferRequest,
@@ -240,4 +267,5 @@ module.exports = {
   attachWebAuthnChallenge,
   consumeWebAuthnChallenge,
   consumeVerifiedAction,
+  getConsumedAction,
 };

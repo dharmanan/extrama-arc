@@ -251,3 +251,102 @@ export async function confirmTicketTransferWithPasskey(input: {
 
   return finished.result;
 }
+
+export type RefundStartInput = {
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+};
+
+export async function confirmRefundWithPasskey(input: RefundStartInput) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startRefund(input);
+
+  const actionMatches =
+    start.action.action === "REFUND_TICKET" &&
+    start.action.chainId === 5042002 &&
+    addressesEqual(start.action.poolAddress, input.poolAddress) &&
+    addressesEqual(start.action.ticketAddress, input.ticketAddress) &&
+    start.action.tokenId === input.tokenId &&
+    start.action.roundId === input.roundId &&
+    start.action.amountRaw === "1000000" &&
+    addressesEqual(start.action.destination, start.action.currentOwner) &&
+    (start.action.executionMode === "BACKEND_WALLET" ||
+      start.action.executionMode === "EXTERNAL_OWNER") &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Refund confirmation details did not match the requested ticket.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishRefund(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.executionMode !== start.action.executionMode
+  ) {
+    throw new Error("Confirmed refund authorization did not match the request.");
+  }
+
+  if (finished.executionMode === "BACKEND_WALLET") {
+    if (
+      finished.result.chainId !== 5042002 ||
+      !addressesEqual(finished.result.poolAddress, input.poolAddress) ||
+      !addressesEqual(finished.result.ticketAddress, input.ticketAddress) ||
+      finished.result.tokenId !== input.tokenId ||
+      finished.result.amountRaw !== "1000000"
+    ) {
+      throw new Error("Confirmed refund did not match the requested ticket.");
+    }
+
+    return { executionMode: "BACKEND_WALLET" as const, result: finished.result };
+  }
+
+  if (
+    finished.transactionRequest.chainId !== 5042002 ||
+    !addressesEqual(finished.transactionRequest.to, input.poolAddress) ||
+    !addressesEqual(finished.transactionRequest.from, start.action.currentOwner)
+  ) {
+    throw new Error("Refund transaction request did not match the requested ticket.");
+  }
+
+  return {
+    executionMode: "EXTERNAL_OWNER" as const,
+    actionId: start.actionId,
+    payloadHash: start.payloadHash,
+    transactionRequest: finished.transactionRequest,
+    currentOwner: start.action.currentOwner,
+  };
+}
+
+export async function confirmExternalRefundReceipt(actionId: string, txHash: string) {
+  const finished = await backendApi.actions.verifyRefund(actionId, txHash);
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== actionId ||
+    finished.result.chainId !== 5042002 ||
+    finished.result.refundTxHash.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error("Refund receipt verification failed.");
+  }
+
+  return finished.result;
+}

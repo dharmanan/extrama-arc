@@ -39,10 +39,19 @@ router.get('/tickets', async (req, res, next) => {
       return res.status(404).json({ error: 'wallet_not_found' });
     }
 
+    const ownerAddress = req.auth.ownerAddress || null;
+    const sameAddress = Boolean(
+      ownerAddress && ownerAddress.toLowerCase() === wallet.address.toLowerCase(),
+    );
+
     const startedAt = Date.now();
-    const state = await arcService.readOwnedTickets(wallet.address);
+    const [backendWallet, ownerWallet] = await Promise.all([
+      arcService.readOwnedTickets(wallet.address),
+      ownerAddress && !sameAddress ? arcService.readOwnedTickets(ownerAddress) : null,
+    ]);
+
     res.set('Server-Timing', `wallet-tickets;dur=${Date.now() - startedAt}`);
-    res.json(state);
+    res.json({ backendWallet, ownerWallet });
   } catch (error) {
     next(error);
   }
