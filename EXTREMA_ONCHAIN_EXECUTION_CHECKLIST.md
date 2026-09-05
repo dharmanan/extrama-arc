@@ -794,12 +794,12 @@ Planned intervals:
   - request uses `endTime = observationEndAt - 1ms`
   - every candle timestamp must be contiguous and aligned; incomplete source data is a hard failure
   - final exact high/low is converted to integer cents with nearest-cent, half-up rounding
-- [ ] Daily resolver calculation verified
+- [x] Daily resolver calculation verified
 - [ ] Weekly resolver calculation verified
 - [ ] Quarterly resolver calculation verified
-- [ ] High calculation verified
-- [ ] Low calculation verified
-- [ ] Raw source response can be archived/hash-recorded
+- [x] High calculation verified
+- [x] Low calculation verified
+- [x] Raw source response can be archived/hash-recorded
 - [ ] Deterministic calculation output recorded
 
 ## 7.2 Settlement transaction
@@ -813,6 +813,30 @@ Planned intervals:
 - [ ] Verification page shows source proof + onchain result
 
 ### Proof record
+
+#### Historical DAILY resolver read-only proof
+
+- Verification date: 2026-09-05
+- Command: `npm --prefix backend run resolver:verify`
+- Result: `RESOLVER_HISTORY_VERIFY=PASS`
+- Broadcast: **NO**
+- Symbol: `ETHUSDT`
+- Cadence: `DAILY`
+- Binance interval: `1m`
+- Observation window: `[2026-09-04T00:00:00.000Z, 2026-09-05T00:00:00.000Z)`
+- Candle count: `1440`
+- Source data SHA-256: `79e6acb34f250f2db133f88a7d83e94f4bafa0bf6ab0a3d018d22f37efc3ae31`
+- HIGH exact: `2545.71100000`
+- HIGH resolved cents: `254571`
+- HIGH candle open: `2026-09-04T09:19:00.000Z`
+- LOW exact: `2430.93475140`
+- LOW resolved cents: `243093`
+- LOW candle open: `2026-09-04T14:50:00.000Z`
+- Evidence SHA-256: `6cd71b246e1087bb9cf0049e1ba96d5b742841d7f40b8b1c57ab2bdeb635cf36`
+- Verification: DAILY source fetch, complete 1-minute candle coverage, HIGH calculation, LOW calculation, and evidence hashing = PASS.
+- Remaining determinism gate: run the exact same command again and confirm both SHA-256 values and both resolved prices are identical.
+
+#### Live settlement proof
 
 - Round ID:
 - Symbol:
