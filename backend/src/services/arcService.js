@@ -2,6 +2,7 @@
 
 const { ethers } = require('ethers');
 const config = require('../config');
+const { getLiveMarkPrices } = require('./binanceResolverService');
 
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
@@ -20,6 +21,7 @@ const FACTORY_ABI = [
 const POOL_ABI = [
   'function nextRoundId() view returns (uint256)',
   'function nextTicketId() view returns (uint256)',
+  'function getRoundTicketIds(uint256 roundId) view returns (uint256[])',
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
   'function getTicketMetadata(uint256 ticketId) view returns (tuple(uint256 roundId,uint64 predictionPriceCents,uint64 entrySequence,uint8 roundStatus,uint8 placement,bool isClaimed,bool isRefunded))',
   'function entries(uint256 ticketId) view returns (uint256 ticketId,uint256 roundId,address originalEntrant,uint64 predictionPriceCents,uint64 entrySequence)',
@@ -300,6 +302,7 @@ async function readStandardRounds() {
   }
 
   const chainTimestamp = BigInt(latestBlock.timestamp);
+  const liveMarks = await getLiveMarkPrices();
 
   const pools = await mapWithConcurrency(
     ARC_POOL_TOPOLOGY,
@@ -314,7 +317,10 @@ async function readStandardRounds() {
       }
 
       const roundId = nextRoundId - 1n;
-      const round = await rpcRead(() => pool.getRound(roundId));
+      const [round, nextTicketId] = await Promise.all([
+        rpcRead(() => pool.getRound(roundId)),
+        rpcRead(() => pool.nextTicketId()),
+      ]);
       const contractStatus = CONTRACT_STATUSES[Number(round.status)];
       if (!contractStatus) {
         throw new Error('extrema_round_status_invalid');
@@ -325,6 +331,23 @@ async function readStandardRounds() {
         chainTimestamp >= round.entryOpenAt &&
         chainTimestamp < round.entryCloseAt;
 
+      let lastPredictionPriceCents = null;
+      let lastPredictionTicketId = null;
+      let lastPredictionEntrySequence = null;
+
+      if (nextTicketId > 1n) {
+        const candidateTicketId = nextTicketId - 1n;
+        const candidateEntry = await rpcRead(() => pool.entries(candidateTicketId));
+        if (BigInt(candidateEntry.roundId) === roundId) {
+          lastPredictionPriceCents = candidateEntry.predictionPriceCents.toString();
+          lastPredictionTicketId = candidateTicketId.toString();
+          lastPredictionEntrySequence = Number(candidateEntry.entrySequence);
+        }
+      }
+
+      const liveMark = liveMarks.prices[SOURCE_SYMBOLS[topology.asset]];
+      const liveMarkAvailable = Boolean(liveMark && !liveMark.unavailable);
+
       return {
         slug: slugify(topology.asset, topology.cadence, topology.direction),
         poolAddress,
@@ -334,6 +357,21 @@ async function readStandardRounds() {
         cadence: topology.cadence,
         source: 'Binance USDⓈ-M Futures Mark Price',
         sourceSymbol: SOURCE_SYMBOLS[topology.asset],
+        market: liveMarkAvailable
+          ? {
+              available: true,
+              markPrice: liveMark.markPrice,
+              sourceTimeIso: liveMark.sourceTimeIso,
+              refreshedAtIso: liveMarks.refreshedAtIso,
+              refreshIntervalSeconds: 60,
+            }
+          : {
+              available: false,
+              markPrice: null,
+              sourceTimeIso: null,
+              refreshedAtIso: liveMarks.refreshedAtIso,
+              refreshIntervalSeconds: 60,
+            },
         round: {
           roundId: Number(roundId),
           contractStatus,
@@ -348,6 +386,13 @@ async function readStandardRounds() {
           escrowRemainingRaw: round.escrowRemaining.toString(),
           escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
           resolvedPriceCents: round.resolvedPriceCents.toString(),
+          lastPredictionPriceCents,
+          lastPredictionPrice:
+            lastPredictionPriceCents === null
+              ? null
+              : (Number(lastPredictionPriceCents) / 100).toFixed(2),
+          lastPredictionTicketId,
+          lastPredictionEntrySequence,
         },
       };
     },
