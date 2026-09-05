@@ -795,7 +795,7 @@ Planned intervals:
   - every candle timestamp must be contiguous and aligned; incomplete source data is a hard failure
   - final exact high/low is converted to integer cents with nearest-cent, half-up rounding
 - [x] Daily resolver calculation verified
-- [ ] Weekly resolver calculation verified
+- [x] Weekly resolver calculation verified
 - [ ] Quarterly resolver calculation verified
 - [x] High calculation verified
 - [x] Low calculation verified
@@ -834,6 +834,28 @@ Planned intervals:
 - LOW candle open: `2026-09-04T14:50:00.000Z`
 - Evidence SHA-256: `6cd71b246e1087bb9cf0049e1ba96d5b742841d7f40b8b1c57ab2bdeb635cf36`
 - Verification: DAILY source fetch, complete 1-minute candle coverage, HIGH calculation, LOW calculation, and evidence hashing = PASS.
+
+#### Historical WEEKLY resolver read-only proof
+
+- Verification date: 2026-09-05
+- Command: `npm --prefix backend run resolver:verify -- ETHUSDT WEEKLY 2026-08-24T00:00:00.000Z 2026-08-31T00:00:00.000Z`
+- Result: `RESOLVER_HISTORY_VERIFY=PASS`
+- Broadcast: **NO**
+- Symbol: `ETHUSDT`
+- Cadence: `WEEKLY`
+- Binance interval: `15m`
+- Observation window: `[2026-08-24T00:00:00.000Z, 2026-08-31T00:00:00.000Z)`
+- Candle count: `672`
+- Source data SHA-256: `1fb47bb158907fc11e2aa06799b15bb48b7422b3501bcc7c2963d0311ee713cc`
+- HIGH exact: `2565.52490160`
+- HIGH resolved cents: `256552`
+- HIGH candle open: `2026-08-27T09:15:00.000Z`
+- LOW exact: `2387.16893023`
+- LOW resolved cents: `238717`
+- LOW candle open: `2026-08-30T23:45:00.000Z`
+- Evidence SHA-256: `569c8ae5b1ea89d68f311eadf1eb3cd05a689957dee1e96f929f4129b200c69b`
+- Verification: WEEKLY source fetch, complete 15-minute candle coverage, HIGH calculation, LOW calculation, and evidence hashing = PASS.
+- Remaining weekly determinism gate: rerun the exact same command and confirm both hashes and both resolved prices are identical.
 - Determinism rerun proof (2026-09-05):
   - same command rerun: `npm --prefix backend run resolver:verify`
   - `sourceDataSha256` unchanged: `79e6acb34f250f2db133f88a7d83e94f4bafa0bf6ab0a3d018d22f37efc3ae31`
@@ -1145,9 +1167,8 @@ Only begin after Sections 1–16 are functionally complete and proven.
 Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
 
 Next proof gate:
-1. Verify the same resolver logic on a completed historical WEEKLY ETHUSDT window using 15m Mark Price Klines.
-2. Record candle count, exact High/Low, integer-cent outputs, raw-source SHA-256, and evidence SHA-256.
-3. Re-run once to confirm determinism.
-4. Do not broadcast any settlement transaction during this proof.
+1. Re-run the exact WEEKLY ETHUSDT resolver command once and confirm both SHA-256 values and both resolved prices are identical.
+2. Then verify a completed historical QUARTERLY ETHUSDT window using 4h Mark Price Klines.
+3. Do not broadcast any settlement transaction during these proof steps.
 
 The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.
