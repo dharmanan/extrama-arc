@@ -156,12 +156,19 @@ async function executeEntry(userId, payload) {
       ticket.ownerOf(ticketId),
     ]);
 
+  const walletSpentRaw = walletUsdcBefore - walletUsdcAfter;
+
+  // Arc uses one underlying USDC balance for both the native gas token and the
+  // 6-decimal ERC-20 interface. Approval and entry gas therefore also reduce
+  // balanceOf(wallet). The wallet delta must be AT LEAST the 1 USDC stake,
+  // while the pool/round accounting must increase by EXACTLY 1 USDC.
   if (
     roundAfter.entryCount !== roundBefore.entryCount + 1n ||
     roundAfter.totalStake !== roundBefore.totalStake + STAKE_AMOUNT ||
     roundAfter.escrowRemaining !== roundBefore.escrowRemaining + STAKE_AMOUNT ||
     poolUsdcAfter !== poolUsdcBefore + STAKE_AMOUNT ||
-    walletUsdcAfter !== walletUsdcBefore - STAKE_AMOUNT ||
+    walletUsdcAfter >= walletUsdcBefore ||
+    walletSpentRaw < STAKE_AMOUNT ||
     ticketOwner.toLowerCase() !== walletAddress.toLowerCase()
   ) {
     throw new Error('entry_postcondition_failed');
@@ -194,6 +201,14 @@ async function executeEntry(userId, payload) {
       entryCount: Number(roundBefore.entryCount),
       totalStakeRaw: roundBefore.totalStake.toString(),
       totalStakeUsdc: ethers.formatUnits(roundBefore.totalStake, 6),
+    },
+    walletSpent: {
+      raw: walletSpentRaw.toString(),
+      usdc: ethers.formatUnits(walletSpentRaw, 6),
+      stakeRaw: STAKE_AMOUNT.toString(),
+      stakeUsdc: ethers.formatUnits(STAKE_AMOUNT, 6),
+      gasAndRoundingRaw: (walletSpentRaw - STAKE_AMOUNT).toString(),
+      gasAndRoundingUsdc: ethers.formatUnits(walletSpentRaw - STAKE_AMOUNT, 6),
     },
     after: {
       walletUsdcRaw: walletUsdcAfter.toString(),

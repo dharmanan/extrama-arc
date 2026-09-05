@@ -118,6 +118,8 @@ export default function PoolDetailPage() {
         setEntryError("That exact price has already been taken. Choose another price.");
       } else if (message === "entry_round_not_available") {
         setEntryError("Predictions are no longer available for this round.");
+      } else if (message === "entry_postcondition_failed") {
+        setEntryError("The transaction may already have been confirmed on Arc. Do not try again yet; refresh the round state first.");
       } else {
         setEntryError(message);
       }

@@ -909,4 +909,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Section 3 is complete. Section 4 now has the full confirm-and-submit path implemented: one fresh device confirmation is bound to the exact 1 USDC entry payload, then the backend automatically performs any required exact USDC approval and submits the real Arc Testnet entry. Next: run backend/frontend checks and browser-test before sending the first real prediction transaction.
+Section 3 is complete. Section 4 confirm-and-submit is implemented. First browser submission reached the real transaction path but surfaced `entry_postcondition_failed` because Arc's native gas USDC and ERC-20 USDC are two interfaces over the same underlying balance; gas makes the wallet ERC-20 balance fall by more than exactly 1 USDC. The postcondition now keeps exact +1 USDC checks on pool/round accounting while allowing wallet balance to fall by 1 USDC plus gas. Next: verify whether the first ETH Daily Low submission already landed onchain before any retry.
