@@ -1303,15 +1303,21 @@ Only begin after Sections 1–16 are functionally complete and proven.
 
 ## Current next action
 
-**Core next action: Section 7 — Real settlement source and resolver.**
+**Core next action: close the resolver-signing operational gap, then perform the real Daily Round #1 cancellation/refund proof after the observation window ends.**
 
-Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
+Section 7's historical Binance Mark Price source, DAILY/WEEKLY/QUARTERLY coverage, and deterministic resolver calculations are already proven. The remaining Section 7 blocker is operational: the deployed resolver address has no legitimate production signing mechanism wired into this repo.
 
-Next proof gate:
-1. Run `bash script/smoke-transferred-refund-fork.sh`.
-2. The script forks the real ETH Daily High Round #1, whose Ticket #1 is currently owned by the transferred-to owner wallet.
-3. It advances past `observationEndAt`, locks and cancels the round only on the local fork.
-4. It verifies the original entrant cannot refund (`NotTicketOwner`), the current NFT owner receives exactly 1 USDC, round escrow falls to zero, and a second refund fails (`AlreadyRefunded`).
-5. No Arc Testnet transaction is broadcast.
+Before `2026-09-07T00:00:00Z` (03:00 Türkiye time):
+1. Choose and verify a legitimate resolver signing path without committing, pasting, or exposing a private key.
+2. Do not rotate the deployed resolver casually and do not broadcast an early cancellation/settlement transaction.
+3. Keep the hardened transferred-refund fork harness as safety evidence only: original-entrant rejection with `NotTicketOwner` is proven; full current-owner USDC movement remains unproven on generic Anvil unless a later run genuinely proves it.
 
-The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.
+After `observationEndAt`:
+1. Lock the underfilled ETH Daily Round #1 on Arc Testnet.
+2. Cancel it using the legitimate resolver signing path.
+3. Refund the backend-owned ETH Daily Low Ticket #1 through the backend-wallet refund flow.
+4. Refund the externally owned ETH Daily High Ticket #1 through the connected-current-owner flow.
+5. Record the real Arc transaction hashes and verify receipt success, exact `Transfer` and `RefundClaimed` events, `refunded(tokenId) == true`, and the required pool/escrow accounting evidence. Do not use the owner's net balance as an exact +1 USDC proof because the owner also pays Arc gas from the same underlying balance.
+6. Prove the second refund attempt is rejected.
+
+The mandatory secondary NFT marketplace remains locked in **Section 16** and comes only after the core settlement → winners → payouts → claim/refund path is proven.
