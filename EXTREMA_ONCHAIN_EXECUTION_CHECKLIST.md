@@ -785,8 +785,15 @@ Planned intervals:
 
 ## 7.1 Resolver data proof
 
-- [ ] Exact Binance endpoint/spec locked
-- [ ] Exact time-boundary convention locked
+- [x] Exact Binance endpoint/spec locked
+  - `GET https://fapi.binance.com/fapi/v1/markPriceKlines`
+  - fields used: `[0]` open time, `[2]` high, `[3]` low, `[6]` close time
+  - intervals: DAILY `1m`, WEEKLY `15m`, QUARTERLY `4h`
+- [x] Exact time-boundary convention locked
+  - EXTREMA observation window = `[observationStartAt, observationEndAt)`
+  - request uses `endTime = observationEndAt - 1ms`
+  - every candle timestamp must be contiguous and aligned; incomplete source data is a hard failure
+  - final exact high/low is converted to integer cents with nearest-cent, half-up rounding
 - [ ] Daily resolver calculation verified
 - [ ] Weekly resolver calculation verified
 - [ ] Quarterly resolver calculation verified
@@ -1108,9 +1115,9 @@ Only begin after Sections 1–16 are functionally complete and proven.
 Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
 
 Next proof gate:
-1. Lock the exact Binance USDⓈ-M Futures Mark Price Klines endpoint/request parameters.
-2. Lock inclusive/exclusive observation time-boundary rules.
-3. Implement a deterministic resolver calculation for DAILY High/Low.
-4. Verify the calculation from archived/raw source data before any settlement transaction is broadcast.
+1. Run the new read-only resolver verification against a completed historical DAILY ETHUSDT window.
+2. Record candle count, exact High/Low, integer-cent outputs, raw-source SHA-256, and evidence SHA-256.
+3. Re-run the same calculation and confirm the hashes/results are identical.
+4. Do not broadcast any settlement transaction until this read-only proof passes.
 
 The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.

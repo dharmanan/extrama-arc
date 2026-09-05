@@ -307,6 +307,18 @@ Offchain resolver source:
 
 **Binance USDⓈ-M Futures Mark Price Klines**
 
+Canonical REST endpoint:
+
+`GET https://fapi.binance.com/fapi/v1/markPriceKlines`
+
+Request parameters:
+
+- `symbol`
+- `interval`
+- `startTime`
+- `endTime`
+- `limit`
+
 Symbols:
 
 - BTCUSDT
@@ -314,10 +326,38 @@ Symbols:
 - SOLUSDT
 - HYPEUSDT
 
-Rules:
+Cadence intervals:
 
-- HIGH = maximum candle high in observation window
-- LOW = minimum candle low in observation window
+- DAILY = `1m`
+- WEEKLY = `15m`
+- QUARTERLY = `4h`
+
+Observation time convention is always half-open:
+
+`[observationStartAt, observationEndAt)`
+
+Binance's request `endTime` is treated as inclusive by EXTREMA, so the resolver requests:
+
+`endTime = observationEndAt - 1 millisecond`
+
+The resolver must then verify every returned candle open time is exactly aligned and contiguous across the complete observation window. A missing, duplicated, misaligned, or unexpected candle is a hard failure and no settlement transaction may be produced.
+
+Binance Mark Price Kline fields used by EXTREMA:
+
+- `[0]` = candle open time
+- `[2]` = candle high
+- `[3]` = candle low
+- `[6]` = candle close time
+
+Resolution rules:
+
+- HIGH = maximum `[2]` across the complete observation window
+- LOW = minimum `[3]` across the complete observation window
+- source decimals are compared exactly, without JavaScript floating-point arithmetic
+- the final contract value is converted to integer cents using **nearest cent, half up**
+- the raw returned candle array is SHA-256 hashed and recorded with the calculation evidence
+
+Because prediction slots and `resolvedPriceCents` are integer cents, the same deterministic cent-rounding rule must be used for every asset and cadence.
 
 The pool identity already determines which asset/direction rule applies.
 
