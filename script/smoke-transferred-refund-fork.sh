@@ -28,6 +28,19 @@ lower() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
 }
 
+uint_value() {
+  local raw="$1"
+  local value
+  value="$(printf '%s\n' "$raw" | sed -E 's/^([0-9]+).*/\1/')"
+
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: could not parse uint256 value from: $raw" >&2
+    return 1
+  fi
+
+  printf '%s' "$value"
+}
+
 echo "EXTREMA transferred-ticket refund fork smoke test"
 echo "Upstream Arc RPC: $UPSTREAM_RPC"
 echo "Pool: $POOL"
@@ -124,13 +137,13 @@ if [[ $ORIGINAL_EXIT -eq 0 || "$ORIGINAL_OUT" != *"NotTicketOwner"* ]]; then
   exit 1
 fi
 
-OWNER_USDC_BEFORE="$(cast call "$USDC" "balanceOf(address)(uint256)" "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC")"
-POOL_USDC_BEFORE="$(cast call "$USDC" "balanceOf(address)(uint256)" "$POOL" --rpc-url "$LOCAL_RPC")"
+OWNER_USDC_BEFORE_RAW="$(cast call "$USDC" "balanceOf(address)(uint256)" "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC")"
+POOL_USDC_BEFORE_RAW="$(cast call "$USDC" "balanceOf(address)(uint256)" "$POOL" --rpc-url "$LOCAL_RPC")"
+OWNER_USDC_BEFORE="$(uint_value "$OWNER_USDC_BEFORE_RAW")"
+POOL_USDC_BEFORE="$(uint_value "$POOL_USDC_BEFORE_RAW")"
 
-if ! [[ "$OWNER_USDC_BEFORE" =~ ^[0-9]+$ && "$POOL_USDC_BEFORE" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: failed to read pre-refund USDC balances" >&2
-  exit 1
-fi
+echo "Current owner USDC before refund: $OWNER_USDC_BEFORE"
+echo "Pool USDC before refund: $POOL_USDC_BEFORE"
 
 cast rpc anvil_impersonateAccount "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC" >/dev/null
 cast rpc anvil_setBalance "$CURRENT_OWNER" 0x8AC7230489E80000 --rpc-url "$LOCAL_RPC" >/dev/null
@@ -139,16 +152,22 @@ echo
 echo "Refunding Ticket #$TOKEN_ID to current NFT owner on local fork..."
 cast send "$POOL"   "refund(uint256)"   "$TOKEN_ID"   --from "$CURRENT_OWNER"   --unlocked   --rpc-url "$LOCAL_RPC"   >/dev/null
 
-OWNER_USDC_AFTER="$(cast call "$USDC" "balanceOf(address)(uint256)" "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC")"
-POOL_USDC_AFTER="$(cast call "$USDC" "balanceOf(address)(uint256)" "$POOL" --rpc-url "$LOCAL_RPC")"
+OWNER_USDC_AFTER_RAW="$(cast call "$USDC" "balanceOf(address)(uint256)" "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC")"
+POOL_USDC_AFTER_RAW="$(cast call "$USDC" "balanceOf(address)(uint256)" "$POOL" --rpc-url "$LOCAL_RPC")"
+OWNER_USDC_AFTER="$(uint_value "$OWNER_USDC_AFTER_RAW")"
+POOL_USDC_AFTER="$(uint_value "$POOL_USDC_AFTER_RAW")"
 ROUND_AFTER="$(cast call "$POOL"   "getRound(uint256)((uint64,uint64,uint64,uint64,uint8,uint64,uint64,uint256,uint256,uint64,uint256[3]))"   "$ROUND_ID"   --rpc-url "$LOCAL_RPC")"
 ESCROW_AFTER="$(printf '%s\n' "$ROUND_AFTER" | sed -E 's/^\([^,]+, [^,]+, [^,]+, [^,]+, [^,]+, [^,]+, [^,]+, [^,]+, ([0-9]+).*/\1/')"
 REFUNDED="$(cast call "$POOL" "refunded(uint256)(bool)" "$TOKEN_ID" --rpc-url "$LOCAL_RPC")"
 
-if ! [[ "$OWNER_USDC_AFTER" =~ ^[0-9]+$ && "$POOL_USDC_AFTER" =~ ^[0-9]+$ && "$ESCROW_AFTER" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: failed to parse post-refund state" >&2
+if ! [[ "$ESCROW_AFTER" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: failed to parse post-refund escrow state" >&2
+  echo "$ROUND_AFTER" >&2
   exit 1
 fi
+
+echo "Current owner USDC after refund: $OWNER_USDC_AFTER"
+echo "Pool USDC after refund: $POOL_USDC_AFTER"
 
 OWNER_DELTA=$((OWNER_USDC_AFTER - OWNER_USDC_BEFORE))
 POOL_DELTA=$((POOL_USDC_BEFORE - POOL_USDC_AFTER))
