@@ -321,7 +321,7 @@ export default function WalletPage() {
                 <p>{chainBusy || "Arc Testnet balance not loaded yet."}</p>
               )}
 
-              {!sessionNeedsAuth && chainError && <p className="wf-message">{chainError}</p>
+              {!sessionNeedsAuth && chainError && <p className="wf-message">{chainError}</p>}
 
               <div className="wf-row">
                 <button className="wf-action" type="button" onClick={refreshChainState} disabled={Boolean(chainBusy)}>
