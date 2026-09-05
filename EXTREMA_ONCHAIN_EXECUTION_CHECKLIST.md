@@ -44,11 +44,14 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 - [x] Backend creates a real EVM EXTREMA wallet
 - [x] Private key is disclosed once to the user at wallet creation
 - [ ] Reconnect flow verified end-to-end with owner wallet + passkey
-- [ ] Fresh passkey step-up authorization implemented for critical transaction signing
-  - Backend step-up deployment proof (implementation only, browser verification still pending):
+- [x] Fresh passkey step-up authorization implemented for critical transaction signing
+  - Backend proof:
     - `npm run backend:check -> PASS`
     - Railway `/readyz -> {"ok":true,"service":"extrema-backend"}`
-    - action authorization database migration is part of backend startup before the server becomes ready
+    - action authorization database migration runs before backend readiness
+  - Browser/onchain proof:
+    - fingerprint/passkey confirmation completed for ETH Daily Low Round #1
+    - exact prediction-bound action was followed by real Arc Testnet entry tx `0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312`
 
 ---
 
@@ -541,14 +544,14 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - [ ] Approval/permit/transfer flow finalized
 - [x] Fresh passkey step-up required before backend signs
 - [x] Prediction is submitted in a real Arc Testnet transaction
-- [ ] Contract stores:
+- [x] Contract stores:
   - `roundId`
   - entrant wallet
   - exact prediction price
   - onchain entry ordering data
   - ticket ID
   - 1 USDC stake
-- [ ] Pool balance increases by exactly 1 USDC
+- [x] Pool balance increases by exactly 1 USDC
 - [x] Player count increases by exactly 1
 - [ ] Same wallet cannot enter same round twice
 - [ ] Same exact prediction price cannot be taken twice in same round
@@ -557,45 +560,66 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 ### Proof record
 
-#### First real entry — partial proof
+#### First real entry — verified onchain
 
 - Verification date: 2026-09-05
+- Chain ID: `5042002`
 - Pool: ETH Daily Low
 - Pool contract: `0x490A5CE02E3fd85d51095A69AAE9511552d91095`
+- Ticket contract: `0x6FC6756af39fb520844EdA73D6855990e56049E1`
 - Round ID: `1`
-- Prediction: `1976.98 USD` (`197698` cents)
-- Fresh device confirmation: PASS (fingerprint/passkey prompt completed)
-- Backend transaction path: reached real Arc Testnet execution
-- Immediate UI response incorrectly surfaced `entry_postcondition_failed`; root cause was the wallet postcondition assuming exactly 1 USDC balance reduction even though Arc gas is also paid from the same underlying USDC balance.
-- Postcondition fix commit: `309352cdd9a2d8de0f2d848024dd99f6ebfda661`
-- Fresh onchain round read after the submission:
+- EXTREMA wallet / entrant: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Prediction: `1976.98 USD` / `197698` cents
+- Fresh device confirmation: PASS
+- Entry transaction: `0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312`
+- Explorer: `https://testnet.arcscan.app/tx/0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312`
+- Block: `60502376`
+- Log index: `94`
+- Transaction index: `11`
+- Pool state before entry:
+  - `entryCount = 0`
+  - `totalStake = 0 USDC`
+  - `escrowRemaining = 0 USDC`
+  - pool USDC balance = `0 USDC`
+- Wallet UI balance immediately before the first entry attempt: `37.834193 USDC`
+- Read-only verification command: `./script/verify-first-real-entry.sh`
+- Read-only verification result: `FIRST_ENTRY_READS_COMPLETE=PASS`
+- Onchain reads:
+  - `hasEntered(1, wallet) -> true`
+  - `predictionTaken(1, 197698) -> true`
+  - `nextTicketId() -> 2`
+  - `entries(1)`:
+    - ticketId = `1`
+    - roundId = `1`
+    - originalEntrant = `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+    - predictionPriceCents = `197698`
+    - entrySequence = `1`
+  - `ownerOf(1) -> 0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+  - pool USDC `balanceOf -> 1000000` = exactly `1.0 USDC`
+  - wallet USDC `balanceOf -> 36823692` = `36.823692 USDC`
+- Round state after entry:
   - `entryCount = 1`
   - `totalStakeRaw = 1000000`
   - `totalStakeUsdc = 1.0`
   - `escrowRemainingRaw = 1000000`
   - `escrowRemainingUsdc = 1.0`
-- This proves the first real prediction transaction landed despite the stale postcondition error response.
-- Exact event tx hash, ticket ID/owner, pool ERC-20 balance, entry sequence, and stored prediction are the next read-only verification step before closing the remaining Section 4 proof items.
+- `PredictionEntered` event proves:
+  - roundId = `1`
+  - ticketId = `1`
+  - entrant = EXTREMA wallet
+  - prediction = `197698`
+  - entrySequence = `1`
+- Note: the first browser response showed `entry_postcondition_failed` only because the original postcondition incorrectly expected wallet ERC-20 balance to fall by exactly 1 USDC. Arc gas also consumes the same underlying USDC balance. The transaction itself succeeded; postcondition logic was fixed in commit `309352cdd9a2d8de0f2d848024dd99f6ebfda661`.
 
-- EXTREMA wallet:
-- USDC balance before:
-- Pool USDC before:
-- Entry tx:
-- Explorer:
-- USDC balance after:
-- Pool USDC after:
-- Ticket ID:
-- Entry sequence:
-- Verification:
 
 ---
 
 # 5. Real ERC-721 prediction ticket
 
-- [ ] Successful entry mints a real ERC-721 ticket
-- [ ] NFT token ID linked to `roundId`
-- [ ] NFT linked to prediction value
-- [ ] NFT ownership readable onchain
+- [x] Successful entry mints a real ERC-721 ticket
+- [x] NFT token ID linked to `roundId`
+- [x] NFT linked to prediction value
+- [x] NFT ownership readable onchain
 - [ ] `My Tickets` reads real NFT ownership
 - [ ] No localStorage/mock tickets in production path
 - [ ] NFT transfer tested on Arc Testnet
@@ -617,13 +641,13 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 # 6. Real live pool state
 
-- [ ] Real player count from chain/indexed events
-- [ ] Real pool USDC from contract/token balance/accounting
-- [ ] Real user entry status
-- [ ] Real user prediction
-- [ ] Real ticket ID
-- [ ] Real entry timestamp/order
-- [ ] Real round status
+- [x] Real player count from chain/indexed events
+- [x] Real pool USDC from contract/token balance/accounting
+- [x] Real user entry status
+- [x] Real user prediction
+- [x] Real ticket ID
+- [x] Real entry timestamp/order
+- [x] Real round status
 - [ ] No mock live distribution
 - [ ] UI updates after confirmed transactions
 
@@ -919,13 +943,13 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 3 — Real round creation.**
+**Section 4 — finish entry safety proofs.**
 
-Section 2.3 is complete on Arc Testnet.
+The first real 1 USDC prediction is now fully proven on Arc Testnet: entry tx, exact stored prediction, entry sequence, ticket #1, NFT owner, +1 player, +1 USDC pool balance, and +1 USDC escrow are all verified.
 
-UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run scripts are implemented:
-- `script/prepare-standard-rounds.sh`
-- `script/simulate-standard-rounds.sh`
-- `script/CreateStandardRounds.s.sol`
-
-Section 3 is complete. Section 4 confirm-and-submit is implemented. First browser submission reached the real transaction path but surfaced `entry_postcondition_failed` because Arc's native gas USDC and ERC-20 USDC are two interfaces over the same underlying balance; gas makes the wallet ERC-20 balance fall by more than exactly 1 USDC. The postcondition now keeps exact +1 USDC checks on pool/round accounting while allowing wallet balance to fall by 1 USDC plus gas. Next: verify whether the first ETH Daily Low submission already landed onchain before any retry.
+Next:
+1. recover/record the USDC approval transaction used by this entry
+2. prove same-wallet duplicate rejection without sending another transaction
+3. prove same-price rejection without sending another transaction
+4. refresh the browser and verify ETH Daily Low shows the confirmed 1 prediction / 1 USDC state
+5. keep entry-after-close proof pending until the real Daily cutoff passes
