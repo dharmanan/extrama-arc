@@ -1054,6 +1054,30 @@ Gross pool distribution:
   - Non-resolver settlement is rejected (`NotResolver`).
 - This is **local contract lifecycle proof only**. It does not mark the real Arc Testnet winner, payout, claim, or refund checklist items complete.
 
+#### Backend claim readiness smoke against live Arc state
+
+- Verification date: 2026-09-06 (Türkiye time)
+- Broadcast: **NO**
+- Result: `CLAIM_BACKEND_READINESS_SMOKE=PASS`
+- ETH Daily High Ticket #1:
+  - execution path: `EXTERNAL_OWNER`
+  - current owner matched `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
+  - live round state read as `LOCKED`
+  - `isClaimed == false`
+  - `claimableRaw == 0`
+  - backend claim builder rejected the request with `claim_round_not_settled`
+  - result: `HIGH_EXTERNAL=PASS`
+- ETH Daily Low Ticket #1:
+  - execution path: `BACKEND_WALLET`
+  - current owner matched `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+  - live round state read as `LOCKED`
+  - `isClaimed == false`
+  - `claimableRaw == 0`
+  - backend claim execution path rejected before signing with `claim_round_not_settled`
+  - result: `LOW_BACKEND=PASS`
+- Verification: both backend and external-owner claim paths re-derived current Arc state and refused an invalid pre-settlement claim. No transaction was signed or broadcast.
+- This proves the negative authorization gate against live Arc state; a real successful claim still requires a future `SETTLED` round with a winning ticket.
+
 ### Live claim proof
 
 - Round ID:
