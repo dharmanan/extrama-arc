@@ -37,6 +37,7 @@ export default function WalletPage() {
   const [chainError, setChainError] = useState("");
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
+  const [walletNotice, setWalletNotice] = useState("");
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -108,6 +109,7 @@ export default function WalletPage() {
   async function handleCreate() {
     if (!ownerAddress) return;
     setError("");
+    setWalletNotice("");
     setBusy("Waiting for wallet signature...");
     try {
       await registerPasskey(
@@ -122,7 +124,7 @@ export default function WalletPage() {
         },
       );
 
-      setBusy("Creating EXTREMA wallet...");
+      setBusy("Checking EXTREMA wallet...");
       const result = await backendApi.wallet.create();
 
       if (!result.wallet?.address) {
@@ -133,8 +135,12 @@ export default function WalletPage() {
 
       if (result.created && result.privateKey) {
         setPrivateKey(result.privateKey);
+        setWalletNotice("");
         setStep("recovery");
       } else {
+        setWalletNotice(
+          "Existing EXTREMA wallet restored. No new wallet was created. The private key is not re-disclosed.",
+        );
         setStep("ready");
       }
     } catch (cause) {
@@ -209,6 +215,7 @@ export default function WalletPage() {
     setOwnerAddress(null);
     setPrivateKey("");
     setRecoveryConfirmed(false);
+    setWalletNotice("");
     setStep("owner");
   }
 
@@ -217,6 +224,7 @@ export default function WalletPage() {
     setOwnerAddress(null);
     setPrivateKey("");
     setRecoveryConfirmed(false);
+    setWalletNotice("");
     setError("");
     setStep("owner");
   }
@@ -279,6 +287,7 @@ export default function WalletPage() {
         <section className="wf-main">
           <p>ARC TESTNET WALLET</p>
           <h1>EXTREMA wallet ready</h1>
+          {walletNotice && <p className="wf-message">{walletNotice}</p>}
 
           <div className="wf-two-col wf-section">
             <section className="wf-panel">
@@ -424,7 +433,7 @@ export default function WalletPage() {
             </div>
           </div>
           <p>STEP 3</p>
-          <h1>Create EXTREMA wallet</h1>
+          <h1>Set up EXTREMA wallet</h1>
           <p>Owner: {shortAddress(ownerAddress)}</p>
 
           <section className="wf-panel wf-section">
@@ -441,11 +450,13 @@ export default function WalletPage() {
             <p>
               Next, your owner wallet will ask you to sign an EXTREMA registration message.
               Only after that succeeds will the browser ask you to register a passkey.
+              If this owner already has an EXTREMA wallet, the existing wallet will be restored.
+              Otherwise a new wallet will be created and its private key will be shown once.
             </p>
 
             <div className="wf-row">
               <button className="wf-action" type="button" onClick={handleCreate} disabled={Boolean(busy)}>
-                {busy || "Sign, register passkey & create wallet"}
+                {busy || "Sign, register passkey & continue"}
               </button>
               <button className="wf-action" type="button" onClick={() => setStep("choice")} disabled={Boolean(busy)}>
                 Back
@@ -481,16 +492,17 @@ export default function WalletPage() {
 
         <div className="wf-two-col wf-section">
           <section className="wf-panel">
-            <h2>Create new EXTREMA wallet</h2>
+            <h2>Set up EXTREMA wallet</h2>
             <p>
-              Register a passkey, then create a fresh server-managed EVM wallet.
-              Its private key will be shown exactly once.
+              Register a passkey to continue. If this owner already has an EXTREMA wallet,
+              it will be restored. Otherwise a new server-managed EVM wallet will be created
+              and its private key will be shown exactly once.
             </p>
             <button className="wf-action" type="button" onClick={() => {
               setError("");
               setStep("create");
             }}>
-              Create new wallet
+              Register passkey & continue
             </button>
           </section>
 
