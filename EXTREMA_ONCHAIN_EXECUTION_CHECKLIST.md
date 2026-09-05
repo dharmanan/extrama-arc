@@ -1015,6 +1015,47 @@ Gross pool distribution:
 
 ### Proof record
 
+#### Local lifecycle simulation proof
+
+- Verification date: 2026-09-05
+- Command: `forge test --match-contract ExtremaPoolLifecycleTest -vv`
+- Broadcast: **NO**
+- Result: **PASS — 8 passed, 0 failed, 0 skipped**
+- Tests proven locally against the real `ExtremaPool` contract logic with `MockUSDC`:
+  - `testSettlementRanksWinnersAndAccountsEveryUsdc()`
+  - `testTieBreakUsesEarlierEntrySequence()`
+  - `testTransferredWinningNftOwnsClaimAndCannotDoubleClaim()`
+  - `testCancelledRoundRefundFollowsTransferredNft()`
+  - `testThreeEntriesCannotBeCancelled()`
+  - `testUnauthorizedSettlementRejected()`
+  - `testOwnerCanRescueOnlyAccidentalExcessUsdc()`
+  - `testTreasuryControllersCannotWithdrawPoolEscrow()`
+- Settlement/payout simulation:
+  - 4-entry round settles successfully.
+  - Winner ticket ordering is deterministic.
+  - First payout: `2,160,000` raw USDC (54% of 4 USDC).
+  - Second payout: `900,000` raw USDC (22.5%).
+  - Third payout: `540,000` raw USDC (13.5%).
+  - Treasury: `400,000` raw USDC (10%).
+  - Remaining winner reserve / round escrow: `3,600,000` raw USDC.
+  - Escrow invariant holds.
+- NFT ownership / claim simulation:
+  - Winning NFT transferred from original entrant to a new owner.
+  - Original entrant claim is rejected with `NotTicketOwner`.
+  - Current NFT owner receives the full claimable amount.
+  - Second claim is rejected with `AlreadyClaimed`.
+- Refund simulation:
+  - Cancelled-round refund follows current NFT ownership.
+  - Original entrant is rejected after ticket transfer.
+  - Current NFT owner receives the refund.
+  - Second refund is rejected with `AlreadyRefunded`.
+- Minimum-participant / authorization simulation:
+  - Three-entry round cannot be cancelled (`TooManyEntriesForCancellation`).
+  - Non-resolver settlement is rejected (`NotResolver`).
+- This is **local contract lifecycle proof only**. It does not mark the real Arc Testnet winner, payout, claim, or refund checklist items complete.
+
+### Live claim proof
+
 - Round ID:
 - Ticket ID:
 - NFT owner:
