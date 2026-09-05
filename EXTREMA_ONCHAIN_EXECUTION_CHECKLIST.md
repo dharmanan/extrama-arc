@@ -566,17 +566,24 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - Pool: ETH Daily High
 - Pool contract: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
 - Round ID: `1`
-- Prediction entered in browser: `2654.76 USD` / `265476` cents
+- Actual stored prediction for ticket #1: `2365.87 USD` / `236587` cents
 - Fresh onchain backend read:
   - `entryCount = 1`
   - `totalStakeRaw = 1000000`
   - `totalStakeUsdc = 1.0`
   - `escrowRemainingRaw = 1000000`
   - `escrowRemainingUsdc = 1.0`
-- Browser then attempted another prediction from the same EXTREMA wallet and the live contract-state guard returned the user-facing rejection:
+- The later browser value `2654.76` was **not** the successful entry. It was a second attempt from the same EXTREMA wallet after ticket #1 already existed.
+- That second attempt was blocked by the live contract-state guard with:
   - `This EXTREMA wallet has already entered this round.`
 - No second transaction was sent by that rejected attempt.
-- Exact tx hash/ticket/event and direct eth_call revert proofs are recorded in the next read-only verification step.
+- Direct reads from the first version of the verification script corrected the successful entry identity:
+  - `hasEntered(wallet) -> true`
+  - `entries(1).predictionPriceCents -> 236587`
+  - `entrySequence -> 1`
+  - ticket #1 owner -> EXTREMA wallet
+  - pool balance -> `1.0 USDC`
+- The first log scan failed only because Arc RPC rejected an oversized block range (`-32012 requested range too large`). The verification script now scans logs in 5,000-block chunks and uses the actual stored prediction `236587`.
 
 #### First real entry — verified onchain
 
