@@ -971,6 +971,25 @@ Planned intervals:
 
 ### Proof record
 
+#### Live pre-settlement result API proof
+
+- Verification date: 2026-09-06 (Türkiye time)
+- Endpoint: `GET /api/rounds/eth-weekly-high/1/result`
+- Railway response: `HTTP 200`
+- Chain: Arc Testnet `5042002`
+- Pool: `0x7c2e9C3221534F24ecA83949D4f7249c95C35c33`
+- Ticket collection: `0xd20a69DB0A957D6f285b6Af67fed653d65cD7E5d`
+- Round: `1`
+- Live status: `ENTRY_OPEN`
+- Entry count: `3`
+- Total stake: `3.0 USDC`
+- Escrow remaining: `3.0 USDC`
+- Resolved price: `null` / `0` cents before settlement
+- Winner ticket IDs: `[0, 0, 0]`
+- Winners: `[]`
+- Verification: result API is reading the real Arc round and correctly exposes no resolved price or winners before settlement; no mock winner data is returned.
+- This does **not** mark the settled-result checklist item complete. Final proof still requires the real round to reach `SETTLED`.
+
 - Round ID:
 - Resolved price:
 - Entry set:
