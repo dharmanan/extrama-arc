@@ -3,6 +3,7 @@ import "./globals.css";
 import "./wireframe.css";
 import { DemoStateProvider } from "./demo-state";
 import Web3Provider from "./providers/Web3Provider";
+import { LocaleProvider } from "./i18n";
 
 export const metadata: Metadata = {
   title: "EXTREMA — Predict what's next.",
@@ -14,7 +15,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body>
         <Web3Provider>
-          <DemoStateProvider>{children}</DemoStateProvider>
+          <LocaleProvider><DemoStateProvider>{children}</DemoStateProvider></LocaleProvider>
         </Web3Provider>
       </body>
     </html>
