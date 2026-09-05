@@ -56,6 +56,14 @@ const TICKET_ABI = [
   'function ownerOf(uint256 tokenId) view returns (address)',
 ];
 
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const MULTICALL3_ABI = [
+  'function aggregate3((address target,bool allowFailure,bytes callData)[] calls) returns ((bool success,bytes returnData)[] returnData)',
+];
+const POOL_INTERFACE = new ethers.Interface(POOL_ABI);
+const TICKET_INTERFACE = new ethers.Interface(TICKET_ABI);
+const MULTICALL3_INTERFACE = new ethers.Interface(MULTICALL3_ABI);
+
 const CONTRACT_STATUSES = ['ENTRY_OPEN', 'LOCKED', 'SETTLED', 'CANCELLED'];
 const SOURCE_SYMBOLS = {
   BTC: 'BTCUSDT',
@@ -134,6 +142,9 @@ async function mapWithConcurrency(items, limit, mapper) {
 const ARC_WALLET_STATE_CACHE_TTL_MS = 10_000;
 const arcWalletStateCache = new Map();
 const arcWalletStateRefreshPromises = new Map();
+const ARC_OWNED_TICKETS_CACHE_TTL_MS = 5_000;
+const arcOwnedTicketsCache = new Map();
+const arcOwnedTicketsRefreshPromises = new Map();
 
 async function readArcWalletState(address) {
   if (!ethers.isAddress(address)) {
@@ -242,7 +253,9 @@ async function getArcWalletState(address, { forceFresh = false } = {}) {
 
 function invalidateArcWalletStateCache(address) {
   if (!ethers.isAddress(address)) return;
-  arcWalletStateCache.delete(ethers.getAddress(address).toLowerCase());
+  const key = ethers.getAddress(address).toLowerCase();
+  arcWalletStateCache.delete(key);
+  arcOwnedTicketsCache.delete(key);
 }
 
 async function readStandardRounds() {
@@ -352,7 +365,178 @@ async function readStandardRounds() {
   };
 }
 
-async function readOwnedTickets(address) {
+let multicall3Availability = null;
+let multicall3ProbePromise = null;
+
+async function hasMulticall3(provider) {
+  if (multicall3Availability !== null) return multicall3Availability;
+  if (!multicall3ProbePromise) {
+    multicall3ProbePromise = rpcRead(() => provider.getCode(MULTICALL3_ADDRESS))
+      .then((code) => {
+        multicall3Availability = code !== '0x';
+        return multicall3Availability;
+      })
+      .finally(() => {
+        multicall3ProbePromise = null;
+      });
+  }
+  return multicall3ProbePromise;
+}
+
+async function readMulticall3(provider, calls) {
+  if (!(await hasMulticall3(provider))) {
+    throw new Error('arc_multicall3_not_found');
+  }
+
+  const data = MULTICALL3_INTERFACE.encodeFunctionData('aggregate3', [calls]);
+  const raw = await rpcRead(() => provider.call({ to: MULTICALL3_ADDRESS, data }));
+  const [results] = MULTICALL3_INTERFACE.decodeFunctionResult('aggregate3', raw);
+  if (results.length !== calls.length) {
+    throw new Error('arc_multicall3_result_mismatch');
+  }
+  return results;
+}
+
+async function readMulticall3InChunks(provider, calls, chunkSize = 100) {
+  const results = [];
+  for (let index = 0; index < calls.length; index += chunkSize) {
+    results.push(...await readMulticall3(provider, calls.slice(index, index + chunkSize)));
+  }
+  return results;
+}
+
+async function readOwnedTicketsViaMulticall(address) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const owner = ethers.getAddress(address);
+  const provider = getProvider();
+  const [network, blockNumber, multicallAvailable] = await Promise.all([
+    provider.getNetwork(),
+    provider.getBlockNumber(),
+    hasMulticall3(provider),
+  ]);
+
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+  if (!multicallAvailable) {
+    throw new Error('arc_multicall3_not_found');
+  }
+
+  const nextTicketResults = await readMulticall3(provider, ARC_POOL_TOPOLOGY.map((topology) => ({
+    target: topology.poolAddress,
+    allowFailure: false,
+    callData: POOL_INTERFACE.encodeFunctionData('nextTicketId'),
+  })));
+
+  const candidates = [];
+  nextTicketResults.forEach((result, index) => {
+    if (!result.success) throw new Error('arc_multicall3_next_ticket_failed');
+    const nextTicketId = POOL_INTERFACE.decodeFunctionResult('nextTicketId', result.returnData)[0];
+    for (let tokenId = 1n; tokenId < nextTicketId; tokenId += 1n) {
+      candidates.push({ topology: ARC_POOL_TOPOLOGY[index], tokenId });
+    }
+  });
+
+  const ownerResults = await readMulticall3InChunks(provider, candidates.map(({ topology, tokenId }) => ({
+    target: topology.ticketAddress,
+    allowFailure: true,
+    callData: TICKET_INTERFACE.encodeFunctionData('ownerOf', [tokenId]),
+  })));
+
+  const owned = [];
+  candidates.forEach((candidate, index) => {
+    const result = ownerResults[index];
+    if (!result?.success) return;
+    let tokenOwner;
+    try {
+      tokenOwner = TICKET_INTERFACE.decodeFunctionResult('ownerOf', result.returnData)[0];
+    } catch {
+      return;
+    }
+    if (tokenOwner.toLowerCase() === owner.toLowerCase()) {
+      owned.push(candidate);
+    }
+  });
+
+  const detailCalls = owned.flatMap(({ topology, tokenId }) => [
+    {
+      target: topology.poolAddress,
+      allowFailure: false,
+      callData: POOL_INTERFACE.encodeFunctionData('getTicketMetadata', [tokenId]),
+    },
+    {
+      target: topology.poolAddress,
+      allowFailure: false,
+      callData: POOL_INTERFACE.encodeFunctionData('claimableByTicket', [tokenId]),
+    },
+  ]);
+  const detailResults = await readMulticall3InChunks(provider, detailCalls);
+
+  const tickets = owned.map(({ topology, tokenId }, index) => {
+    const metadataResult = detailResults[index * 2];
+    const claimableResult = detailResults[index * 2 + 1];
+    if (!metadataResult?.success || !claimableResult?.success) {
+      throw new Error('arc_multicall3_ticket_detail_failed');
+    }
+
+    const metadata = POOL_INTERFACE.decodeFunctionResult(
+      'getTicketMetadata',
+      metadataResult.returnData,
+    )[0];
+    const claimableRaw = POOL_INTERFACE.decodeFunctionResult(
+      'claimableByTicket',
+      claimableResult.returnData,
+    )[0];
+    const roundStatus = CONTRACT_STATUSES[Number(metadata.roundStatus)];
+    if (!roundStatus) throw new Error('extrema_ticket_status_invalid');
+
+    return {
+      tokenId: tokenId.toString(),
+      roundId: Number(metadata.roundId),
+      predictionPriceCents: Number(metadata.predictionPriceCents),
+      predictionPrice: (Number(metadata.predictionPriceCents) / 100).toFixed(2),
+      entrySequence: Number(metadata.entrySequence),
+      roundStatus,
+      placement: Number(metadata.placement),
+      isClaimed: Boolean(metadata.isClaimed),
+      isRefunded: Boolean(metadata.isRefunded),
+      claimableRaw: claimableRaw.toString(),
+      claimableUsdc: ethers.formatUnits(claimableRaw, 6),
+      owner,
+      asset: topology.asset,
+      direction: topology.direction,
+      cadence: topology.cadence,
+      slug: slugify(topology.asset, topology.cadence, topology.direction),
+      poolAddress: ethers.getAddress(topology.poolAddress),
+      ticketAddress: ethers.getAddress(topology.ticketAddress),
+      explorerUrl: `https://testnet.arcscan.app/address/${ethers.getAddress(topology.ticketAddress)}`,
+    };
+  });
+
+  tickets.sort((a, b) => {
+    if (a.asset !== b.asset) return a.asset.localeCompare(b.asset);
+    if (a.cadence !== b.cadence) return a.cadence.localeCompare(b.cadence);
+    if (a.direction !== b.direction) return a.direction.localeCompare(b.direction);
+    return Number(a.tokenId) - Number(b.tokenId);
+  });
+
+  return {
+    chain: {
+      id: Number(network.chainId),
+      name: 'Arc Testnet',
+      blockNumber,
+      explorerUrl: 'https://testnet.arcscan.app',
+    },
+    wallet: { address: owner },
+    ticketCount: tickets.length,
+    tickets,
+  };
+}
+
+async function readOwnedTicketsLegacy(address) {
   if (!ethers.isAddress(address)) {
     throw new Error('invalid_wallet_address');
   }
@@ -442,6 +626,42 @@ async function readOwnedTickets(address) {
     ticketCount: tickets.length,
     tickets,
   };
+}
+
+async function refreshOwnedTicketsCache(address) {
+  const key = ethers.getAddress(address).toLowerCase();
+  const existing = arcOwnedTicketsRefreshPromises.get(key);
+  if (existing) return existing;
+
+  const refreshPromise = readOwnedTicketsViaMulticall(address)
+    .catch((error) => {
+      console.warn('[arc-ticket-multicall] falling back to canonical scan', error.message);
+      return readOwnedTicketsLegacy(address);
+    })
+    .then((state) => {
+      arcOwnedTicketsCache.set(key, { state, cachedAt: Date.now() });
+      return state;
+    })
+    .finally(() => {
+      arcOwnedTicketsRefreshPromises.delete(key);
+    });
+
+  arcOwnedTicketsRefreshPromises.set(key, refreshPromise);
+  return refreshPromise;
+}
+
+async function readOwnedTickets(address) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const key = ethers.getAddress(address).toLowerCase();
+  const cached = arcOwnedTicketsCache.get(key);
+  if (cached && Date.now() - cached.cachedAt <= ARC_OWNED_TICKETS_CACHE_TTL_MS) {
+    return cached.state;
+  }
+
+  return refreshOwnedTicketsCache(address);
 }
 
 const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
