@@ -1078,6 +1078,31 @@ Gross pool distribution:
 - Verification: both backend and external-owner claim paths re-derived current Arc state and refused an invalid pre-settlement claim. No transaction was signed or broadcast.
 - This proves the negative authorization gate against live Arc state; a real successful claim still requires a future `SETTLED` round with a winning ticket.
 
+#### Claim action authorization smoke
+
+- Verification date: 2026-09-06 (Türkiye time)
+- Command: `node script/smoke-claim-action-auth.js`
+- Broadcast: **NO**
+- Result: `CLAIM_ACTION_AUTH_SMOKE=PASS`
+- `CLAIM_ACTION_PAYLOAD=PASS`
+  - canonical action type is `CLAIM_REWARD`
+  - Arc chain ID, pool, ticket, token, round, current owner, destination, execution mode and exact claim amount are bound into the payload
+  - nonce and 120-second expiry are present
+  - SHA-256 payload hash matches the canonical payload
+- `CLAIM_CHALLENGE_SINGLE_USE=PASS`
+  - the WebAuthn challenge can be consumed once
+  - replay of the same challenge is rejected
+- `CLAIM_PAYLOAD_AND_TYPE_BINDING=PASS`
+  - wrong payload hash is rejected
+  - wrong action type is rejected
+- `CLAIM_ACTION_SINGLE_USE=PASS`
+  - a verified `CLAIM_REWARD` authorization can be consumed once
+  - replay after consumption is rejected
+- `CLAIM_CONSUMED_ACTION_LOOKUP=PASS`
+  - consumed authorization is recoverable only with the matching `CLAIM_REWARD` action type
+- Verification: claim authorization is nonce-bound, payload-hash-bound, action-type-bound and single-use at the action authorization layer.
+- This smoke uses an in-memory DB harness and does not replace a real browser WebAuthn + successful Arc Testnet claim proof.
+
 ### Live claim proof
 
 - Round ID:
