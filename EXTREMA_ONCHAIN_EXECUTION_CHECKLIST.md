@@ -460,6 +460,7 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - No mock player counts or mock pool balances were shown.
 - Performance issue observed: first live-round load was delayed because the backend refreshed all 24 pools from Arc RPC on the request path.
 - Performance fix: backend now keeps a 15-second in-memory live-round snapshot, serves the last confirmed snapshot immediately, refreshes stale data in the background, warms the snapshot at process start, and supports `?fresh=1` for an explicit fresh read when needed.
+- Railway runtime proof after the cache deployment: `GET /api/rounds` returned poolCount `24` at Arc block `60496565` in `0.385s`.
 
 **Section 3 status: COMPLETE.** Real Round #1 creation, backend reads, and browser pool state are all tied to Arc Testnet.
 
