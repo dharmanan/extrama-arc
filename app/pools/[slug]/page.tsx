@@ -7,6 +7,7 @@ import { AssetMark, ProductHeader } from "../../product-components";
 import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
 import { confirmEntryWithPasskey } from "../../lib/passkey-client";
 import { useCopy, useLocale } from "../../i18n";
+import { applyBinanceLiveMarketToPool, readBinanceLiveMarket } from "../../lib/live-market";
 import {
   formatEntryCount,
   formatLocalDateTime,
@@ -43,9 +44,15 @@ export default function PoolDetailPage() {
 
     async function refresh() {
       try {
-        const result = await backendApi.rounds.get(params.slug);
+        const [result, live] = await Promise.all([
+          backendApi.rounds.get(params.slug),
+          readBinanceLiveMarket(),
+        ]);
         if (cancelled) return;
-        setState(result);
+        setState({
+          ...result,
+          pool: applyBinanceLiveMarketToPool(result.pool, live),
+        });
         setError("");
       } catch (err: unknown) {
         if (cancelled) return;
