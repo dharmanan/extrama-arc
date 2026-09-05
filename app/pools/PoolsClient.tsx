@@ -5,6 +5,7 @@ import { PoolSummary } from "../product-components";
 import { backendApi, type LivePool } from "../lib/backend-api";
 import type { Asset, Cadence } from "../lib/domain";
 import { useCopy, useLocale } from "../i18n";
+import { applyBinanceLiveMarket, readBinanceLiveMarket } from "../lib/live-market";
 
 const assets: ("All" | Asset)[] = ["All", "BTC", "ETH", "SOL", "HYPE"];
 const cadences: ("All" | Cadence)[] = ["All", "Daily", "Weekly", "Quarterly"];
@@ -29,9 +30,12 @@ export default function PoolsClient() {
 
     async function refresh() {
       try {
-        const state = await backendApi.rounds.list();
+        const [state, live] = await Promise.all([
+          backendApi.rounds.list(),
+          readBinanceLiveMarket(),
+        ]);
         if (cancelled) return;
-        setPools(state.pools);
+        setPools(applyBinanceLiveMarket(state.pools, live));
         setBlockNumber(state.chain.blockNumber);
         setError("");
       } catch (err: unknown) {
