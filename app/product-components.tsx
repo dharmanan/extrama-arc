@@ -6,6 +6,7 @@ import { assetConfigs } from "./lib/data";
 import type { Asset } from "./lib/domain";
 import { shortAddress, useDemoState } from "./demo-state";
 import { backendApi, type LivePool } from "./lib/backend-api";
+import { useCopy, useLocale } from "./i18n";
 import {
   formatEntryCount,
   formatLocalDateTime,
@@ -26,6 +27,8 @@ function formatHeaderUsdc(value: string) {
 
 export function ProductHeader() {
   const { wallet } = useDemoState();
+  const { locale, setLocale } = useLocale();
+  const t = useCopy();
   const [onchainUsdc, setOnchainUsdc] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,16 +56,36 @@ export function ProductHeader() {
     <header className="wf-header">
       <Link href="/" className="wf-brand">EXTREMA</Link>
       <nav>
-        <Link href="/pools">Pools</Link>
-        <Link href="/leaderboard">Leaderboard</Link>
-        <Link href="/how-it-works">How it works</Link>
-        <Link href="/tickets">My Tickets</Link>
+        <Link href="/pools">{t.pools}</Link>
+        <Link href="/leaderboard">{t.leaderboard}</Link>
+        <Link href="/how-it-works">{t.howItWorks}</Link>
+        <Link href="/tickets">{t.myTickets}</Link>
       </nav>
-      <Link href="/wallet" className="wf-action">
-        {wallet.status === "ready" && wallet.address
-          ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${formatHeaderUsdc(onchainUsdc)} USDC` : ""}`
-          : "Create / Connect Wallet"}
-      </Link>
+      <div className="wf-row" style={{ justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
+        <div className="wf-row" aria-label="Language" style={{ gap: 4 }}>
+          <button
+            className="wf-filter"
+            data-active={locale === "en"}
+            type="button"
+            onClick={() => setLocale("en")}
+          >
+            EN
+          </button>
+          <button
+            className="wf-filter"
+            data-active={locale === "tr"}
+            type="button"
+            onClick={() => setLocale("tr")}
+          >
+            TR
+          </button>
+        </div>
+        <Link href="/wallet" className="wf-action">
+          {wallet.status === "ready" && wallet.address
+            ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${formatHeaderUsdc(onchainUsdc)} USDC` : ""}`
+            : t.createConnectWallet}
+        </Link>
+      </div>
     </header>
   );
 }
@@ -93,14 +116,19 @@ function formatUsdPrice(value: string | null) {
   }).format(numeric);
 }
 
-function poolStatusLabel(pool: LivePool) {
+function poolStatusLabel(pool: LivePool, locale: "en" | "tr") {
   if (pool.round.contractStatus === "ENTRY_OPEN" && !pool.round.canEnter) {
-    return "Predictions closed · awaiting lock";
+    return locale === "tr"
+      ? "Tahminler kapandı · kilit bekleniyor"
+      : "Predictions closed · awaiting lock";
   }
-  return humanRoundStatus(pool.round.contractStatus);
+  return humanRoundStatus(pool.round.contractStatus, locale);
 }
 
 export function PoolSummary({ pool }: { pool: LivePool }) {
+  const { locale } = useLocale();
+  const t = useCopy();
+
   return (
     <article className="wf-card">
       <div className="wf-row">
@@ -108,32 +136,32 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
         <span>{titleCase(pool.cadence)} · {titleCase(pool.direction)}</span>
       </div>
 
-      <p>Round <b>#{pool.round.roundId}</b></p>
+      <p>{t.round} <b>#{pool.round.roundId}</b></p>
 
       <dl className="wf-stats">
         <div>
-          <dt>{pool.market.available ? formatUsdPrice(pool.market.markPrice) : "Unavailable"}</dt>
-          <dd>Live mark · 1 min</dd>
+          <dt>{pool.market.available ? formatUsdPrice(pool.market.markPrice) : t.unavailable}</dt>
+          <dd>{t.liveMark}</dd>
         </div>
         <div>
           <dt>{formatUsdPrice(pool.round.lastPredictionPrice)}</dt>
-          <dd>Latest prediction</dd>
+          <dd>{t.latestPrediction}</dd>
         </div>
       </dl>
 
       <dl className="wf-stats">
-        <div><dt>{formatEntryCount(pool.round.entryCount)}</dt><dd>Entries</dd></div>
-        <div><dt>{formatUsdc(pool.round.totalStakeUsdc)}</dt><dd>Prize pool</dd></div>
+        <div><dt>{formatEntryCount(pool.round.entryCount, locale)}</dt><dd>{t.entries}</dd></div>
+        <div><dt>{formatUsdc(pool.round.totalStakeUsdc, locale)}</dt><dd>{t.prizePool}</dd></div>
       </dl>
 
-      <p><b>{poolStatusLabel(pool)}</b></p>
+      <p><b>{poolStatusLabel(pool, locale)}</b></p>
       <p>
-        Closes {formatLocalDateTime(pool.round.entryCloseAt)}
-        {pool.round.canEnter ? ` · ${formatTimeUntil(pool.round.entryCloseAt)}` : ""}
+        {t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}
+        {pool.round.canEnter ? ` · ${formatTimeUntil(pool.round.entryCloseAt, locale)}` : ""}
       </p>
 
       <Link href={`/pools/${pool.slug}`} className="wf-action">
-        {pool.round.canEnter ? "Make a prediction" : "View pool"}
+        {pool.round.canEnter ? t.makePrediction : t.viewPool}
       </Link>
     </article>
   );
