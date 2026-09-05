@@ -32,6 +32,20 @@ router.get('/chain-state', async (req, res, next) => {
   }
 });
 
+router.get('/tickets', async (req, res, next) => {
+  try {
+    const wallet = await walletService.getWalletForUser(req.auth.userId);
+    if (!wallet?.address) {
+      return res.status(404).json({ error: 'wallet_not_found' });
+    }
+
+    const state = await arcService.readOwnedTickets(wallet.address);
+    res.json(state);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/create', async (req, res, next) => {
   try {
     const result = await walletService.createWalletForUser(req.auth.userId);

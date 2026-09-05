@@ -1025,19 +1025,20 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 4 — only the real cutoff proof remains.**
+**Section 5 — My Tickets real ownership integration.**
 
-The real 1 USDC entry flow is now proven end-to-end on Arc Testnet, including:
-- exact 1 USDC approval
-- real entry transaction
-- exact stored prediction
-- ERC-721 ticket mint/ownership
-- +1 player / +1 USDC pool accounting
-- duplicate-wallet rejection
-- duplicate-price rejection
-- browser state refresh from confirmed onchain data
+The entry-close fork smoke test passed immediately; there is no need to wait for the real cutoff to continue development. The live-chain post-cutoff proof remains a later read-only check.
 
-Remaining Section 4 item:
-- entry after close is rejected
+Implemented next:
+- authenticated backend `GET /api/wallet/tickets`
+- reads current EXTREMA wallet from the authenticated session
+- scans the 24 deployed ticket collections via their paired pools
+- verifies `ownerOf(tokenId)` on Arc Testnet
+- reads prediction, round, entry sequence, status, placement, claim/refund state, and claimable amount from the real contracts
+- `/tickets` no longer uses demo/localStorage ticket state or mock claim actions
 
-A fork-based smoke test is available immediately via `./script/smoke-entry-close-fork.sh`. It forks the real deployed Arc Testnet pool state, advances only the local fork past the real `entryCloseAt`, and expects `EntryClosed` from a read-only `eth_call`. This is strong pre-cutoff smoke coverage but does not replace the later live-chain read-only proof after the real cutoff. Continue with independent workstreams without waiting.
+Next proof gate:
+1. `npm run backend:check`
+2. `npm run typecheck`
+3. `npm run build`
+4. browser verification that My Tickets shows the currently owned ETH Daily High and ETH Daily Low Ticket #1 NFTs from Arc Testnet

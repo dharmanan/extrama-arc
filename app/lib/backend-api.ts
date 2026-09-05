@@ -54,6 +54,40 @@ export type LiveRoundResponse = {
   pool: LivePool;
 };
 
+export type OwnedTicket = {
+  tokenId: string;
+  roundId: number;
+  predictionPriceCents: number;
+  predictionPrice: string;
+  entrySequence: number;
+  roundStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
+  placement: number;
+  isClaimed: boolean;
+  isRefunded: boolean;
+  claimableRaw: string;
+  claimableUsdc: string;
+  owner: string;
+  asset: Asset;
+  direction: "HIGH" | "LOW";
+  cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+  slug: string;
+  poolAddress: string;
+  ticketAddress: string;
+  explorerUrl: string;
+};
+
+export type OwnedTicketsResponse = {
+  chain: {
+    id: number;
+    name: string;
+    blockNumber: number;
+    explorerUrl: string;
+  };
+  wallet: { address: string };
+  ticketCount: number;
+  tickets: OwnedTicket[];
+};
+
 export type EntryActionPayload = {
   action: "ENTRY";
   chainId: 5042002;
@@ -215,6 +249,9 @@ export const backendApi = {
   wallet: {
     get() {
       return request<{ wallet: { id: string; address: string; createdAt: string } | null }>("/wallet");
+    },
+    tickets() {
+      return request<OwnedTicketsResponse>("/wallet/tickets");
     },
     chainState() {
       return request<{

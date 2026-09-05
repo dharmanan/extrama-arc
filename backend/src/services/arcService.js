@@ -19,7 +19,10 @@ const FACTORY_ABI = [
 
 const POOL_ABI = [
   'function nextRoundId() view returns (uint256)',
+  'function nextTicketId() view returns (uint256)',
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
+  'function getTicketMetadata(uint256 ticketId) view returns (tuple(uint256 roundId,uint64 predictionPriceCents,uint64 entrySequence,uint8 roundStatus,uint8 placement,bool isClaimed,bool isRefunded))',
+  'function claimableByTicket(uint256 ticketId) view returns (uint256)',
 ];
 
 const ARC_POOL_TOPOLOGY = [
@@ -47,6 +50,10 @@ const ARC_POOL_TOPOLOGY = [
   { asset: 'HYPE', direction: 'LOW', cadence: 'DAILY', poolAddress: '0x429329Efcd2c20198aB99EbF2459Be649864337C', ticketAddress: '0xAff6f3b5C2947368545B012c9689df2eC55997Bb' },
   { asset: 'HYPE', direction: 'LOW', cadence: 'WEEKLY', poolAddress: '0xE936A4125360562390d8202911d767DAb2FA4852', ticketAddress: '0x0A4C0AA2D0ff801AC774167c69A44b4F1210B404' },
   { asset: 'HYPE', direction: 'LOW', cadence: 'QUARTERLY', poolAddress: '0x8F921fDc4C02D46a02B85dAd0b2F3dF23303505b', ticketAddress: '0x84B9C1AdC20333022064234BaC11A1C786Cf08fC' },
+];
+
+const TICKET_ABI = [
+  'function ownerOf(uint256 tokenId) view returns (address)',
 ];
 
 const CONTRACT_STATUSES = ['ENTRY_OPEN', 'LOCKED', 'SETTLED', 'CANCELLED'];
@@ -290,6 +297,98 @@ async function readStandardRounds() {
   };
 }
 
+async function readOwnedTickets(address) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const owner = ethers.getAddress(address);
+  const provider = getProvider();
+  const [network, blockNumber] = await Promise.all([
+    provider.getNetwork(),
+    provider.getBlockNumber(),
+  ]);
+
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+
+  const groups = await mapWithConcurrency(
+    ARC_POOL_TOPOLOGY,
+    3,
+    async (topology) => {
+      const pool = new ethers.Contract(topology.poolAddress, POOL_ABI, provider);
+      const ticket = new ethers.Contract(topology.ticketAddress, TICKET_ABI, provider);
+      const nextTicketId = await rpcRead(() => pool.nextTicketId());
+
+      if (nextTicketId <= 1n) return [];
+
+      const owned = [];
+      for (let tokenId = 1n; tokenId < nextTicketId; tokenId += 1n) {
+        let tokenOwner;
+        try {
+          tokenOwner = await rpcRead(() => ticket.ownerOf(tokenId));
+        } catch {
+          continue;
+        }
+
+        if (tokenOwner.toLowerCase() !== owner.toLowerCase()) continue;
+
+        const [metadata, claimableRaw] = await Promise.all([
+          rpcRead(() => pool.getTicketMetadata(tokenId)),
+          rpcRead(() => pool.claimableByTicket(tokenId)),
+        ]);
+
+        const roundStatus = CONTRACT_STATUSES[Number(metadata.roundStatus)];
+        if (!roundStatus) throw new Error('extrema_ticket_status_invalid');
+
+        owned.push({
+          tokenId: tokenId.toString(),
+          roundId: Number(metadata.roundId),
+          predictionPriceCents: Number(metadata.predictionPriceCents),
+          predictionPrice: (Number(metadata.predictionPriceCents) / 100).toFixed(2),
+          entrySequence: Number(metadata.entrySequence),
+          roundStatus,
+          placement: Number(metadata.placement),
+          isClaimed: Boolean(metadata.isClaimed),
+          isRefunded: Boolean(metadata.isRefunded),
+          claimableRaw: claimableRaw.toString(),
+          claimableUsdc: ethers.formatUnits(claimableRaw, 6),
+          owner,
+          asset: topology.asset,
+          direction: topology.direction,
+          cadence: topology.cadence,
+          slug: slugify(topology.asset, topology.cadence, topology.direction),
+          poolAddress: ethers.getAddress(topology.poolAddress),
+          ticketAddress: ethers.getAddress(topology.ticketAddress),
+          explorerUrl: `https://testnet.arcscan.app/address/${ethers.getAddress(topology.ticketAddress)}`,
+        });
+      }
+
+      return owned;
+    },
+  );
+
+  const tickets = groups.flat().sort((a, b) => {
+    if (a.asset !== b.asset) return a.asset.localeCompare(b.asset);
+    if (a.cadence !== b.cadence) return a.cadence.localeCompare(b.cadence);
+    if (a.direction !== b.direction) return a.direction.localeCompare(b.direction);
+    return Number(a.tokenId) - Number(b.tokenId);
+  });
+
+  return {
+    chain: {
+      id: Number(network.chainId),
+      name: 'Arc Testnet',
+      blockNumber,
+      explorerUrl: 'https://testnet.arcscan.app',
+    },
+    wallet: { address: owner },
+    ticketCount: tickets.length,
+    tickets,
+  };
+}
+
 const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
 let standardRoundsCache = null;
 let standardRoundsCacheAt = 0;
@@ -337,6 +436,7 @@ module.exports = {
   ARC_TESTNET_USDC_ADDRESS,
   getArcProvider: getProvider,
   readArcWalletState,
+  readOwnedTickets,
   readStandardRounds,
   getStandardRoundsState,
   refreshStandardRoundsCache,

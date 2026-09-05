@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { assetConfigs, formatUsd } from "./lib/data";
-import type { Asset, Ticket } from "./lib/domain";
+import { assetConfigs } from "./lib/data";
+import type { Asset } from "./lib/domain";
 import { shortAddress, useDemoState } from "./demo-state";
 import { backendApi, type LivePool } from "./lib/backend-api";
 import {
@@ -95,33 +95,6 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       <Link href={`/pools/${pool.slug}`} className="wf-action">
         Make a prediction
       </Link>
-    </article>
-  );
-}
-
-export function TicketSummary({ ticket }: { ticket: Ticket }) {
-  const { claimTicket } = useDemoState();
-  const claimable = ticket.claimableUsdc > 0;
-
-  function handleClaim() {
-    const result = claimTicket(ticket.tokenId);
-    window.alert(result.message);
-  }
-
-  return (
-    <article className="wf-card">
-      <div className="wf-row">
-        <AssetMark asset={ticket.asset} />
-        <span>{ticket.status}</span>
-      </div>
-      <h3>{ticket.asset} · {ticket.cadence} {ticket.direction}</h3>
-      <strong>{formatUsd(ticket.prediction)}</strong>
-      <p>Ticket #{ticket.tokenId} · Round #{ticket.roundId} · 1 USDC</p>
-      {claimable && <p><b>{ticket.claimableUsdc} USDC claimable</b></p>}
-      <div className="wf-row">
-        <Link href={`/results/${ticket.roundId}`} className="wf-action">View round</Link>
-        {claimable && <button className="wf-action" type="button" onClick={handleClaim}>Claim reward</button>}
-      </div>
     </article>
   );
 }
