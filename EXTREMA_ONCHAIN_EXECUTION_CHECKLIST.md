@@ -800,7 +800,7 @@ Planned intervals:
 - [x] High calculation verified
 - [x] Low calculation verified
 - [x] Raw source response can be archived/hash-recorded
-- [ ] Deterministic calculation output recorded
+- [x] Deterministic calculation output recorded
 
 ## 7.2 Settlement transaction
 
@@ -834,7 +834,13 @@ Planned intervals:
 - LOW candle open: `2026-09-04T14:50:00.000Z`
 - Evidence SHA-256: `6cd71b246e1087bb9cf0049e1ba96d5b742841d7f40b8b1c57ab2bdeb635cf36`
 - Verification: DAILY source fetch, complete 1-minute candle coverage, HIGH calculation, LOW calculation, and evidence hashing = PASS.
-- Remaining determinism gate: run the exact same command again and confirm both SHA-256 values and both resolved prices are identical.
+- Determinism rerun proof (2026-09-05):
+  - same command rerun: `npm --prefix backend run resolver:verify`
+  - `sourceDataSha256` unchanged: `79e6acb34f250f2db133f88a7d83e94f4bafa0bf6ab0a3d018d22f37efc3ae31`
+  - `evidenceSha256` unchanged: `6cd71b246e1087bb9cf0049e1ba96d5b742841d7f40b8b1c57ab2bdeb635cf36`
+  - HIGH unchanged: exact `2545.71100000`, cents `254571`
+  - LOW unchanged: exact `2430.93475140`, cents `243093`
+  - result: DAILY resolver determinism = PASS
 
 #### Live settlement proof
 
@@ -1139,9 +1145,9 @@ Only begin after Sections 1–16 are functionally complete and proven.
 Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
 
 Next proof gate:
-1. Run the new read-only resolver verification against a completed historical DAILY ETHUSDT window.
+1. Verify the same resolver logic on a completed historical WEEKLY ETHUSDT window using 15m Mark Price Klines.
 2. Record candle count, exact High/Low, integer-cent outputs, raw-source SHA-256, and evidence SHA-256.
-3. Re-run the same calculation and confirm the hashes/results are identical.
-4. Do not broadcast any settlement transaction until this read-only proof passes.
+3. Re-run once to confirm determinism.
+4. Do not broadcast any settlement transaction during this proof.
 
 The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.
