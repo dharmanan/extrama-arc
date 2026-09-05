@@ -14,7 +14,7 @@ function cadenceKey(value: Cadence) {
 
 export default function PoolsClient() {
   const [asset, setAsset] = useState<"All" | Asset>("All");
-  const [cadence, setCadence] = useState<"All" | Cadence>("All");
+  const [cadence, setCadence] = useState<"All" | Cadence>("Daily");
   const [pools, setPools] = useState<LivePool[]>([]);
   const [blockNumber, setBlockNumber] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
