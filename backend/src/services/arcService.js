@@ -18,17 +18,37 @@ const FACTORY_ABI = [
 ];
 
 const POOL_ABI = [
-  'function ASSET() view returns (uint8)',
-  'function DIRECTION() view returns (uint8)',
-  'function CADENCE() view returns (uint8)',
-  'function TICKET() view returns (address)',
   'function nextRoundId() view returns (uint256)',
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
 ];
 
-const ASSETS = ['BTC', 'ETH', 'SOL', 'HYPE'];
-const DIRECTIONS = ['HIGH', 'LOW'];
-const CADENCES = ['DAILY', 'WEEKLY', 'QUARTERLY'];
+const ARC_POOL_TOPOLOGY = [
+  { asset: 'BTC', direction: 'HIGH', cadence: 'DAILY', poolAddress: '0xc724050511Df7CC0cb7aFC688cbcc9C2A16dC36d', ticketAddress: '0x3c04c15025731A07772018e8609a8af7212d8801' },
+  { asset: 'BTC', direction: 'HIGH', cadence: 'WEEKLY', poolAddress: '0xE7d18196075227F0b264F3612942b02e0FedC1d1', ticketAddress: '0x5e39A234c7654d3f005Ec5d2bEb014c159a9D38d' },
+  { asset: 'BTC', direction: 'HIGH', cadence: 'QUARTERLY', poolAddress: '0x7573cD9Ff84afda1e1f46Ab59f6Ff3dc4c0106A0', ticketAddress: '0xD6F2545F00eefaA00c02cEcaFfBb4EC33532c603' },
+  { asset: 'BTC', direction: 'LOW', cadence: 'DAILY', poolAddress: '0x18e34fF5527637fdA1C13297DAcbEE7c08e69dad', ticketAddress: '0x9BF5C34B23658a9aC06C0A47B59d9B90350e735E' },
+  { asset: 'BTC', direction: 'LOW', cadence: 'WEEKLY', poolAddress: '0x74a1Fc98876C2c7E792eB2F7577a908620F68f89', ticketAddress: '0x468f1485cDfF194114Bd3fC7b126EbdbBa704e0A' },
+  { asset: 'BTC', direction: 'LOW', cadence: 'QUARTERLY', poolAddress: '0x842A2F152a9b5aD7E9b7CB651DE59eD53040dBD0', ticketAddress: '0xEa6d00b5E473c5647f1B8CdceD8E56653181Afd3' },
+  { asset: 'ETH', direction: 'HIGH', cadence: 'DAILY', poolAddress: '0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f', ticketAddress: '0xF65Cf4a67299ad596e139e3F6a9594E809F05637' },
+  { asset: 'ETH', direction: 'HIGH', cadence: 'WEEKLY', poolAddress: '0x7c2e9C3221534F24ecA83949D4f7249c95C35c33', ticketAddress: '0xd20a69DB0A957D6f285b6Af67fed653d65cD7E5d' },
+  { asset: 'ETH', direction: 'HIGH', cadence: 'QUARTERLY', poolAddress: '0x6652e6F150e889Be15fbD6608A70e03aB7048d48', ticketAddress: '0x070C0153F1DCa041FdE84C581f12Ef832f3F50B8' },
+  { asset: 'ETH', direction: 'LOW', cadence: 'DAILY', poolAddress: '0x490A5CE02E3fd85d51095A69AAE9511552d91095', ticketAddress: '0x6FC6756af39fb520844EdA73D6855990e56049E1' },
+  { asset: 'ETH', direction: 'LOW', cadence: 'WEEKLY', poolAddress: '0x8ec016AE0376Bf7d893Be4BeA6Fb1C57AAabf718', ticketAddress: '0xa2F82BE41567D7BE6F7F2Ba435D23068eE2A2212' },
+  { asset: 'ETH', direction: 'LOW', cadence: 'QUARTERLY', poolAddress: '0xBD70a2F01F8524C4858A9A26AEdF82dC936da789', ticketAddress: '0xDb6761e9eeD6e52E3bb42FB0157b3818a2BF6b16' },
+  { asset: 'SOL', direction: 'HIGH', cadence: 'DAILY', poolAddress: '0xb81C2551cb757Cd51ABfCa3db4e876820634c76c', ticketAddress: '0x7Fb08d5A0d168De4CE479FC21C1E45fF35353F9C' },
+  { asset: 'SOL', direction: 'HIGH', cadence: 'WEEKLY', poolAddress: '0x7b24aFccf1f63545A36cd41a30c4846aBFb17CF8', ticketAddress: '0x534d90A4E4314f4A54E3eBd4D0cBe276E7CdD92A' },
+  { asset: 'SOL', direction: 'HIGH', cadence: 'QUARTERLY', poolAddress: '0xC5BA26016387e2c041d136779D1dE8d02DEf5c50', ticketAddress: '0x18c6b2c1Aad92321E83a39D92Fc621ffCDD51264' },
+  { asset: 'SOL', direction: 'LOW', cadence: 'DAILY', poolAddress: '0xdf1bE0356E5207f8aB96598c289823B488478fF5', ticketAddress: '0x174a3f5C207875f059171f35399869D60F792190' },
+  { asset: 'SOL', direction: 'LOW', cadence: 'WEEKLY', poolAddress: '0x5341Ca1e1257555a8bAceF969f3F3e06C6583f48', ticketAddress: '0x4BC109D7347855b5096B84BC6194Fe0d34a17bf4' },
+  { asset: 'SOL', direction: 'LOW', cadence: 'QUARTERLY', poolAddress: '0xc3b87D6C96924C107148D3db01dcDFcddFfCF981', ticketAddress: '0xD2b407294F18ec833c6BED915437832cdd235e6d' },
+  { asset: 'HYPE', direction: 'HIGH', cadence: 'DAILY', poolAddress: '0x97563B5DE4019311529c405ac78F59D74A001894', ticketAddress: '0x6e40BCedcb29b7E5e509F15d3f4C4380a5C670e2' },
+  { asset: 'HYPE', direction: 'HIGH', cadence: 'WEEKLY', poolAddress: '0xc699665f2BB38f7545C6bC1226755046F48A4D63', ticketAddress: '0xa7e359d2dF9E94B1E829f56016A7D879C53C63BC' },
+  { asset: 'HYPE', direction: 'HIGH', cadence: 'QUARTERLY', poolAddress: '0x8EFEEdfF439c772dcD040E36F43767F67B229C74', ticketAddress: '0x3cA0498a01c2D2D4a687E68791f77a542AF88d14' },
+  { asset: 'HYPE', direction: 'LOW', cadence: 'DAILY', poolAddress: '0x429329Efcd2c20198aB99EbF2459Be649864337C', ticketAddress: '0xAff6f3b5C2947368545B012c9689df2eC55997Bb' },
+  { asset: 'HYPE', direction: 'LOW', cadence: 'WEEKLY', poolAddress: '0xE936A4125360562390d8202911d767DAb2FA4852', ticketAddress: '0x0A4C0AA2D0ff801AC774167c69A44b4F1210B404' },
+  { asset: 'HYPE', direction: 'LOW', cadence: 'QUARTERLY', poolAddress: '0x8F921fDc4C02D46a02B85dAd0b2F3dF23303505b', ticketAddress: '0x84B9C1AdC20333022064234BaC11A1C786Cf08fC' },
+];
+
 const CONTRACT_STATUSES = ['ENTRY_OPEN', 'LOCKED', 'SETTLED', 'CANCELLED'];
 const SOURCE_SYMBOLS = {
   BTC: 'BTCUSDT',
@@ -82,6 +102,26 @@ async function rpcRead(operation, attempts = 6) {
   }
 
   throw lastError;
+}
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+
+  return results;
 }
 
 async function readArcWalletState(address) {
@@ -165,76 +205,73 @@ async function readStandardRounds() {
   }
 
   const factory = new ethers.Contract(factoryAddress, FACTORY_ABI, provider);
-  const poolAddresses = await factory.pools();
-  if (poolAddresses.length !== 24) {
+  const registeredPools = await rpcRead(() => factory.pools());
+  if (registeredPools.length !== ARC_POOL_TOPOLOGY.length) {
     throw new Error('extrema_pool_count_mismatch');
+  }
+
+  const registered = new Set(
+    registeredPools.map((address) => ethers.getAddress(address).toLowerCase()),
+  );
+  for (const item of ARC_POOL_TOPOLOGY) {
+    if (!registered.has(ethers.getAddress(item.poolAddress).toLowerCase())) {
+      throw new Error('extrema_topology_mismatch');
+    }
   }
 
   const chainTimestamp = BigInt(latestBlock.timestamp);
 
-  // Arc's public RPC rate-limits large bursts of eth_call requests.
-  // Read pools sequentially and retry only explicit rate-limit failures.
-  // This is slower than a 24-way Promise.all, but deterministic and reliable.
-  const pools = [];
+  const pools = await mapWithConcurrency(
+    ARC_POOL_TOPOLOGY,
+    3,
+    async (topology) => {
+      const poolAddress = ethers.getAddress(topology.poolAddress);
+      const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
 
-  for (const poolAddressRaw of poolAddresses) {
-    const poolAddress = ethers.getAddress(poolAddressRaw);
-    const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+      const nextRoundId = await rpcRead(() => pool.nextRoundId());
+      if (nextRoundId <= 1n) {
+        throw new Error('extrema_standard_round_missing');
+      }
 
-    const assetIndex = await rpcRead(() => pool.ASSET());
-    const directionIndex = await rpcRead(() => pool.DIRECTION());
-    const cadenceIndex = await rpcRead(() => pool.CADENCE());
-    const ticketAddressRaw = await rpcRead(() => pool.TICKET());
-    const nextRoundId = await rpcRead(() => pool.nextRoundId());
+      const roundId = nextRoundId - 1n;
+      const round = await rpcRead(() => pool.getRound(roundId));
+      const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+      if (!contractStatus) {
+        throw new Error('extrema_round_status_invalid');
+      }
 
-    const asset = ASSETS[Number(assetIndex)];
-    const direction = DIRECTIONS[Number(directionIndex)];
-    const cadence = CADENCES[Number(cadenceIndex)];
-    if (!asset || !direction || !cadence) {
-      throw new Error('extrema_pool_identity_invalid');
-    }
-    if (nextRoundId <= 1n) {
-      throw new Error('extrema_standard_round_missing');
-    }
+      const canEnter =
+        contractStatus === 'ENTRY_OPEN' &&
+        chainTimestamp >= round.entryOpenAt &&
+        chainTimestamp < round.entryCloseAt;
 
-    const roundId = nextRoundId - 1n;
-    const round = await rpcRead(() => pool.getRound(roundId));
-    const contractStatus = CONTRACT_STATUSES[Number(round.status)];
-    if (!contractStatus) {
-      throw new Error('extrema_round_status_invalid');
-    }
-
-    const canEnter =
-      contractStatus === 'ENTRY_OPEN' &&
-      chainTimestamp >= round.entryOpenAt &&
-      chainTimestamp < round.entryCloseAt;
-
-    pools.push({
-      slug: slugify(asset, cadence, direction),
-      poolAddress,
-      ticketAddress: ethers.getAddress(ticketAddressRaw),
-      asset,
-      direction,
-      cadence,
-      source: 'Binance USDⓈ-M Futures Mark Price',
-      sourceSymbol: SOURCE_SYMBOLS[asset],
-      round: {
-        roundId: Number(roundId),
-        contractStatus,
-        canEnter,
-        entryOpenAt: toIso(round.entryOpenAt),
-        entryCloseAt: toIso(round.entryCloseAt),
-        observationStartAt: toIso(round.observationStartAt),
-        observationEndAt: toIso(round.observationEndAt),
-        entryCount: Number(round.entryCount),
-        totalStakeRaw: round.totalStake.toString(),
-        totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
-        escrowRemainingRaw: round.escrowRemaining.toString(),
-        escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
-        resolvedPriceCents: round.resolvedPriceCents.toString(),
-      },
-    });
-  }
+      return {
+        slug: slugify(topology.asset, topology.cadence, topology.direction),
+        poolAddress,
+        ticketAddress: ethers.getAddress(topology.ticketAddress),
+        asset: topology.asset,
+        direction: topology.direction,
+        cadence: topology.cadence,
+        source: 'Binance USDⓈ-M Futures Mark Price',
+        sourceSymbol: SOURCE_SYMBOLS[topology.asset],
+        round: {
+          roundId: Number(roundId),
+          contractStatus,
+          canEnter,
+          entryOpenAt: toIso(round.entryOpenAt),
+          entryCloseAt: toIso(round.entryCloseAt),
+          observationStartAt: toIso(round.observationStartAt),
+          observationEndAt: toIso(round.observationEndAt),
+          entryCount: Number(round.entryCount),
+          totalStakeRaw: round.totalStake.toString(),
+          totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
+          escrowRemainingRaw: round.escrowRemaining.toString(),
+          escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
+          resolvedPriceCents: round.resolvedPriceCents.toString(),
+        },
+      };
+    },
+  );
 
   return {
     chain: {
