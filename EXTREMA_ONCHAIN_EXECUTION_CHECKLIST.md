@@ -1044,6 +1044,25 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
 
 ### Proof record
 
+#### Underfilled cancellation fork proof
+
+- Verification date: 2026-09-05
+- Command: `bash script/smoke-cancel-underfilled-fork.sh`
+- Result: `CANCEL_UNDERFILLED_FORK_SMOKE=PASS`
+- Broadcast: **NO**
+- Source deployment: ETH Daily High Round #1
+- Pool: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Entry count: `1`
+- Onchain `observationEndAt`: `1788739200`
+- Local fork timestamp: `1788739201`
+- Local fork status after cancellation: `CANCELLED`
+- `escrowRemaining` before cancellation: `1000000`
+- `escrowRemaining` after cancellation: `1000000`
+- Verification: underfilled cancellation transition and preservation of refund escrow = PASS at fork safety level.
+- This does **not** mark the real Arc Testnet cancellation/refund checklist complete.
+
+#### Live cancellation/refund proof
+
 - Round ID:
 - Entry count:
 - Cancellation tx:
@@ -1244,10 +1263,10 @@ Only begin after Sections 1–16 are functionally complete and proven.
 Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
 
 Next proof gate:
-1. Run `bash script/smoke-cancel-underfilled-fork.sh`.
-2. The script forks the real ETH Daily High Round #1 deployment locally and advances to just after `observationEndAt`.
-3. It locks the round, calls `cancelRound(1)` from the real resolver address on the local fork, and verifies the status becomes `CANCELLED`.
-4. It also verifies `escrowRemaining` stays reserved for refund and no USDC is moved by cancellation itself.
+1. Run `bash script/smoke-transferred-refund-fork.sh`.
+2. The script forks the real ETH Daily High Round #1, whose Ticket #1 is currently owned by the transferred-to owner wallet.
+3. It advances past `observationEndAt`, locks and cancels the round only on the local fork.
+4. It verifies the original entrant cannot refund (`NotTicketOwner`), the current NFT owner receives exactly 1 USDC, round escrow falls to zero, and a second refund fails (`AlreadyRefunded`).
 5. No Arc Testnet transaction is broadcast.
 
 The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.
