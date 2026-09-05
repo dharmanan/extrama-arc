@@ -1,8 +1,8 @@
 import type { LivePool } from "./backend-api";
 
+type LivePriceSource = "Binance" | "CoinGecko";
+
 export type BinanceLiveMarketResponse = {
-  source: "Binance";
-  sourceDetail: string;
   region: string;
   refreshIntervalSeconds: 60;
   refreshedAtIso: string;
@@ -10,8 +10,9 @@ export type BinanceLiveMarketResponse = {
     available: true;
     markPrice: string;
     sourceTimeIso: string;
-    source: "Binance";
+    source: LivePriceSource;
   }>;
+  missing?: string[];
 };
 
 export async function readBinanceLiveMarket(): Promise<BinanceLiveMarketResponse> {
@@ -35,6 +36,7 @@ export function applyBinanceLiveMarket(
 ): LivePool[] {
   return pools.map((pool) => {
     const price = live.prices[pool.sourceSymbol];
+
     if (!price) {
       return {
         ...pool,
@@ -44,8 +46,8 @@ export function applyBinanceLiveMarket(
           sourceTimeIso: null,
           refreshedAtIso: live.refreshedAtIso,
           refreshIntervalSeconds: 60,
-          source: "Binance",
-          isSettlementSource: true,
+          source: null,
+          isSettlementSource: false,
         },
       };
     }
@@ -58,8 +60,8 @@ export function applyBinanceLiveMarket(
         sourceTimeIso: price.sourceTimeIso,
         refreshedAtIso: live.refreshedAtIso,
         refreshIntervalSeconds: 60,
-        source: "Binance",
-        isSettlementSource: true,
+        source: price.source,
+        isSettlementSource: price.source === "Binance",
       },
     };
   });
