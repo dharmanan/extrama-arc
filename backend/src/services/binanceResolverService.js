@@ -14,6 +14,13 @@ const LIVE_MARK_BASE_URLS = Object.freeze([
   'https://fapi3.binance.com',
   'https://fapi4.binance.com',
 ]);
+const COINGECKO_SIMPLE_PRICE_URL = 'https://api.coingecko.com/api/v3/simple/price';
+const COINGECKO_IDS = Object.freeze({
+  BTCUSDT: 'bitcoin',
+  ETHUSDT: 'ethereum',
+  SOLUSDT: 'solana',
+  HYPEUSDT: 'hyperliquid',
+});
 
 let liveMarkCache = null;
 let liveMarkCacheAt = 0;
@@ -136,29 +143,103 @@ async function fetchCurrentMarkPrice(symbol, fetchImpl = globalThis.fetch) {
   throw new Error(`market_source_unavailable:${failures.join('|').slice(0, 1000)}`);
 }
 
+async function fetchCoinGeckoFallback(symbols, fetchImpl = globalThis.fetch) {
+  if (!Array.isArray(symbols) || symbols.length === 0) return {};
+
+  const ids = symbols.map((symbol) => COINGECKO_IDS[symbol]).filter(Boolean);
+  if (ids.length !== symbols.length) {
+    throw new Error('coingecko_symbol_mapping_missing');
+  }
+
+  const query = new URLSearchParams({
+    ids: ids.join(','),
+    vs_currencies: 'usd',
+    include_last_updated_at: 'true',
+    precision: 'full',
+  });
+  const requestUrl = `${COINGECKO_SIMPLE_PRICE_URL}?${query.toString()}`;
+  const payload = await fetchJson(requestUrl, fetchImpl);
+
+  const results = {};
+  for (const symbol of symbols) {
+    const id = COINGECKO_IDS[symbol];
+    const item = payload?.[id];
+    const usd = item?.usd;
+    const lastUpdatedAt = Number(item?.last_updated_at);
+
+    if (
+      typeof usd !== 'number' ||
+      !Number.isFinite(usd) ||
+      usd <= 0 ||
+      !Number.isSafeInteger(lastUpdatedAt) ||
+      lastUpdatedAt <= 0
+    ) {
+      continue;
+    }
+
+    const price = String(usd);
+    parsePositiveDecimal(price, 'coingecko_price');
+
+    results[symbol] = {
+      symbol,
+      markPriceRaw: price,
+      markPrice: price,
+      sourceTime: lastUpdatedAt * 1000,
+      sourceTimeIso: new Date(lastUpdatedAt * 1000).toISOString(),
+      endpoint: requestUrl,
+      method: 'coingecko-simple-price',
+      source: 'CoinGecko aggregated spot price',
+      isSettlementSource: false,
+    };
+  }
+
+  return results;
+}
+
 async function refreshLiveMarkPrices(fetchImpl = globalThis.fetch) {
   const symbols = Array.from(ALLOWED_SYMBOLS);
-  const entries = await Promise.all(
+  const prices = {};
+  const failedSymbols = [];
+
+  await Promise.all(
     symbols.map(async (symbol) => {
       try {
-        return [symbol, await fetchCurrentMarkPrice(symbol, fetchImpl)];
+        const result = await fetchCurrentMarkPrice(symbol, fetchImpl);
+        prices[symbol] = {
+          ...result,
+          source: 'Binance USDⓈ-M Futures Mark Price',
+          isSettlementSource: true,
+        };
       } catch (error) {
-        return [
+        failedSymbols.push(symbol);
+        prices[symbol] = {
           symbol,
-          {
-            symbol,
-            unavailable: true,
-            error: error instanceof Error ? error.message : String(error),
-          },
-        ];
+          unavailable: true,
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
     }),
   );
 
-  const prices = Object.fromEntries(entries);
+  if (failedSymbols.length > 0) {
+    try {
+      const fallback = await fetchCoinGeckoFallback(failedSymbols, fetchImpl);
+      for (const symbol of failedSymbols) {
+        if (fallback[symbol]) prices[symbol] = fallback[symbol];
+      }
+    } catch (error) {
+      for (const symbol of failedSymbols) {
+        prices[symbol] = {
+          ...prices[symbol],
+          fallbackError: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+  }
+
   const refreshedAt = Date.now();
   liveMarkCache = {
-    source: 'Binance USDⓈ-M Futures Mark Price',
+    source: 'EXTREMA live display price',
     refreshedAt,
     refreshedAtIso: new Date(refreshedAt).toISOString(),
     prices,
@@ -474,7 +555,10 @@ module.exports = {
   PREMIUM_INDEX_PATH,
   LIVE_MARK_CACHE_TTL_MS,
   LIVE_MARK_BASE_URLS,
+  COINGECKO_SIMPLE_PRICE_URL,
+  COINGECKO_IDS,
   fetchCurrentMarkPrice,
+  fetchCoinGeckoFallback,
   getLiveMarkPrices,
   CADENCE_INTERVALS,
   fetchMarkPriceWindow,
