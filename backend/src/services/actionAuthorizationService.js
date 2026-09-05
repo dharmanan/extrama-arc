@@ -81,6 +81,37 @@ function canonicalRefundPayload({
   };
 }
 
+
+function canonicalClaimPayload({
+  walletAddress,
+  poolAddress,
+  ticketAddress,
+  tokenId,
+  roundId,
+  currentOwner,
+  amountRaw,
+  executionMode,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'CLAIM_REWARD',
+    chainId: 5042002,
+    contract: poolAddress,
+    poolAddress,
+    ticketAddress,
+    tokenId,
+    roundId,
+    amountRaw,
+    currentOwner,
+    destination: currentOwner,
+    executionMode,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
 async function insertActionRequest(params, actionType, payload) {
   const payloadHash = sha256Hex(JSON.stringify(payload));
 
@@ -151,6 +182,24 @@ async function createRefundRequest(params) {
   );
 }
 
+
+async function createClaimRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalClaimPayload({
+    ...params,
+    nonce,
+    expiresAt,
+  });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'CLAIM_REWARD',
+    payload,
+  );
+}
+
 async function attachWebAuthnChallenge(userId, actionId, challenge, context) {
   const { rowCount } = await db.query(
     `UPDATE action_authorizations
@@ -201,7 +250,7 @@ async function consumeVerifiedAction(
   expectedPayloadHash,
   expectedActionType,
 ) {
-  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET'].includes(expectedActionType)) {
+  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD'].includes(expectedActionType)) {
     throw new Error('action_authorization_invalid');
   }
 
@@ -234,7 +283,7 @@ async function consumeVerifiedAction(
 }
 
 async function getConsumedAction(userId, actionId, expectedActionType) {
-  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET'].includes(expectedActionType)) {
+  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD'].includes(expectedActionType)) {
     throw new Error('action_authorization_invalid');
   }
 
@@ -264,6 +313,7 @@ module.exports = {
   createEntryRequest,
   createTicketTransferRequest,
   createRefundRequest,
+  createClaimRequest,
   attachWebAuthnChallenge,
   consumeWebAuthnChallenge,
   consumeVerifiedAction,
