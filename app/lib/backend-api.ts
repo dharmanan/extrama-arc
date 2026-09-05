@@ -18,6 +18,10 @@ export type LiveRoundState = {
   escrowRemainingRaw: string;
   escrowRemainingUsdc: string;
   resolvedPriceCents: string;
+  lastPredictionPriceCents: string | null;
+  lastPredictionPrice: string | null;
+  lastPredictionTicketId: string | null;
+  lastPredictionEntrySequence: number | null;
 };
 
 export type LivePool = {
@@ -29,6 +33,13 @@ export type LivePool = {
   cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
   source: string;
   sourceSymbol: string;
+  market: {
+    available: boolean;
+    markPrice: string | null;
+    sourceTimeIso: string | null;
+    refreshedAtIso: string;
+    refreshIntervalSeconds: 60;
+  };
   round: LiveRoundState;
 };
 
