@@ -13,6 +13,7 @@ const actionAuthorizationService = require('../services/actionAuthorizationServi
 const entryExecutionService = require('../services/entryExecutionService');
 const ticketTransferExecutionService = require('../services/ticketTransferExecutionService');
 const refundExecutionService = require('../services/refundExecutionService');
+const claimExecutionService = require('../services/claimExecutionService');
 
 const router = express.Router();
 
@@ -57,6 +58,18 @@ const refundStartSchema = z.object({
 });
 
 const refundVerifySchema = z.object({
+  actionId: z.string().uuid(),
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+});
+
+const claimStartSchema = z.object({
+  poolAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  ticketAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  tokenId: z.string().regex(/^[1-9][0-9]*$/),
+  roundId: z.number().int().positive(),
+});
+
+const claimVerifySchema = z.object({
   actionId: z.string().uuid(),
   txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
 });
@@ -382,6 +395,156 @@ router.post('/refund/verify', finishLimiter, async (req, res, next) => {
     }
 
     const result = await refundExecutionService.verifyExternalRefundReceipt(
+      action.payload,
+      txHash,
+    );
+
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: 'EXTERNAL_OWNER',
+      result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+router.post('/claim/start', startLimiter, async (req, res, next) => {
+  try {
+    const input = claimStartSchema.parse(req.body);
+    const poolAddress = ethers.getAddress(input.poolAddress);
+    const ticketAddress = ethers.getAddress(input.ticketAddress);
+
+    const [wallet, state] = await Promise.all([
+      walletService.getWalletForUser(req.auth.userId),
+      arcService.readClaimAuthorizationState({
+        poolAddress,
+        ticketAddress,
+        tokenId: input.tokenId,
+        roundId: input.roundId,
+      }),
+    ]);
+
+    if (!wallet?.address) {
+      return res.status(404).json({ error: 'wallet_not_found' });
+    }
+
+    if (state.roundStatus !== 'SETTLED') {
+      return res.status(409).json({ error: 'claim_round_not_settled' });
+    }
+    if (state.isClaimed) {
+      return res.status(409).json({ error: 'claim_already_claimed' });
+    }
+    if (BigInt(state.claimableRaw) <= 0n) {
+      return res.status(409).json({ error: 'claim_nothing_to_claim' });
+    }
+
+    const backendWalletAddress = ethers.getAddress(wallet.address);
+    const ownerAddress = req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
+      ? ethers.getAddress(req.auth.ownerAddress)
+      : null;
+
+    let executionMode;
+    let claimWalletAddress;
+
+    if (state.currentOwner.toLowerCase() === backendWalletAddress.toLowerCase()) {
+      executionMode = 'BACKEND_WALLET';
+      claimWalletAddress = backendWalletAddress;
+    } else if (ownerAddress && state.currentOwner.toLowerCase() === ownerAddress.toLowerCase()) {
+      executionMode = 'EXTERNAL_OWNER';
+      claimWalletAddress = ownerAddress;
+    } else {
+      return res.status(403).json({ error: 'claim_not_ticket_owner' });
+    }
+
+    const action = await actionAuthorizationService.createClaimRequest({
+      userId: req.auth.userId,
+      walletAddress: claimWalletAddress,
+      poolAddress: state.poolAddress,
+      ticketAddress: state.ticketAddress,
+      tokenId: state.tokenId,
+      roundId: state.roundId,
+      currentOwner: state.currentOwner,
+      amountRaw: state.claimableRaw,
+      executionMode,
+    });
+
+    res.json(await startPasskeyStepUp(req, action));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/claim/finish', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, credential } = finishSchema.parse(req.body);
+    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
+      req.auth.userId,
+      actionId,
+    );
+
+    await passkeyService.finishStepUpAuthentication(
+      req.auth.userId,
+      credential,
+      saved,
+    );
+
+    const action = await actionAuthorizationService.consumeVerifiedAction(
+      req.auth.userId,
+      actionId,
+      saved.payloadHash,
+      'CLAIM_REWARD',
+    );
+
+    if (action.payload.executionMode === 'BACKEND_WALLET') {
+      const result = await claimExecutionService.executeBackendClaim(
+        req.auth.userId,
+        action.payload,
+      );
+
+      return res.json({
+        confirmed: true,
+        actionId,
+        payloadHash: action.payloadHash,
+        executionMode: 'BACKEND_WALLET',
+        result,
+      });
+    }
+
+    const transactionRequest = await claimExecutionService.buildExternalClaimTransactionRequest(
+      action.payload,
+    );
+
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: 'EXTERNAL_OWNER',
+      transactionRequest,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/claim/verify', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, txHash } = claimVerifySchema.parse(req.body);
+
+    const action = await actionAuthorizationService.getConsumedAction(
+      req.auth.userId,
+      actionId,
+      'CLAIM_REWARD',
+    );
+
+    if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
+      return res.status(409).json({ error: 'claim_execution_mode_mismatch' });
+    }
+
+    const result = await claimExecutionService.verifyExternalClaimReceipt(
       action.payload,
       txHash,
     );
