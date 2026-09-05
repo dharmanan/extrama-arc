@@ -40,7 +40,7 @@ router.get('/tickets', async (req, res, next) => {
     }
 
     const startedAt = Date.now();
-    const state = await arcService.getOwnedTicketsState(wallet.address);
+    const state = await arcService.readOwnedTickets(wallet.address);
     res.set('Server-Timing', `wallet-tickets;dur=${Date.now() - startedAt}`);
     res.json(state);
   } catch (error) {

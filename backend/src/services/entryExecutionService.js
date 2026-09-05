@@ -174,7 +174,6 @@ async function executeEntry(userId, payload) {
     throw new Error('entry_postcondition_failed');
   }
 
-  arcService.invalidateOwnedTicketsCache(walletAddress);
   arcService.invalidateArcWalletStateCache(walletAddress);
 
   arcService.refreshStandardRoundsCache().catch((error) => {
