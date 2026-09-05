@@ -22,25 +22,31 @@ export default function PoolsClient() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
 
-    backendApi.rounds.list()
-      .then((state) => {
+    async function refresh() {
+      try {
+        const state = await backendApi.rounds.list();
         if (cancelled) return;
         setPools(state.pools);
         setBlockNumber(state.chain.blockNumber);
         setError("");
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         if (cancelled) return;
-        setPools([]);
         setError(err instanceof Error ? err.message : "Unable to read Arc Testnet rounds.");
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void refresh();
+    timer = setInterval(() => {
+      void refresh();
+    }, 60_000);
 
     return () => {
       cancelled = true;
+      if (timer) clearInterval(timer);
     };
   }, []);
 
