@@ -118,9 +118,9 @@ function formatUsdPrice(value: string | null, locale: "en" | "tr") {
 
 function localizedCadence(value: LivePool["cadence"], locale: "en" | "tr") {
   if (locale === "tr") {
-    if (value === "DAILY") return "Günlük";
-    if (value === "WEEKLY") return "Haftalık";
-    return "Çeyreklik";
+    if (value === "DAILY") return "Gün";
+    if (value === "WEEKLY") return "Hafta";
+    return "Çeyrek";
   }
   return titleCase(value);
 }
