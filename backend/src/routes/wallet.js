@@ -39,7 +39,9 @@ router.get('/tickets', async (req, res, next) => {
       return res.status(404).json({ error: 'wallet_not_found' });
     }
 
-    const state = await arcService.readOwnedTickets(wallet.address);
+    const startedAt = Date.now();
+    const state = await arcService.getOwnedTicketsState(wallet.address);
+    res.set('Server-Timing', `wallet-tickets;dur=${Date.now() - startedAt}`);
     res.json(state);
   } catch (error) {
     next(error);

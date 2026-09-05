@@ -56,6 +56,21 @@ const TICKET_ABI = [
   'function ownerOf(uint256 tokenId) view returns (address)',
 ];
 
+const TRANSFER_TOPIC = ethers.id('Transfer(address,address,uint256)');
+const ARC_TICKET_INDEX_FROM_BLOCK = 60_460_000;
+const TICKET_LOG_CHUNK_SIZE = 5_000;
+const OWNED_TICKETS_CACHE_TTL_MS = 15_000;
+
+const TICKET_TOPOLOGY_BY_ADDRESS = new Map(
+  ARC_POOL_TOPOLOGY.map((topology) => [
+    ethers.getAddress(topology.ticketAddress).toLowerCase(),
+    topology,
+  ]),
+);
+
+const ownedTicketsCache = new Map();
+const ownedTicketsRefreshPromises = new Map();
+
 const CONTRACT_STATUSES = ['ENTRY_OPEN', 'LOCKED', 'SETTLED', 'CANCELLED'];
 const SOURCE_SYMBOLS = {
   BTC: 'BTCUSDT',
@@ -297,6 +312,69 @@ async function readStandardRounds() {
   };
 }
 
+function indexedAddressTopic(address) {
+  return ethers.zeroPadValue(ethers.getAddress(address), 32);
+}
+
+async function readIncomingTicketCandidates(provider, owner, blockNumber) {
+  const ticketAddresses = ARC_POOL_TOPOLOGY.map((topology) =>
+    ethers.getAddress(topology.ticketAddress),
+  );
+  const ranges = [];
+
+  for (
+    let fromBlock = ARC_TICKET_INDEX_FROM_BLOCK;
+    fromBlock <= blockNumber;
+    fromBlock += TICKET_LOG_CHUNK_SIZE
+  ) {
+    ranges.push({
+      fromBlock,
+      toBlock: Math.min(
+        fromBlock + TICKET_LOG_CHUNK_SIZE - 1,
+        blockNumber,
+      ),
+    });
+  }
+
+  const logGroups = await mapWithConcurrency(
+    ranges,
+    3,
+    ({ fromBlock, toBlock }) =>
+      rpcRead(() =>
+        provider.getLogs({
+          address: ticketAddresses,
+          fromBlock,
+          toBlock,
+          topics: [
+            TRANSFER_TOPIC,
+            null,
+            indexedAddressTopic(owner),
+          ],
+        }),
+      ),
+  );
+
+  const candidates = new Map();
+
+  for (const log of logGroups.flat()) {
+    if (!log.topics?.[3]) continue;
+
+    const ticketAddress = ethers.getAddress(log.address);
+    const topology = TICKET_TOPOLOGY_BY_ADDRESS.get(
+      ticketAddress.toLowerCase(),
+    );
+    if (!topology) continue;
+
+    const tokenId = BigInt(log.topics[3]);
+    candidates.set(
+      `${ticketAddress.toLowerCase()}:${tokenId.toString()}`,
+      { topology, ticketAddress, tokenId },
+    );
+  }
+
+  return Array.from(candidates.values());
+}
+
 async function readOwnedTickets(address) {
   if (!ethers.isAddress(address)) {
     throw new Error('invalid_wallet_address');
@@ -313,63 +391,61 @@ async function readOwnedTickets(address) {
     throw new Error('arc_chain_id_mismatch');
   }
 
-  const groups = await mapWithConcurrency(
-    ARC_POOL_TOPOLOGY,
+  const candidates = await readIncomingTicketCandidates(
+    provider,
+    owner,
+    blockNumber,
+  );
+
+  const owned = await mapWithConcurrency(
+    candidates,
     3,
-    async (topology) => {
+    async ({ topology, ticketAddress, tokenId }) => {
       const pool = new ethers.Contract(topology.poolAddress, POOL_ABI, provider);
-      const ticket = new ethers.Contract(topology.ticketAddress, TICKET_ABI, provider);
-      const nextTicketId = await rpcRead(() => pool.nextTicketId());
+      const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, provider);
 
-      if (nextTicketId <= 1n) return [];
-
-      const owned = [];
-      for (let tokenId = 1n; tokenId < nextTicketId; tokenId += 1n) {
-        let tokenOwner;
-        try {
-          tokenOwner = await rpcRead(() => ticket.ownerOf(tokenId));
-        } catch {
-          continue;
-        }
-
-        if (tokenOwner.toLowerCase() !== owner.toLowerCase()) continue;
-
-        const [metadata, claimableRaw] = await Promise.all([
-          rpcRead(() => pool.getTicketMetadata(tokenId)),
-          rpcRead(() => pool.claimableByTicket(tokenId)),
-        ]);
-
-        const roundStatus = CONTRACT_STATUSES[Number(metadata.roundStatus)];
-        if (!roundStatus) throw new Error('extrema_ticket_status_invalid');
-
-        owned.push({
-          tokenId: tokenId.toString(),
-          roundId: Number(metadata.roundId),
-          predictionPriceCents: Number(metadata.predictionPriceCents),
-          predictionPrice: (Number(metadata.predictionPriceCents) / 100).toFixed(2),
-          entrySequence: Number(metadata.entrySequence),
-          roundStatus,
-          placement: Number(metadata.placement),
-          isClaimed: Boolean(metadata.isClaimed),
-          isRefunded: Boolean(metadata.isRefunded),
-          claimableRaw: claimableRaw.toString(),
-          claimableUsdc: ethers.formatUnits(claimableRaw, 6),
-          owner,
-          asset: topology.asset,
-          direction: topology.direction,
-          cadence: topology.cadence,
-          slug: slugify(topology.asset, topology.cadence, topology.direction),
-          poolAddress: ethers.getAddress(topology.poolAddress),
-          ticketAddress: ethers.getAddress(topology.ticketAddress),
-          explorerUrl: `https://testnet.arcscan.app/address/${ethers.getAddress(topology.ticketAddress)}`,
-        });
+      let tokenOwner;
+      try {
+        tokenOwner = await rpcRead(() => ticket.ownerOf(tokenId));
+      } catch {
+        return null;
       }
 
-      return owned;
+      if (tokenOwner.toLowerCase() !== owner.toLowerCase()) return null;
+
+      const [metadata, claimableRaw] = await Promise.all([
+        rpcRead(() => pool.getTicketMetadata(tokenId)),
+        rpcRead(() => pool.claimableByTicket(tokenId)),
+      ]);
+
+      const roundStatus = CONTRACT_STATUSES[Number(metadata.roundStatus)];
+      if (!roundStatus) throw new Error('extrema_ticket_status_invalid');
+
+      return {
+        tokenId: tokenId.toString(),
+        roundId: Number(metadata.roundId),
+        predictionPriceCents: Number(metadata.predictionPriceCents),
+        predictionPrice: (Number(metadata.predictionPriceCents) / 100).toFixed(2),
+        entrySequence: Number(metadata.entrySequence),
+        roundStatus,
+        placement: Number(metadata.placement),
+        isClaimed: Boolean(metadata.isClaimed),
+        isRefunded: Boolean(metadata.isRefunded),
+        claimableRaw: claimableRaw.toString(),
+        claimableUsdc: ethers.formatUnits(claimableRaw, 6),
+        owner,
+        asset: topology.asset,
+        direction: topology.direction,
+        cadence: topology.cadence,
+        slug: slugify(topology.asset, topology.cadence, topology.direction),
+        poolAddress: ethers.getAddress(topology.poolAddress),
+        ticketAddress,
+        explorerUrl: `https://testnet.arcscan.app/address/${ticketAddress}`,
+      };
     },
   );
 
-  const tickets = groups.flat().sort((a, b) => {
+  const tickets = owned.filter(Boolean).sort((a, b) => {
     if (a.asset !== b.asset) return a.asset.localeCompare(b.asset);
     if (a.cadence !== b.cadence) return a.cadence.localeCompare(b.cadence);
     if (a.direction !== b.direction) return a.direction.localeCompare(b.direction);
@@ -387,6 +463,55 @@ async function readOwnedTickets(address) {
     ticketCount: tickets.length,
     tickets,
   };
+}
+
+async function refreshOwnedTicketsCache(address) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const key = ethers.getAddress(address).toLowerCase();
+  const existing = ownedTicketsRefreshPromises.get(key);
+  if (existing) return existing;
+
+  const refreshPromise = readOwnedTickets(address)
+    .then((state) => {
+      ownedTicketsCache.set(key, {
+        state,
+        cachedAt: Date.now(),
+      });
+      return state;
+    })
+    .finally(() => {
+      ownedTicketsRefreshPromises.delete(key);
+    });
+
+  ownedTicketsRefreshPromises.set(key, refreshPromise);
+  return refreshPromise;
+}
+
+async function getOwnedTicketsState(address, { forceFresh = false } = {}) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const key = ethers.getAddress(address).toLowerCase();
+  const cached = ownedTicketsCache.get(key);
+
+  if (
+    !forceFresh &&
+    cached &&
+    Date.now() - cached.cachedAt <= OWNED_TICKETS_CACHE_TTL_MS
+  ) {
+    return cached.state;
+  }
+
+  return refreshOwnedTicketsCache(address);
+}
+
+function invalidateOwnedTicketsCache(address) {
+  if (!ethers.isAddress(address)) return;
+  ownedTicketsCache.delete(ethers.getAddress(address).toLowerCase());
 }
 
 const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
@@ -437,6 +562,8 @@ module.exports = {
   getArcProvider: getProvider,
   readArcWalletState,
   readOwnedTickets,
+  getOwnedTicketsState,
+  invalidateOwnedTicketsCache,
   readStandardRounds,
   getStandardRoundsState,
   refreshStandardRoundsCache,
