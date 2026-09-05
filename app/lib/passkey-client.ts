@@ -350,3 +350,112 @@ export async function confirmExternalRefundReceipt(actionId: string, txHash: str
 
   return finished.result;
 }
+
+export type ClaimStartInput = {
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+};
+
+export async function confirmClaimWithPasskey(input: ClaimStartInput) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startClaim(input);
+
+  const actionMatches =
+    start.action.action === "CLAIM_REWARD" &&
+    start.action.chainId === 5042002 &&
+    addressesEqual(start.action.poolAddress, input.poolAddress) &&
+    addressesEqual(start.action.ticketAddress, input.ticketAddress) &&
+    start.action.tokenId === input.tokenId &&
+    start.action.roundId === input.roundId &&
+    /^[1-9][0-9]*$/.test(start.action.amountRaw) &&
+    addressesEqual(start.action.destination, start.action.currentOwner) &&
+    (start.action.executionMode === "BACKEND_WALLET" ||
+      start.action.executionMode === "EXTERNAL_OWNER") &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Reward confirmation details did not match the requested ticket.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishClaim(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.executionMode !== start.action.executionMode
+  ) {
+    throw new Error("Confirmed reward authorization did not match the request.");
+  }
+
+  if (finished.executionMode === "BACKEND_WALLET") {
+    if (
+      finished.result.chainId !== 5042002 ||
+      !addressesEqual(finished.result.poolAddress, input.poolAddress) ||
+      !addressesEqual(finished.result.ticketAddress, input.ticketAddress) ||
+      finished.result.tokenId !== input.tokenId ||
+      finished.result.roundId !== input.roundId ||
+      finished.result.amountRaw !== start.action.amountRaw ||
+      !addressesEqual(finished.result.currentOwner, start.action.currentOwner)
+    ) {
+      throw new Error("Confirmed reward claim did not match the requested ticket.");
+    }
+
+    return {
+      executionMode: "BACKEND_WALLET" as const,
+      amountRaw: start.action.amountRaw,
+      currentOwner: start.action.currentOwner,
+      result: finished.result,
+    };
+  }
+
+  if (
+    finished.transactionRequest.chainId !== 5042002 ||
+    !addressesEqual(finished.transactionRequest.to, input.poolAddress) ||
+    !addressesEqual(finished.transactionRequest.from, start.action.currentOwner) ||
+    finished.transactionRequest.value !== "0x0"
+  ) {
+    throw new Error("Reward transaction request did not match the requested ticket.");
+  }
+
+  return {
+    executionMode: "EXTERNAL_OWNER" as const,
+    actionId: start.actionId,
+    payloadHash: start.payloadHash,
+    amountRaw: start.action.amountRaw,
+    transactionRequest: finished.transactionRequest,
+    currentOwner: start.action.currentOwner,
+  };
+}
+
+export async function confirmExternalClaimReceipt(actionId: string, txHash: string) {
+  const finished = await backendApi.actions.verifyClaim(actionId, txHash);
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== actionId ||
+    finished.result.chainId !== 5042002 ||
+    finished.result.claimTxHash.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error("Reward receipt verification failed.");
+  }
+
+  return finished.result;
+}
+
