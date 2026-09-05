@@ -155,7 +155,12 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       <dl className="wf-stats">
         <div>
           <dt>{pool.market.available ? formatUsdPrice(pool.market.markPrice, locale) : t.unavailable}</dt>
-          <dd>{t.liveMark}</dd>
+          <dd>
+            {t.liveMark}
+            {pool.market.available
+              ? ` · ${pool.market.isSettlementSource ? t.liveSourceBinance : t.liveSourceFallback}`
+              : ""}
+          </dd>
         </div>
         <div>
           <dt>{formatUsdPrice(pool.round.lastPredictionPrice, locale)}</dt>
