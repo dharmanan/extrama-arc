@@ -23,6 +23,7 @@ const POOL_ABI = [
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
   'function getTicketMetadata(uint256 ticketId) view returns (tuple(uint256 roundId,uint64 predictionPriceCents,uint64 entrySequence,uint8 roundStatus,uint8 placement,bool isClaimed,bool isRefunded))',
   'function claimableByTicket(uint256 ticketId) view returns (uint256)',
+  'function claimed(uint256 ticketId) view returns (bool)',
   'function refunded(uint256 ticketId) view returns (bool)',
   'function STAKE_AMOUNT() view returns (uint256)',
   'function USDC() view returns (address)',
@@ -766,6 +767,106 @@ async function readRefundAuthorizationState({
   };
 }
 
+
+async function readClaimAuthorizationState({
+  poolAddress,
+  ticketAddress,
+  tokenId,
+  roundId,
+}) {
+  if (
+    !ethers.isAddress(poolAddress) ||
+    !ethers.isAddress(ticketAddress) ||
+    typeof tokenId !== 'string' ||
+    !/^[1-9][0-9]*$/.test(tokenId) ||
+    !Number.isInteger(roundId) ||
+    roundId <= 0
+  ) {
+    throw new Error('claim_request_invalid');
+  }
+
+  const normalizedPool = ethers.getAddress(poolAddress);
+  const normalizedTicket = ethers.getAddress(ticketAddress);
+  const topology = ARC_POOL_TOPOLOGY.find(
+    (item) =>
+      item.poolAddress.toLowerCase() === normalizedPool.toLowerCase() &&
+      item.ticketAddress.toLowerCase() === normalizedTicket.toLowerCase(),
+  );
+
+  if (!topology) {
+    throw new Error('claim_ticket_not_supported');
+  }
+
+  const provider = getProvider();
+  const network = await provider.getNetwork();
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+
+  const pool = new ethers.Contract(normalizedPool, POOL_ABI, provider);
+  const ticket = new ethers.Contract(normalizedTicket, TICKET_ABI, provider);
+  const parsedTokenId = BigInt(tokenId);
+
+  let round;
+  let metadata;
+  let currentOwner;
+  let claimed;
+  let claimable;
+  let usdcAddress;
+
+  try {
+    [round, metadata, currentOwner, claimed, claimable, usdcAddress] =
+      await Promise.all([
+        rpcRead(() => pool.getRound(roundId)),
+        rpcRead(() => pool.getTicketMetadata(parsedTokenId)),
+        rpcRead(() => ticket.ownerOf(parsedTokenId)),
+        rpcRead(() => pool.claimed(parsedTokenId)),
+        rpcRead(() => pool.claimableByTicket(parsedTokenId)),
+        rpcRead(() => pool.USDC()),
+      ]);
+  } catch {
+    throw new Error('claim_ticket_or_round_not_found');
+  }
+
+  const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+  if (!contractStatus) {
+    throw new Error('extrema_round_status_invalid');
+  }
+
+  if (Number(metadata.roundId) !== roundId) {
+    throw new Error('claim_ticket_round_mismatch');
+  }
+
+  if (Number(metadata.roundStatus) !== Number(round.status)) {
+    throw new Error('claim_ticket_status_mismatch');
+  }
+
+  if (Boolean(metadata.isClaimed) !== Boolean(claimed)) {
+    throw new Error('claim_ticket_claimed_state_mismatch');
+  }
+
+  if (ethers.getAddress(usdcAddress) !== ethers.getAddress(ARC_TESTNET_USDC_ADDRESS)) {
+    throw new Error('claim_pool_usdc_mismatch');
+  }
+
+  return {
+    chainId: Number(network.chainId),
+    asset: topology.asset,
+    direction: topology.direction,
+    cadence: topology.cadence,
+    poolAddress: normalizedPool,
+    ticketAddress: normalizedTicket,
+    tokenId,
+    roundId,
+    roundStatus: contractStatus,
+    currentOwner: ethers.getAddress(currentOwner),
+    placement: Number(metadata.placement),
+    isClaimed: Boolean(claimed),
+    claimableRaw: claimable.toString(),
+    usdcAddress: ethers.getAddress(usdcAddress),
+  };
+}
+
 const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
 let standardRoundsCache = null;
 let standardRoundsCacheAt = 0;
@@ -816,6 +917,7 @@ module.exports = {
   getArcWalletState,
   invalidateArcWalletStateCache,
   readOwnedTickets,
+  readClaimAuthorizationState,
   readRefundAuthorizationState,
   readStandardRounds,
   getStandardRoundsState,
