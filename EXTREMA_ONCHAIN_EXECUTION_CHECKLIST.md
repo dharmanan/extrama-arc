@@ -1106,6 +1106,42 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
   gap. This is code readiness only — it does not satisfy any "real Arc
   Testnet" item above, and no Arc Testnet transaction has been broadcast.
 
+#### Live Arc Testnet lock proof
+
+Verification date: 2026-09-05.
+
+Resolver operational readiness:
+- Resolver keystore imported locally as Foundry account `extrema-resolver`.
+- `cast wallet address --account extrema-resolver` resolved to the deployed resolver `0x1EDC4594195fFb134315c3258DE974563Ed9762A`.
+- Both ETH Daily High and ETH Daily Low pools report that exact resolver address onchain.
+- Resolver was funded from the Arc testnet faucet and shows 20 USDC in both the native gas view and ERC-20 USDC view.
+- No private key was added to the repository or environment files.
+
+ETH Daily High Round #1:
+- Pool: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Pre-lock status: `ENTRY_OPEN`
+- Entry count: `1`
+- `escrowRemaining`: `1000000` raw USDC
+- Lock tx: `0x0b9f2de2fa221a734b7877904c71348bc7eaf16845ed88fe215c93c2d00644a7`
+- Block: `60637750`
+- Receipt status: `1 (success)`
+- Post-lock status: `LOCKED`
+
+ETH Daily Low Round #1:
+- Pool: `0x490A5CE02E3fd85d51095A69AAE9511552d91095`
+- Pre-lock status: `ENTRY_OPEN`
+- Entry count: `1`
+- `escrowRemaining`: `1000000` raw USDC
+- Lock tx: `0xac32dde62e060f5fadbb5384ee6fcc528c2828d9637b9e7fb700639d20529219`
+- Block: `60638205`
+- Receipt status: `1 (success)`
+- Post-lock status: `LOCKED`
+
+Verification:
+- Both underfilled Daily Round #1 pools are now genuinely `LOCKED` on Arc Testnet.
+- No cancellation or refund transaction has been sent yet.
+- Earliest valid live cancellation remains after `observationEndAt = 2026-09-07T00:00:00Z` (03:00 Türkiye time).
+
 #### Live cancellation/refund proof
 
 - Round ID:
