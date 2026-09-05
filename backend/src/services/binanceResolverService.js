@@ -7,6 +7,13 @@ const MARK_PRICE_KLINES_PATH = '/fapi/v1/markPriceKlines';
 const PREMIUM_INDEX_PATH = '/fapi/v1/premiumIndex';
 const MAX_LIMIT = 1500;
 const LIVE_MARK_CACHE_TTL_MS = 60_000;
+const LIVE_MARK_BASE_URLS = Object.freeze([
+  'https://fapi.binance.com',
+  'https://fapi1.binance.com',
+  'https://fapi2.binance.com',
+  'https://fapi3.binance.com',
+  'https://fapi4.binance.com',
+]);
 
 let liveMarkCache = null;
 let liveMarkCacheAt = 0;
@@ -25,41 +32,37 @@ const CADENCE_INTERVALS = Object.freeze({
   QUARTERLY: { interval: '4h', intervalMs: 4 * 60 * 60_000 },
 });
 
-async function fetchCurrentMarkPrice(symbol, fetchImpl = globalThis.fetch) {
-  if (!ALLOWED_SYMBOLS.has(symbol)) {
-    throw new Error('resolver_symbol_not_supported');
-  }
-  if (typeof fetchImpl !== 'function') {
-    throw new Error('resolver_fetch_unavailable');
-  }
-
-  const requestUrl =
-    `${BINANCE_USDM_BASE_URL}${PREMIUM_INDEX_PATH}?symbol=${encodeURIComponent(symbol)}`;
-  const response = await fetchImpl(requestUrl, {
+async function fetchJson(url, fetchImpl) {
+  const response = await fetchImpl(url, {
     method: 'GET',
     headers: {
       accept: 'application/json',
-      'user-agent': 'EXTREMA-Market/0.1',
+      'user-agent': 'EXTREMA-Market/0.2',
     },
   });
 
   if (!response.ok) {
     const body = await response.text().catch(() => '');
-    throw new Error(
-      `market_source_http_${response.status}:${body.slice(0, 160)}`,
-    );
+    throw new Error(`http_${response.status}:${body.slice(0, 120)}`);
   }
 
-  const payload = await response.json();
+  return response.json();
+}
+
+async function fetchPremiumIndexMark(baseUrl, symbol, fetchImpl) {
+  const requestUrl =
+    `${baseUrl}${PREMIUM_INDEX_PATH}?symbol=${encodeURIComponent(symbol)}`;
+  const payload = await fetchJson(requestUrl, fetchImpl);
+
   if (!payload || payload.symbol !== symbol) {
-    throw new Error('market_source_response_invalid');
+    throw new Error('premium_index_response_invalid');
   }
 
   parsePositiveDecimal(payload.markPrice, 'mark_price');
 
   const sourceTime = Number(payload.time);
   if (!Number.isSafeInteger(sourceTime) || sourceTime <= 0) {
-    throw new Error('market_source_time_invalid');
+    throw new Error('premium_index_time_invalid');
   }
 
   return {
@@ -68,7 +71,69 @@ async function fetchCurrentMarkPrice(symbol, fetchImpl = globalThis.fetch) {
     markPrice: payload.markPrice,
     sourceTime,
     sourceTimeIso: new Date(sourceTime).toISOString(),
+    endpoint: requestUrl,
+    method: 'premiumIndex',
   };
+}
+
+async function fetchLatestMarkKline(baseUrl, symbol, fetchImpl) {
+  const requestUrl =
+    `${baseUrl}${MARK_PRICE_KLINES_PATH}?symbol=${encodeURIComponent(symbol)}&interval=1m&limit=1`;
+  const payload = await fetchJson(requestUrl, fetchImpl);
+
+  if (!Array.isArray(payload) || payload.length !== 1 || !Array.isArray(payload[0])) {
+    throw new Error('mark_kline_response_invalid');
+  }
+
+  const candle = payload[0];
+  const markPrice = candle[4];
+  const sourceTime = Number(candle[0]);
+  parsePositiveDecimal(markPrice, 'mark_price');
+
+  if (!Number.isSafeInteger(sourceTime) || sourceTime <= 0) {
+    throw new Error('mark_kline_time_invalid');
+  }
+
+  return {
+    symbol,
+    markPriceRaw: markPrice,
+    markPrice,
+    sourceTime,
+    sourceTimeIso: new Date(sourceTime).toISOString(),
+    endpoint: requestUrl,
+    method: 'markPriceKlines-1m',
+  };
+}
+
+async function fetchCurrentMarkPrice(symbol, fetchImpl = globalThis.fetch) {
+  if (!ALLOWED_SYMBOLS.has(symbol)) {
+    throw new Error('resolver_symbol_not_supported');
+  }
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('resolver_fetch_unavailable');
+  }
+
+  const failures = [];
+
+  for (const baseUrl of LIVE_MARK_BASE_URLS) {
+    try {
+      return await fetchPremiumIndexMark(baseUrl, symbol, fetchImpl);
+    } catch (error) {
+      failures.push(
+        `${baseUrl}:premiumIndex:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    try {
+      return await fetchLatestMarkKline(baseUrl, symbol, fetchImpl);
+    } catch (error) {
+      failures.push(
+        `${baseUrl}:markPriceKlines:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  throw new Error(`market_source_unavailable:${failures.join('|').slice(0, 1000)}`);
 }
 
 async function refreshLiveMarkPrices(fetchImpl = globalThis.fetch) {
@@ -408,6 +473,7 @@ module.exports = {
   MARK_PRICE_KLINES_PATH,
   PREMIUM_INDEX_PATH,
   LIVE_MARK_CACHE_TTL_MS,
+  LIVE_MARK_BASE_URLS,
   fetchCurrentMarkPrice,
   getLiveMarkPrices,
   CADENCE_INTERVALS,
