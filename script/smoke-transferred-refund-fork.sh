@@ -172,29 +172,30 @@ set -e
 
 if [[ $REFUND_SEND_EXIT -ne 0 ]]; then
   echo "$REFUND_SEND_OUT" >&2
+  echo
 
+  # NOTE: this script has no way to prove execution actually reached the
+  # external USDC-transfer boundary inside pool.refund() (that would need a
+  # call trace, e.g. `cast run --trace` / debug_traceTransaction, which is
+  # not implemented here). A generic-looking gas/revert error is therefore
+  # NEVER enough on its own to declare ARC_SYSTEM_USDC_TRANSFER_FORK — doing
+  # so would claim more than this script can actually establish. It may only
+  # be *mentioned* as a plausible, previously-observed explanation.
   if printf '%s' "$REFUND_SEND_OUT" | grep -qiE 'insufficient funds|out of gas|gas required exceeds|intrinsic gas|revert(ed)? with no reason|revert data:[[:space:]]*"?0x"?([[:space:]]|$)'; then
-    echo
-    echo "The current-owner refund transaction failed at (or before) the external USDC" >&2
-    echo "transfer boundary, in a way consistent with this generic Anvil fork not" >&2
-    echo "faithfully mirroring Arc's coupled native/6-decimal-ERC20 USDC accounting for" >&2
-    echo "the impersonated account (empty/gas-estimation-shaped failure)." >&2
-    echo
-    echo "ARC_SYSTEM_USDC_TRANSFER_FORK=UNSUPPORTED"
-    echo "TRANSFERRED_REFUND_FORK=UNSUPPORTED"
-    echo "Access control was proven this run (NotTicketOwner rejection); USDC movement was not provable in this environment."
-    echo "No Arc Testnet transaction was broadcast."
-    exit 0
+    echo "This failure shape (insufficient funds / out of gas / intrinsic gas / empty" >&2
+    echo "revert data) is consistent with the previously observed Arc native/ERC-20" >&2
+    echo "USDC coupling limitation on generic Anvil forks for the impersonated account." >&2
+    echo "This script cannot prove execution actually reached the external USDC" >&2
+    echo "transfer boundary inside pool.refund(), so that is NOT claimed as proven." >&2
+  else
+    echo "This failure does not match any previously observed Arc/Anvil coupling error shape." >&2
   fi
 
   echo
-  echo "The current-owner refund transaction failed for a reason that could not be" >&2
-  echo "confidently classified as the known Arc native/ERC-20 USDC coupling limitation." >&2
-  echo "Treating this as an unclassified failure rather than assuming an Arc-system-token" >&2
-  echo "conclusion." >&2
-  echo
+  echo "TRANSFERRED_REFUND_ACCESS_CONTROL_FORK=PASS"
   echo "CURRENT_OWNER_REFUND_FORK=FAILED_UNCLASSIFIED"
   echo "TRANSFERRED_REFUND_FORK=UNPROVEN"
+  echo "Access control was proven this run (NotTicketOwner rejection); USDC movement was not provable in this environment."
   echo "No Arc Testnet transaction was broadcast."
   exit 1
 fi

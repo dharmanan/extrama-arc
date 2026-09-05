@@ -21,7 +21,12 @@ const USDC_INTERFACE = new ethers.Interface(USDC_ABI);
 const EXECUTION_MODES = ['BACKEND_WALLET', 'EXTERNAL_OWNER'];
 const REFUND_AMOUNT_RAW = 1_000_000n;
 
-function assertRefundPayload(payload) {
+// Structural/identity validation only — no freshness check. This alone is
+// safe to run against a payload that was legitimately authorized and
+// consumed in the past (e.g. verifyExternalRefundReceipt, which runs after
+// the on-chain transaction has already been mined and may be called well
+// outside the original 2-minute authorization window).
+function assertRefundPayloadShape(payload) {
   if (
     !payload ||
     payload.action !== 'REFUND_TICKET' ||
@@ -41,9 +46,22 @@ function assertRefundPayload(payload) {
     typeof payload.nonce !== 'string' ||
     payload.nonce.length < 16 ||
     !payload.expiresAt ||
-    Date.parse(payload.expiresAt) <= Date.now()
+    Number.isNaN(Date.parse(payload.expiresAt))
   ) {
     throw new Error('action_authorization_invalid');
+  }
+}
+
+// Freshness validation — must hold while an authorization is being turned
+// into an action (backend signing, or handing back an external tx request).
+// Must NOT be applied when later verifying the on-chain result of an
+// already-consumed authorization: the authorization's job was done the
+// moment /refund/finish produced a signed tx or a tx request, and the
+// subsequent on-chain confirmation can legitimately take longer than the
+// original 2-minute window.
+function assertRefundPayloadFresh(payload) {
+  if (Date.parse(payload.expiresAt) <= Date.now()) {
+    throw new Error('action_authorization_expired');
   }
 }
 
@@ -133,15 +151,19 @@ async function readPoolAccounting(poolAddress, usdcAddress, roundId, provider, o
   };
 }
 
-// Best-effort only: for the EXTERNAL_OWNER path the backend does not control
-// when the wallet actually sends the transaction, so there is no reliable
-// server-captured "before" snapshot to diff against. Reading the pool's
-// accounting at the exact block before/after the mined transaction is the
-// only way to get a delta that is genuinely scoped to this transaction
-// rather than confounded by unrelated activity in the gap. Some RPC
-// endpoints (especially non-archive nodes) cannot serve historical state at
-// an arbitrary past block, so this must degrade to "unavailable" rather than
-// fabricate a delta when that read fails.
+// Best-effort diagnostic evidence ONLY — never a hard gate. For the
+// EXTERNAL_OWNER path the backend does not control when the wallet actually
+// sends the transaction, so there is no reliable server-captured "before"
+// snapshot to diff against. Reading the pool's accounting at
+// receipt.blockNumber - 1 vs receipt.blockNumber is BLOCK-scoped, not
+// transaction-scoped: if another transaction touching this same pool/round
+// (e.g. a different ticket's refund) lands in the same block, the observed
+// delta will not isolate this transaction's effect. It is reported purely
+// as supplementary evidence — the sender/target/calldata/value/receipt/
+// event/refunded-flag checks are the actual hard guarantees for this path.
+// Some RPC endpoints (especially non-archive nodes) also cannot serve
+// historical state at an arbitrary past block at all, so this must degrade
+// to "unavailable" rather than fabricate a delta when that read fails.
 async function tryReadPoolAccountingDelta(poolAddress, usdcAddress, roundId, provider, receipt) {
   try {
     const beforeTag = receipt.blockNumber - 1;
@@ -170,7 +192,8 @@ async function tryReadPoolAccountingDelta(poolAddress, usdcAddress, roundId, pro
 }
 
 async function executeBackendRefund(userId, payload) {
-  assertRefundPayload(payload);
+  assertRefundPayloadShape(payload);
+  assertRefundPayloadFresh(payload);
   if (payload.executionMode !== 'BACKEND_WALLET') {
     throw new Error('refund_execution_mode_mismatch');
   }
@@ -270,7 +293,8 @@ async function executeBackendRefund(userId, payload) {
 }
 
 async function buildExternalRefundTransactionRequest(payload) {
-  assertRefundPayload(payload);
+  assertRefundPayloadShape(payload);
+  assertRefundPayloadFresh(payload);
   if (payload.executionMode !== 'EXTERNAL_OWNER') {
     throw new Error('refund_execution_mode_mismatch');
   }
@@ -297,7 +321,12 @@ async function buildExternalRefundTransactionRequest(payload) {
 }
 
 async function verifyExternalRefundReceipt(payload, txHash) {
-  assertRefundPayload(payload);
+  // Freshness is intentionally NOT checked here: the authorization was
+  // already consumed (within its 2-minute window) back in /refund/finish,
+  // which is what produced this transaction request in the first place.
+  // This step only verifies the resulting on-chain transaction, which can
+  // legitimately be confirmed well after the original expiresAt.
+  assertRefundPayloadShape(payload);
   if (payload.executionMode !== 'EXTERNAL_OWNER') {
     throw new Error('refund_execution_mode_mismatch');
   }
@@ -370,11 +399,12 @@ async function verifyExternalRefundReceipt(payload, txHash) {
     throw new Error('refund_claimed_event_missing');
   }
 
-  // Best-effort: only asserted when the RPC can actually serve state at
-  // receipt.blockNumber - 1 (see tryReadPoolAccountingDelta). When it
-  // cannot, we report the limitation instead of pretending a delta was
-  // proven — the sender/target/calldata/event/refunded-flag checks above
-  // remain the hard guarantees for this path regardless.
+  // Block-scoped best-effort accounting evidence ONLY — never a hard gate.
+  // Another transaction touching this pool/round in the same block could
+  // change this delta without this refund being wrong, so it is reported
+  // as supplementary diagnostic evidence, not asserted. The checks above
+  // (sender, target, calldata, value, receipt, Transfer event, RefundClaimed
+  // event, refunded flag) are the actual hard guarantees for this path.
   const accounting = await tryReadPoolAccountingDelta(
     poolAddress,
     state.usdcAddress,
@@ -382,9 +412,6 @@ async function verifyExternalRefundReceipt(payload, txHash) {
     provider,
     receipt,
   );
-  if (accounting.available && (!accounting.poolUsdcDeltaExact || !accounting.escrowDeltaExact)) {
-    throw new Error('refund_pool_balance_delta_mismatch');
-  }
 
   arcService.invalidateArcWalletStateCache(currentOwner);
 

@@ -1079,14 +1079,15 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
   gates, plus `refunded(tokenId) == true` and a double-refund
   `AlreadyRefunded` rejection. A best-effort, non-fatal check independently
   confirms the USDC `Transfer` event via `cast logs`. On a failed
-  current-owner send, the script now distinguishes two outcomes instead of
-  collapsing every failure into one conclusion: a failure pattern
-  consistent with the known gas-estimation/empty-`0x` Arc coupling issue
-  reports `ARC_SYSTEM_USDC_TRANSFER_FORK=UNSUPPORTED` /
-  `TRANSFERRED_REFUND_FORK=UNSUPPORTED`; any other, unrecognized failure
-  reports `CURRENT_OWNER_REFUND_FORK=FAILED_UNCLASSIFIED` /
-  `TRANSFERRED_REFUND_FORK=UNPROVEN` instead, so an unrelated bug is never
-  mislabeled as an Arc-system-token limitation.
+  current-owner send, the script always reports
+  `CURRENT_OWNER_REFUND_FORK=FAILED_UNCLASSIFIED` /
+  `TRANSFERRED_REFUND_FORK=UNPROVEN` — it has no call-trace mechanism to
+  actually prove execution reached the external USDC-transfer boundary
+  inside `pool.refund()`, so a gas-estimation/empty-`0x`-shaped failure is
+  at most *mentioned* as consistent with the previously observed Arc/Anvil
+  coupling issue, never asserted as a proven `ARC_SYSTEM_USDC_TRANSFER_FORK`
+  conclusion. `TRANSFERRED_REFUND_ACCESS_CONTROL_FORK=PASS` is still
+  reported whenever the `NotTicketOwner` rejection is actually observed.
 - This hardened script was **not re-executed in this session** — this
   sandbox does not have `anvil`/`cast` installed, and this task intentionally
   did not install Foundry. The actual historical result from the prior

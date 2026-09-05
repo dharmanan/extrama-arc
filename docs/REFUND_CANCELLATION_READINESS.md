@@ -37,19 +37,25 @@ adds the remaining authorization + execution surface, mirroring the existing
     for the browser to send from the connected wallet.
 - `POST /actions/refund/verify` — for the `EXTERNAL_OWNER` path only. Takes
   `{ actionId, txHash }`, independently fetches the transaction and receipt
-  from Arc, and verifies: exact sender, exact target, exact calldata,
-  `tx.value == 0`, receipt success, the exact USDC `Transfer` event, the
-  contract's `RefundClaimed` event, and `refunded(tokenId) == true`. It
-  additionally attempts a transaction-scoped pool-USDC/escrow delta proof
-  by reading pool accounting at `receipt.blockNumber - 1` vs
-  `receipt.blockNumber` — this is the only way to get a delta genuinely
-  scoped to this specific transaction (rather than confounded by unrelated
-  activity in the gap between `/finish` and the wallet actually sending the
-  transaction), but it depends on the RPC being able to serve state at an
-  arbitrary past block. When that historical read is unavailable, the
-  limitation is reported explicitly in the result (`accounting.available:
-  false`) rather than a delta being fabricated — the sender/target/calldata/
-  event/refunded-flag checks above remain the hard guarantees either way.
+  from Arc. Hard requirements (the actual financial guarantees for this
+  path): exact sender, exact target, exact `refund(tokenId)` calldata,
+  `tx.value == 0`, successful receipt, the exact USDC `Transfer` event
+  `pool -> currentOwner` of `1,000,000` raw, the contract's `RefundClaimed`
+  event, and `refunded(tokenId) == true`. This step intentionally does not
+  re-check the authorization's `expiresAt` — the 2-minute window was
+  already enforced when `/refund/finish` consumed the authorization and
+  produced this transaction request; the on-chain confirmation this step
+  verifies can legitimately land well after that window closes.
+  It additionally reads pool accounting at `receipt.blockNumber - 1` vs
+  `receipt.blockNumber` as **block-scoped best-effort accounting
+  evidence** — never a hard gate. This is block-scoped, not
+  transaction-scoped: another transaction touching the same pool/round in
+  the same block (e.g. a different ticket's refund) would shift the
+  observed delta without this refund being wrong, so it is reported purely
+  as supplementary diagnostic evidence (`accounting.poolUsdcDeltaExact` /
+  `escrowDeltaExact`), and when the RPC can't serve that historical block
+  state at all the limitation is reported explicitly
+  (`accounting.available: false`) rather than a delta being fabricated.
   The browser's reported success is never trusted as financial truth.
 - `refundExecutionService.js` — new service, mirrors
   `ticketTransferExecutionService.js`'s structure: payload re-validation,
@@ -75,10 +81,15 @@ rejected with `NotTicketOwner`). The USDC-movement half of that proof has
 on generic Anvil during gas estimation/execution with an empty `0x` revert,
 consistent with Arc's coupled native/ERC-20 USDC accounting not being
 faithfully mirrored by a generic fork for the impersonated account. This
-session hardened the script's reporting so that outcome is now reported
-explicitly (`ARC_SYSTEM_USDC_TRANSFER_FORK=UNSUPPORTED`) instead of an
-opaque failure, but the script was not re-executed here (no Foundry in this
-sandbox), so the USDC-movement proof remains unestablished either way.
+session hardened the script's reporting: on any current-owner send failure
+it now reports `CURRENT_OWNER_REFUND_FORK=FAILED_UNCLASSIFIED` /
+`TRANSFERRED_REFUND_FORK=UNPROVEN` (rather than an opaque failure), and may
+*mention* that a gas/empty-revert-shaped failure is consistent with the
+known Arc/Anvil coupling limitation without claiming that as proven — this
+script has no call-trace mechanism to actually establish that execution
+reached the external USDC-transfer boundary inside `pool.refund()`. The
+script was not re-executed here (no Foundry in this sandbox), so the
+USDC-movement proof remains unestablished either way.
 
 ## Resolver signer gap
 
