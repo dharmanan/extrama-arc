@@ -169,7 +169,7 @@ export function RoundCountdown({
   const observationStart = new Date(observationStartAt).getTime();
   const observationEnd = new Date(observationEndAt).getTime();
 
-  let label = t.observationEnded;
+  let label: string = t.observationEnded;
   let target: number | null = null;
 
   if (now < openAt) {
