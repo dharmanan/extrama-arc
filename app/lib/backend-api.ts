@@ -291,6 +291,101 @@ export type RefundVerifyResponse = {
   result: RefundExecutionResult;
 };
 
+
+export type ClaimExecutionMode = "BACKEND_WALLET" | "EXTERNAL_OWNER";
+
+export type ClaimActionPayload = {
+  action: "CLAIM_REWARD";
+  chainId: 5042002;
+  contract: string;
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+  amountRaw: string;
+  currentOwner: string;
+  destination: string;
+  executionMode: ClaimExecutionMode;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type ClaimActionStartResponse = {
+  actionId: string;
+  action: ClaimActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type ClaimAccountingProof =
+  | {
+      available: true;
+      poolUsdcBefore: string;
+      poolUsdcAfter: string;
+      escrowRemainingBefore: string;
+      escrowRemainingAfter: string;
+      poolUsdcDeltaExact: boolean;
+      escrowDeltaExact: boolean;
+    }
+  | {
+      available: false;
+      reason: string;
+      detail: string;
+    };
+
+export type ClaimExecutionResult = {
+  chainId: 5042002;
+  executionMode: ClaimExecutionMode;
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+  currentOwner: string;
+  amountRaw: string;
+  claimTxHash: string;
+  explorerUrl: string;
+  accounting?: ClaimAccountingProof | {
+    poolUsdcBefore: string;
+    poolUsdcAfter: string;
+    escrowRemainingBefore: string;
+    escrowRemainingAfter: string;
+  };
+};
+
+export type ClaimTransactionRequest = {
+  chainId: 5042002;
+  to: string;
+  data: string;
+  value: string;
+  from: string;
+};
+
+export type ClaimActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: ClaimExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_OWNER";
+      transactionRequest: ClaimTransactionRequest;
+    };
+
+export type ClaimVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  result: ClaimExecutionResult;
+};
+
 export function isAuthSessionError(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause ?? "");
   return (
@@ -421,6 +516,26 @@ export const backendApi = {
     },
     verifyRefund(actionId: string, txHash: string) {
       return post<RefundVerifyResponse>("/actions/refund/verify", {
+        actionId,
+        txHash,
+      });
+    },
+    startClaim(input: {
+      poolAddress: string;
+      ticketAddress: string;
+      tokenId: string;
+      roundId: number;
+    }) {
+      return post<ClaimActionStartResponse>("/actions/claim/start", input);
+    },
+    finishClaim(actionId: string, credential: unknown) {
+      return post<ClaimActionFinishResponse>("/actions/claim/finish", {
+        actionId,
+        credential,
+      });
+    },
+    verifyClaim(actionId: string, txHash: string) {
+      return post<ClaimVerifyResponse>("/actions/claim/verify", {
         actionId,
         txHash,
       });
