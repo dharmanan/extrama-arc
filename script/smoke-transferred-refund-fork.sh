@@ -145,8 +145,15 @@ POOL_USDC_BEFORE="$(uint_value "$POOL_USDC_BEFORE_RAW")"
 echo "Current owner USDC before refund: $OWNER_USDC_BEFORE"
 echo "Pool USDC before refund: $POOL_USDC_BEFORE"
 
+CURRENT_OWNER_NATIVE_BEFORE="$(cast balance "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC")"
+
+echo "Current owner native-view USDC before refund: $CURRENT_OWNER_NATIVE_BEFORE"
+echo "Note: Arc native USDC and ERC-20 USDC are one underlying balance."
+echo "The smoke test intentionally does not call anvil_setBalance for the current owner,"
+echo "because mutating only the generic EVM native-balance view can desynchronize Arc's"
+echo "native/6-decimal ERC-20 coupling inside a generic Anvil fork."
+
 cast rpc anvil_impersonateAccount "$CURRENT_OWNER" --rpc-url "$LOCAL_RPC" >/dev/null
-cast rpc anvil_setBalance "$CURRENT_OWNER" 0x8AC7230489E80000 --rpc-url "$LOCAL_RPC" >/dev/null
 
 echo
 echo "Refunding Ticket #$TOKEN_ID to current NFT owner on local fork..."
