@@ -22,6 +22,7 @@ const POOL_ABI = [
   'function nextTicketId() view returns (uint256)',
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
   'function getTicketMetadata(uint256 ticketId) view returns (tuple(uint256 roundId,uint64 predictionPriceCents,uint64 entrySequence,uint8 roundStatus,uint8 placement,bool isClaimed,bool isRefunded))',
+  'function entries(uint256 ticketId) view returns (uint256 ticketId,uint256 roundId,address originalEntrant,uint64 predictionPriceCents,uint64 entrySequence)',
   'function claimableByTicket(uint256 ticketId) view returns (uint256)',
   'function claimed(uint256 ticketId) view returns (bool)',
   'function refunded(uint256 ticketId) view returns (bool)',
@@ -867,6 +868,129 @@ async function readClaimAuthorizationState({
   };
 }
 
+
+async function readRoundResult({ slug, roundId }) {
+  if (
+    typeof slug !== 'string' ||
+    !Number.isInteger(roundId) ||
+    roundId <= 0
+  ) {
+    throw new Error('round_result_request_invalid');
+  }
+
+  const topology = ARC_POOL_TOPOLOGY.find(
+    (item) => slugify(item.asset, item.cadence, item.direction) === slug,
+  );
+  if (!topology) throw new Error('round_result_not_supported');
+
+  const provider = getProvider();
+  const network = await provider.getNetwork();
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+
+  const poolAddress = ethers.getAddress(topology.poolAddress);
+  const ticketAddress = ethers.getAddress(topology.ticketAddress);
+  const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+  const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, provider);
+
+  let round;
+  try {
+    round = await rpcRead(() => pool.getRound(roundId));
+  } catch {
+    throw new Error('round_result_not_found');
+  }
+
+  if (Number(round.entryOpenAt) === 0) {
+    throw new Error('round_result_not_found');
+  }
+
+  const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+  if (!contractStatus) throw new Error('extrema_round_status_invalid');
+
+  const resolvedPriceCents = BigInt(round.resolvedPriceCents);
+  const winnerTicketIds = Array.from(round.winnerTicketIds, (id) => BigInt(id));
+
+  const winners = [];
+  if (contractStatus === 'SETTLED') {
+    for (let index = 0; index < winnerTicketIds.length; index += 1) {
+      const tokenId = winnerTicketIds[index];
+      if (tokenId === 0n) continue;
+
+      const [entry, currentOwner, claimableRaw, metadata] = await Promise.all([
+        rpcRead(() => pool.entries(tokenId)),
+        rpcRead(() => ticket.ownerOf(tokenId)),
+        rpcRead(() => pool.claimableByTicket(tokenId)),
+        rpcRead(() => pool.getTicketMetadata(tokenId)),
+      ]);
+
+      if (Number(entry.roundId) !== roundId || Number(metadata.roundId) !== roundId) {
+        throw new Error('round_result_winner_round_mismatch');
+      }
+
+      const predictionPriceCents = BigInt(entry.predictionPriceCents);
+      const distanceCents =
+        predictionPriceCents >= resolvedPriceCents
+          ? predictionPriceCents - resolvedPriceCents
+          : resolvedPriceCents - predictionPriceCents;
+
+      winners.push({
+        rank: index + 1,
+        tokenId: tokenId.toString(),
+        currentOwner: ethers.getAddress(currentOwner),
+        originalEntrant: ethers.getAddress(entry.originalEntrant),
+        predictionPriceCents: predictionPriceCents.toString(),
+        predictionPrice: (Number(predictionPriceCents) / 100).toFixed(2),
+        distanceCents: distanceCents.toString(),
+        distance: (Number(distanceCents) / 100).toFixed(2),
+        entrySequence: Number(entry.entrySequence),
+        placement: Number(metadata.placement),
+        isClaimed: Boolean(metadata.isClaimed),
+        claimableRaw: claimableRaw.toString(),
+        claimableUsdc: ethers.formatUnits(claimableRaw, 6),
+      });
+    }
+  }
+
+  return {
+    chain: {
+      id: Number(network.chainId),
+      name: 'Arc Testnet',
+      explorerUrl: 'https://testnet.arcscan.app',
+    },
+    pool: {
+      slug,
+      poolAddress,
+      ticketAddress,
+      asset: topology.asset,
+      direction: topology.direction,
+      cadence: topology.cadence,
+      source: 'Binance USDⓈ-M Futures Mark Price',
+      sourceSymbol: SOURCE_SYMBOLS[topology.asset],
+    },
+    round: {
+      roundId,
+      contractStatus,
+      entryOpenAt: toIso(round.entryOpenAt),
+      entryCloseAt: toIso(round.entryCloseAt),
+      observationStartAt: toIso(round.observationStartAt),
+      observationEndAt: toIso(round.observationEndAt),
+      entryCount: Number(round.entryCount),
+      totalStakeRaw: round.totalStake.toString(),
+      totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
+      escrowRemainingRaw: round.escrowRemaining.toString(),
+      escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
+      resolvedPriceCents: resolvedPriceCents.toString(),
+      resolvedPrice:
+        resolvedPriceCents > 0n
+          ? (Number(resolvedPriceCents) / 100).toFixed(2)
+          : null,
+      winnerTicketIds: winnerTicketIds.map((id) => id.toString()),
+    },
+    winners,
+  };
+}
+
 const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
 let standardRoundsCache = null;
 let standardRoundsCacheAt = 0;
@@ -919,6 +1043,7 @@ module.exports = {
   readOwnedTickets,
   readClaimAuthorizationState,
   readRefundAuthorizationState,
+  readRoundResult,
   readStandardRounds,
   getStandardRoundsState,
   refreshStandardRoundsCache,
