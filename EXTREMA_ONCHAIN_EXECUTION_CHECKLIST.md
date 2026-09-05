@@ -556,6 +556,16 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - [x] Same wallet cannot enter same round twice
 - [x] Same exact prediction price cannot be taken twice in same round
 - [ ] Entry after close is rejected
+  - Fork smoke proof: PASS
+    - command: `./script/smoke-entry-close-fork.sh`
+    - fork source: real Arc Testnet deployed ETH Daily High Round #1
+    - chain ID: `5042002`
+    - onchain `entryCloseAt = 1788638400`
+    - local fork timestamp advanced to `1788638401`
+    - read-only `eth_call enterPrediction(...)` reverted with `EntryClosed`
+    - result: `ENTRY_CLOSE_FORK_SMOKE=PASS`
+    - no Arc Testnet transaction was broadcast
+    - live-chain post-cutoff read-only proof remains pending; fork smoke does not replace it
 - [x] UI reflects confirmed onchain state only
 
 ### Proof record
