@@ -6,6 +6,13 @@ import { assetConfigs, formatUsd } from "./lib/data";
 import type { Asset, Ticket } from "./lib/domain";
 import { shortAddress, useDemoState } from "./demo-state";
 import { backendApi, type LivePool } from "./lib/backend-api";
+import {
+  formatEntryCount,
+  formatLocalDateTime,
+  formatTimeUntil,
+  formatUsdc,
+  humanRoundStatus,
+} from "./lib/display";
 
 export function ProductHeader() {
   const { wallet } = useDemoState();
@@ -75,15 +82,18 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       <p>Round <b>#{pool.round.roundId}</b></p>
 
       <dl className="wf-stats">
-        <div><dt>{pool.round.entryCount}</dt><dd>Players</dd></div>
-        <div><dt>{pool.round.totalStakeUsdc} USDC</dt><dd>Pool</dd></div>
+        <div><dt>{formatEntryCount(pool.round.entryCount)}</dt><dd>Entries</dd></div>
+        <div><dt>{formatUsdc(pool.round.totalStakeUsdc)}</dt><dd>Prize pool</dd></div>
       </dl>
 
-      <p>Status: <b>{pool.round.contractStatus}</b></p>
-      <p>Entry closes: {pool.round.entryCloseAt}</p>
+      <p><b>{humanRoundStatus(pool.round.contractStatus)}</b></p>
+      <p>
+        Closes {formatLocalDateTime(pool.round.entryCloseAt)}
+        {pool.round.canEnter ? ` · ${formatTimeUntil(pool.round.entryCloseAt)}` : ""}
+      </p>
 
       <Link href={`/pools/${pool.slug}`} className="wf-action">
-        Open pool
+        Make a prediction
       </Link>
     </article>
   );

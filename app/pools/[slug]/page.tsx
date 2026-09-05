@@ -5,6 +5,13 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AssetMark, ProductHeader } from "../../product-components";
 import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
+import {
+  formatEntryCount,
+  formatLocalDateTime,
+  formatTimeUntil,
+  formatUsdc,
+  humanRoundStatus,
+} from "../../lib/display";
 
 function titleCase(value: string) {
   return value.charAt(0) + value.slice(1).toLowerCase();
@@ -44,7 +51,7 @@ export default function PoolDetailPage() {
     return (
       <main className="wf-page">
         <ProductHeader />
-        <section className="wf-main"><p>Reading live Arc Testnet round…</p></section>
+        <section className="wf-main"><p>Loading pool…</p></section>
       </main>
     );
   }
@@ -55,8 +62,7 @@ export default function PoolDetailPage() {
         <ProductHeader />
         <section className="wf-main">
           <h1>Pool unavailable</h1>
-          <p>{error}</p>
-          <p>No mock pool data is shown as a fallback.</p>
+          <p>We could not load the latest round data. Please try again.</p>
           <Link href="/pools">Back to pools</Link>
         </section>
       </main>
@@ -78,20 +84,27 @@ export default function PoolDetailPage() {
               {pool.asset} · {titleCase(pool.cadence)} {titleCase(pool.direction)}
             </h1>
 
-            <p>Round: <b>#{pool.round.roundId}</b></p>
-            <p>Status: <b>{pool.round.contractStatus}</b></p>
-            <p>Entries accepted now: <b>{pool.round.canEnter ? "YES" : "NO"}</b></p>
-            <p>Official source: <b>{pool.source}</b></p>
-            <p>Symbol: <b>{pool.sourceSymbol}</b></p>
-            <p>Entry opened: {pool.round.entryOpenAt}</p>
-            <p>Entry closes: {pool.round.entryCloseAt}</p>
+            <p>Round <b>#{pool.round.roundId}</b></p>
+            <p><b>{humanRoundStatus(pool.round.contractStatus)}</b></p>
+            {pool.round.canEnter && (
+              <p>
+                Predictions close {formatLocalDateTime(pool.round.entryCloseAt)}
+                {" · "}{formatTimeUntil(pool.round.entryCloseAt)}
+              </p>
+            )}
+
+            <p>{formatEntryCount(pool.round.entryCount)}</p>
+            <p>Prize pool: <b>{formatUsdc(pool.round.totalStakeUsdc)}</b></p>
+
+            <h2>Round timing</h2>
+            <p>Predictions open until {formatLocalDateTime(pool.round.entryCloseAt)}</p>
             <p>
-              Observation: {pool.round.observationStartAt} → {pool.round.observationEndAt}
+              Price observation runs from {formatLocalDateTime(pool.round.observationStartAt)}
+              {" to "}{formatLocalDateTime(pool.round.observationEndAt)}
             </p>
-            <p>
-              Current pool: {pool.round.totalStakeUsdc} USDC · {pool.round.entryCount} players
-            </p>
-            <p>Arc Testnet block: {chain.blockNumber}</p>
+
+            <h2>Price source</h2>
+            <p><b>{pool.source}</b> · {pool.sourceSymbol}</p>
 
             <div className="wf-row">
               <a
@@ -100,25 +113,21 @@ export default function PoolDetailPage() {
                 target="_blank"
                 rel="noreferrer"
               >
-                Pool contract
+                Verify on Arc
               </a>
-              <Link href={`/rounds/${pool.slug}`} className="wf-action">View live round</Link>
+              <Link href={`/rounds/${pool.slug}`} className="wf-action">View round</Link>
             </div>
           </section>
 
           <section className="wf-panel">
             <h2>Make a prediction</h2>
-            <p>Every entry costs exactly 1 USDC.</p>
+            <p>One prediction costs exactly 1 USDC.</p>
             <p>
-              Real entry signing is not enabled on this screen yet. The mock/localStorage
-              prediction action has been removed from this pool path.
-            </p>
-            <p>
-              The next implementation gate is fresh passkey step-up authorization followed
-              by the real Arc Testnet 1 USDC entry transaction.
+              Secure entry is being enabled next. Until then, this button stays disabled so
+              no fake or local-only prediction can be created.
             </p>
             <button className="wf-action" type="button" disabled>
-              Secure entry flow pending
+              Prediction entry coming next
             </button>
           </section>
         </div>
