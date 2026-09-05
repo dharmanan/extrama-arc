@@ -317,9 +317,6 @@ function indexedAddressTopic(address) {
 }
 
 async function readIncomingTicketCandidates(provider, owner, blockNumber) {
-  const ticketAddresses = ARC_POOL_TOPOLOGY.map((topology) =>
-    ethers.getAddress(topology.ticketAddress),
-  );
   const ranges = [];
 
   for (
@@ -336,13 +333,15 @@ async function readIncomingTicketCandidates(provider, owner, blockNumber) {
     });
   }
 
+  // Arc RPC is more reliable when eth_getLogs uses one topic-filtered query
+  // instead of an address array. We filter the returned log addresses against
+  // the 24 canonical EXTREMA ticket collections below.
   const logGroups = await mapWithConcurrency(
     ranges,
     3,
     ({ fromBlock, toBlock }) =>
       rpcRead(() =>
         provider.getLogs({
-          address: ticketAddresses,
           fromBlock,
           toBlock,
           topics: [
