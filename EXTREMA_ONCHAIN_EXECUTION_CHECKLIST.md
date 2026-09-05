@@ -541,7 +541,7 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 - [x] Entry amount is exactly 1 USDC
 - [x] User must have sufficient real Arc Testnet USDC
-- [ ] Approval/permit/transfer flow finalized
+- [x] Approval/permit/transfer flow finalized
 - [x] Fresh passkey step-up required before backend signs
 - [x] Prediction is submitted in a real Arc Testnet transaction
 - [x] Contract stores:
@@ -553,12 +553,59 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - 1 USDC stake
 - [x] Pool balance increases by exactly 1 USDC
 - [x] Player count increases by exactly 1
-- [ ] Same wallet cannot enter same round twice
-- [ ] Same exact prediction price cannot be taken twice in same round
+- [x] Same wallet cannot enter same round twice
+- [x] Same exact prediction price cannot be taken twice in same round
 - [ ] Entry after close is rejected
-- [ ] UI reflects confirmed onchain state only
+- [x] UI reflects confirmed onchain state only
 
 ### Proof record
+
+#### ETH Daily High exact entry + rejection proof
+
+- Verification date: 2026-09-05
+- Read-only verification command: `./script/verify-second-entry-and-rejections.sh`
+- Result: `SECOND_ENTRY_AND_REJECTIONS_READS_COMPLETE=PASS`
+- Chain ID: `5042002`
+- Pool: ETH Daily High
+- Pool contract: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Ticket contract: `0xF65Cf4a67299ad596e139e3F6a9594E809F05637`
+- Round ID: `1`
+- EXTREMA wallet: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Stored prediction: `2365.87 USD` / `236587` cents
+- Entry sequence: `1`
+- Ticket ID: `1`
+- Ticket owner: EXTREMA wallet
+- Round state:
+  - status = `ENTRY_OPEN`
+  - entryCount = `1`
+  - nextEntrySequence = `2`
+  - totalStake = `1.0 USDC`
+  - escrowRemaining = `1.0 USDC`
+- Direct reads:
+  - `hasEntered(1, wallet) -> true`
+  - `predictionTaken(1, 236587) -> true`
+  - `nextTicketId() -> 2`
+  - pool USDC balance = `1000000` = exactly `1.0 USDC`
+- `PredictionEntered` transaction:
+  - tx: `0xc1ce127a878bb843c6985b22d1e2ac02423d4d6ad719f8da84a07718a8d28528`
+  - block: `60504170`
+  - explorer: `https://testnet.arcscan.app/tx/0xc1ce127a878bb843c6985b22d1e2ac02423d4d6ad719f8da84a07718a8d28528`
+- Exact USDC approval:
+  - tx: `0x427e97a46c0bf939896acda0db84a31cea9647089e4f46d7e54d99353a4047aa`
+  - block: `60504161`
+  - approved raw amount: `0x0f4240` = `1000000` = exactly `1.0 USDC`
+  - explorer: `https://testnet.arcscan.app/tx/0x427e97a46c0bf939896acda0db84a31cea9647089e4f46d7e54d99353a4047aa`
+- Duplicate-wallet safety proof, read-only `eth_call`:
+  - same wallet + different price reverted with `AlreadyEntered`
+  - no transaction was broadcast
+- Duplicate-price safety proof, read-only `eth_call`:
+  - different address + exact stored price reverted with `PriceAlreadyTaken`
+  - no transaction was broadcast
+- Browser runtime proof:
+  - confirmed round rendered `1 prediction`
+  - confirmed prize pool rendered `1 USDC`
+  - a later second attempt from the same EXTREMA wallet was rejected with the user-facing message `This EXTREMA wallet has already entered this round.`
+- Entry-after-close remains intentionally pending until the real Daily cutoff is reached.
 
 #### Second real entry — ETH Daily High runtime proof
 
@@ -674,7 +721,7 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - [x] Real entry timestamp/order
 - [x] Real round status
 - [ ] No mock live distribution
-- [ ] UI updates after confirmed transactions
+- [x] UI updates after confirmed transactions
 
 ### Proof record
 
@@ -968,13 +1015,19 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 4 — finish entry safety proofs.**
+**Section 4 — only the real cutoff proof remains.**
 
-The first real 1 USDC prediction is now fully proven on Arc Testnet: entry tx, exact stored prediction, entry sequence, ticket #1, NFT owner, +1 player, +1 USDC pool balance, and +1 USDC escrow are all verified.
+The real 1 USDC entry flow is now proven end-to-end on Arc Testnet, including:
+- exact 1 USDC approval
+- real entry transaction
+- exact stored prediction
+- ERC-721 ticket mint/ownership
+- +1 player / +1 USDC pool accounting
+- duplicate-wallet rejection
+- duplicate-price rejection
+- browser state refresh from confirmed onchain data
 
-Next:
-1. recover/record the USDC approval transaction used by this entry
-2. prove same-wallet duplicate rejection without sending another transaction
-3. prove same-price rejection without sending another transaction
-4. refresh the browser and verify ETH Daily Low shows the confirmed 1 prediction / 1 USDC state
-5. keep entry-after-close proof pending until the real Daily cutoff passes
+Remaining Section 4 item:
+- entry after close is rejected
+
+Do not fabricate this proof before the real Daily cutoff. After `2026-09-05T20:00:00Z` (23:00 Türkiye time), run a read-only `eth_call` against a Daily Round #1 pool and record the `EntryClosed` revert. Until then, continue with the next independent workstream rather than sending another Daily entry.
