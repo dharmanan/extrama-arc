@@ -62,7 +62,7 @@ function isClaimEligible(ticket: OwnedTicket) {
     ticket.roundStatus === "SETTLED" &&
     ticket.placement > 0 &&
     !ticket.isClaimed &&
-    BigInt(ticket.claimableRaw) > 0n
+    BigInt(ticket.claimableRaw) > BigInt(0)
   );
 }
 
