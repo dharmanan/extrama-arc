@@ -1030,4 +1030,4 @@ The real 1 USDC entry flow is now proven end-to-end on Arc Testnet, including:
 Remaining Section 4 item:
 - entry after close is rejected
 
-Do not fabricate this proof before the real Daily cutoff. After `2026-09-05T20:00:00Z` (23:00 Türkiye time), run a read-only `eth_call` against a Daily Round #1 pool and record the `EntryClosed` revert. Until then, continue with the next independent workstream rather than sending another Daily entry.
+A fork-based smoke test is available immediately via `./script/smoke-entry-close-fork.sh`. It forks the real deployed Arc Testnet pool state, advances only the local fork past the real `entryCloseAt`, and expects `EntryClosed` from a read-only `eth_call`. This is strong pre-cutoff smoke coverage but does not replace the later live-chain read-only proof after the real cutoff. Continue with independent workstreams without waiting.
