@@ -560,6 +560,24 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 ### Proof record
 
+#### Second real entry — ETH Daily High runtime proof
+
+- Verification date: 2026-09-05
+- Pool: ETH Daily High
+- Pool contract: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Round ID: `1`
+- Prediction entered in browser: `2654.76 USD` / `265476` cents
+- Fresh onchain backend read:
+  - `entryCount = 1`
+  - `totalStakeRaw = 1000000`
+  - `totalStakeUsdc = 1.0`
+  - `escrowRemainingRaw = 1000000`
+  - `escrowRemainingUsdc = 1.0`
+- Browser then attempted another prediction from the same EXTREMA wallet and the live contract-state guard returned the user-facing rejection:
+  - `This EXTREMA wallet has already entered this round.`
+- No second transaction was sent by that rejected attempt.
+- Exact tx hash/ticket/event and direct eth_call revert proofs are recorded in the next read-only verification step.
+
 #### First real entry — verified onchain
 
 - Verification date: 2026-09-05
