@@ -52,6 +52,35 @@ function canonicalTicketTransferPayload({
   };
 }
 
+function canonicalRefundPayload({
+  walletAddress,
+  poolAddress,
+  ticketAddress,
+  tokenId,
+  roundId,
+  currentOwner,
+  executionMode,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'REFUND_TICKET',
+    chainId: 5042002,
+    contract: poolAddress,
+    poolAddress,
+    ticketAddress,
+    tokenId,
+    roundId,
+    amountRaw: '1000000',
+    currentOwner,
+    destination: currentOwner,
+    executionMode,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
 async function insertActionRequest(params, actionType, payload) {
   const payloadHash = sha256Hex(JSON.stringify(payload));
 
@@ -101,6 +130,23 @@ async function createTicketTransferRequest(params) {
   return insertActionRequest(
     { id, userId: params.userId, expiresAt },
     'TRANSFER_TICKET',
+    payload,
+  );
+}
+
+async function createRefundRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalRefundPayload({
+    ...params,
+    nonce,
+    expiresAt,
+  });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'REFUND_TICKET',
     payload,
   );
 }
@@ -155,7 +201,7 @@ async function consumeVerifiedAction(
   expectedPayloadHash,
   expectedActionType,
 ) {
-  if (!['ENTRY', 'TRANSFER_TICKET'].includes(expectedActionType)) {
+  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET'].includes(expectedActionType)) {
     throw new Error('action_authorization_invalid');
   }
 
@@ -190,6 +236,7 @@ async function consumeVerifiedAction(
 module.exports = {
   createEntryRequest,
   createTicketTransferRequest,
+  createRefundRequest,
   attachWebAuthnChallenge,
   consumeWebAuthnChallenge,
   consumeVerifiedAction,
