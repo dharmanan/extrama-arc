@@ -43,7 +43,8 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 - [x] Passkey registration flow works in current Codespace environment
 - [x] Backend creates a real EVM EXTREMA wallet
 - [x] Private key is disclosed once to the user at wallet creation
-- [ ] Reconnect flow verified end-to-end with owner wallet + passkey
+- [x] Reconnect flow verified end-to-end with owner wallet + passkey
+  - Browser proof (2026-09-05): session was disconnected, owner wallet reconnected, passkey authentication completed, and the same EXTREMA wallet/onchain balance state was restored without raw auth errors.
 - [x] Fresh passkey step-up authorization implemented for critical transaction signing
   - Backend proof:
     - `npm run backend:check -> PASS`
@@ -702,22 +703,35 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - [x] NFT token ID linked to `roundId`
 - [x] NFT linked to prediction value
 - [x] NFT ownership readable onchain
-- [ ] `My Tickets` reads real NFT ownership
-- [ ] No localStorage/mock tickets in production path
-- [ ] NFT transfer tested on Arc Testnet
+- [x] `My Tickets` reads real NFT ownership
+- [x] No localStorage/mock tickets in production path
+- [x] NFT transfer tested on Arc Testnet
 - [ ] After transfer, new owner becomes claim-right holder
+  - Contract rule and ownership transition are proven; live claim execution remains pending settlement.
 - [ ] Original entrant loses claim right after transfer
+  - Contract rule is implemented; live rejection proof remains pending settlement.
 
 ### Proof record
 
-- Entry tx:
-- Mint tx/event:
-- Token ID:
-- Owner before transfer:
-- Transfer tx:
-- Owner after transfer:
-- Explorer:
-- Verification:
+- Verification date: 2026-09-05
+- Ticket: ETH Daily High, Round #1, Ticket #1
+- Ticket contract: `0xF65Cf4a67299ad596e139e3F6a9594E809F05637`
+- Prediction: `2365.87 USD`
+- Entry / mint tx: `0xc1ce127a878bb843c6985b22d1e2ac02423d4d6ad719f8da84a07718a8d28528`
+- Owner before transfer: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Destination / owner wallet: `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
+- Transfer method: `safeTransferFrom`
+- Fresh passkey step-up: PASS
+- Transfer tx: `0xc6e5bd0e02b825e84e570bb9ba25f3c381ebd33e14aeb423e446ffdbb3450fee`
+- Transfer block: `60612578`
+- Owner after transfer: `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
+- Explorer: `https://testnet.arcscan.app/tx/0xc6e5bd0e02b825e84e570bb9ba25f3c381ebd33e14aeb423e446ffdbb3450fee`
+- Browser verification:
+  - My Tickets showed 2 real onchain tickets before transfer.
+  - Transfer required passkey confirmation.
+  - The transaction completed successfully on Arc Testnet.
+  - My Tickets refreshed from 2 tickets to 1 ticket because ETH Daily High Ticket #1 was no longer owned by the EXTREMA wallet.
+- Verification: NFT transfer / ownership transition = PASS. Live claim-right enforcement remains a later settlement proof gate.
 
 ---
 
@@ -1013,9 +1027,73 @@ One complete round must be demonstrated from start to finish:
 
 ---
 
-# 16. Design phase
+# 16. Secondary NFT marketplace
 
-Only begin after Sections 1–15 are functionally complete and proven.
+This is a **required EXTREMA product feature**, not an optional future idea.
+
+Purpose:
+- A prediction price slot can be minted only once per round.
+- As the market moves, a scarce ticket may become materially more valuable than its original 1 USDC entry cost.
+- The current NFT owner must be able to sell that position to another user for USDC.
+- Buying the NFT transfers the same economic right already enforced by the pool: the current NFT owner owns the future claim/refund right.
+
+## 16.1 Market model
+
+- [ ] Build a secondary market for already-minted EXTREMA ticket NFTs
+- [ ] Seller can list a currently owned ticket with an ask price denominated in real USDC
+- [ ] Buyer can purchase a listed ticket with real Arc Testnet USDC
+- [ ] Purchase transfers the real ERC-721 ticket onchain
+- [ ] Marketplace never creates a new prediction slot
+- [ ] Primary-market rules remain unchanged:
+  - entry costs exactly 1 USDC
+  - one primary entry per wallet per round
+  - one exact prediction price can be minted only once per round
+- [ ] Current NFT ownership after a secondary sale controls later claim/refund rights
+- [ ] Listing cancellation is supported and proven onchain
+- [ ] Filled/cancelled/expired listings cannot be purchased
+- [ ] Marketplace UI shows prediction, direction, cadence, current owner, ask price, round timing, and ticket verification link
+- [ ] No mock listings, mock volume, mock sales, or localStorage market state in the production path
+- [ ] Decide and document whether one wallet may accumulate multiple tickets from the same round through secondary purchases
+
+## 16.2 Market timing
+
+- [x] DAILY secondary-market cutoff rule locked:
+  - trading closes exactly **1 hour before `observationEndAt`**
+  - no listing creation, listing purchase, or listing update may execute at or after that cutoff
+  - the final hour is intentionally non-tradable to avoid last-minute execution/race problems near the daily outcome boundary
+- [ ] Weekly secondary-market cutoff rule finalized
+- [ ] Quarterly secondary-market cutoff rule finalized
+- [ ] Contract/backend uses chain time or a deterministic onchain-derived cutoff, not browser time
+- [ ] UI clearly shows remaining secondary-market trading time
+- [ ] Read-only test proves a purchase is rejected at/after the market cutoff
+- [ ] Real Arc Testnet trade is completed before cutoff and ownership change is verified
+
+## 16.3 Marketplace proof gate
+
+Before this section is complete, record:
+- marketplace contract/address
+- listing tx
+- ask price
+- buyer
+- purchase tx
+- seller USDC before/after
+- buyer USDC before/after
+- NFT owner before/after
+- listing state before/after
+- ArcScan links
+- cutoff rejection proof
+- final verification result
+
+Implementation order:
+1. Finish the core settlement, winner, payout, claim, and refund path first.
+2. Then implement this marketplace on top of the already-proven transferable-ticket ownership model.
+3. Complete marketplace functional/onchain proof before final visual design.
+
+---
+
+# 17. Design phase
+
+Only begin after Sections 1–16 are functionally complete and proven.
 
 - [ ] Replace structural wireframe with final EXTREMA visual design
 - [ ] Preserve all verified real onchain flows
@@ -1025,20 +1103,14 @@ Only begin after Sections 1–15 are functionally complete and proven.
 
 ## Current next action
 
-**Section 5 — My Tickets real ownership integration.**
+**Core next action: Section 7 — Real settlement source and resolver.**
 
-The entry-close fork smoke test passed immediately; there is no need to wait for the real cutoff to continue development. The live-chain post-cutoff proof remains a later read-only check.
-
-Implemented next:
-- authenticated backend `GET /api/wallet/tickets`
-- reads current EXTREMA wallet from the authenticated session
-- scans the 24 deployed ticket collections via their paired pools
-- verifies `ownerOf(tokenId)` on Arc Testnet
-- reads prediction, round, entry sequence, status, placement, claim/refund state, and claimable amount from the real contracts
-- `/tickets` no longer uses demo/localStorage ticket state or mock claim actions
+Section 5 now has real browser + Arc Testnet proof for My Tickets ownership and a real passkey-authorized ERC-721 transfer. Live claim-right enforcement for the transferred ticket remains intentionally pending until a round can be settled.
 
 Next proof gate:
-1. `npm run backend:check`
-2. `npm run typecheck`
-3. `npm run build`
-4. browser verification that My Tickets shows the currently owned ETH Daily High and ETH Daily Low Ticket #1 NFTs from Arc Testnet
+1. Lock the exact Binance USDⓈ-M Futures Mark Price Klines endpoint/request parameters.
+2. Lock inclusive/exclusive observation time-boundary rules.
+3. Implement a deterministic resolver calculation for DAILY High/Low.
+4. Verify the calculation from archived/raw source data before any settlement transaction is broadcast.
+
+The mandatory secondary NFT marketplace is now locked in **Section 16**. Do not implement it yet. First complete the core settlement → winners → payouts → claim/refund path, then build the marketplace on top of that proven ownership model.
