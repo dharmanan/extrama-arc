@@ -86,6 +86,16 @@ app.use((error, req, res, next) => {
     'passkey_authentication_failed',
     'action_challenge_expired',
     'action_authorization_invalid',
+    'entry_round_not_available',
+    'entry_already_entered',
+    'entry_price_taken',
+    'entry_insufficient_usdc',
+    'entry_insufficient_gas',
+    'entry_wallet_mismatch',
+    'entry_approval_failed',
+    'entry_transaction_failed',
+    'entry_event_missing',
+    'entry_postcondition_failed',
   ]);
 
   if (safeKnownErrors.has(error.message)) {

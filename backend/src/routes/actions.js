@@ -10,6 +10,7 @@ const arcService = require('../services/arcService');
 const walletService = require('../services/walletService');
 const passkeyService = require('../services/passkeyService');
 const actionAuthorizationService = require('../services/actionAuthorizationService');
+const entryExecutionService = require('../services/entryExecutionService');
 
 const router = express.Router();
 
@@ -49,7 +50,7 @@ router.post('/entry/start', startLimiter, async (req, res, next) => {
 
     const [wallet, rounds] = await Promise.all([
       walletService.getWalletForUser(req.auth.userId),
-      arcService.getStandardRoundsState(),
+      arcService.getStandardRoundsState({ forceFresh: true }),
     ]);
 
     if (!wallet?.address) {
@@ -110,18 +111,22 @@ router.post('/entry/finish', finishLimiter, async (req, res, next) => {
       saved,
     );
 
-    const authorization = await actionAuthorizationService.issueAuthorization(
+    const action = await actionAuthorizationService.consumeVerifiedAction(
       req.auth.userId,
       actionId,
+      saved.payloadHash,
+    );
+
+    const result = await entryExecutionService.executeEntry(
+      req.auth.userId,
+      action.payload,
     );
 
     res.json({
-      authorized: true,
+      confirmed: true,
       actionId,
-      action: authorization.payload,
-      payloadHash: authorization.payloadHash,
-      authorizationToken: authorization.authorizationToken,
-      expiresInSeconds: authorization.expiresInSeconds,
+      payloadHash: action.payloadHash,
+      result,
     });
   } catch (error) {
     next(error);

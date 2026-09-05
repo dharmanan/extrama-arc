@@ -63,6 +63,8 @@ export type EntryActionPayload = {
   predictionPriceCents: number;
   destination: string;
   walletAddress: string;
+  nonce: string;
+  expiresAt: string;
 };
 
 export type EntryActionStartResponse = {
@@ -73,13 +75,48 @@ export type EntryActionStartResponse = {
   publicKey: PublicKeyCredentialRequestOptionsJSON;
 };
 
+export type EntryExecutionResult = {
+  chainId: 5042002;
+  walletAddress: string;
+  poolAddress: string;
+  ticketAddress: string;
+  roundId: number;
+  predictionPriceCents: number;
+  stakeRaw: "1000000";
+  stakeUsdc: string;
+  approvalTxHash: string | null;
+  entryTxHash: string;
+  explorerUrl: string;
+  ticketId: string;
+  entrySequence: string;
+  ticketOwner: string;
+  before: {
+    walletUsdcRaw: string;
+    walletUsdc: string;
+    poolUsdcRaw: string;
+    poolUsdc: string;
+    entryCount: number;
+    totalStakeRaw: string;
+    totalStakeUsdc: string;
+  };
+  after: {
+    walletUsdcRaw: string;
+    walletUsdc: string;
+    poolUsdcRaw: string;
+    poolUsdc: string;
+    entryCount: number;
+    totalStakeRaw: string;
+    totalStakeUsdc: string;
+    escrowRemainingRaw: string;
+    escrowRemainingUsdc: string;
+  };
+};
+
 export type EntryActionFinishResponse = {
-  authorized: true;
+  confirmed: true;
   actionId: string;
-  action: EntryActionPayload;
   payloadHash: string;
-  authorizationToken: string;
-  expiresInSeconds: number;
+  result: EntryExecutionResult;
 };
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {

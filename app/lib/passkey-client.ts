@@ -146,7 +146,7 @@ function addressesEqual(a: string, b: string) {
   return a.toLowerCase() === b.toLowerCase();
 }
 
-export async function authorizeEntryWithPasskey(input: {
+export async function confirmEntryWithPasskey(input: {
   poolAddress: string;
   roundId: number;
   predictionPriceCents: number;
@@ -162,10 +162,13 @@ export async function authorizeEntryWithPasskey(input: {
     start.action.roundId === input.roundId &&
     start.action.amountRaw === "1000000" &&
     start.action.predictionPriceCents === input.predictionPriceCents &&
-    addressesEqual(start.action.destination, input.poolAddress);
+    addressesEqual(start.action.destination, input.poolAddress) &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
 
   if (!actionMatches) {
-    throw new Error("Entry authorization details did not match the requested prediction.");
+    throw new Error("Entry confirmation details did not match the requested prediction.");
   }
 
   const credential = await navigator.credentials.get({
@@ -173,7 +176,7 @@ export async function authorizeEntryWithPasskey(input: {
   });
 
   if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Passkey verification was cancelled.");
+    throw new Error("Confirmation was cancelled.");
   }
 
   const finished = await backendApi.actions.finishEntry(
@@ -181,21 +184,18 @@ export async function authorizeEntryWithPasskey(input: {
     encodeCredential(credential),
   );
 
-  const finishMatches =
-    finished.authorized === true &&
-    finished.actionId === start.actionId &&
-    finished.payloadHash === start.payloadHash &&
-    finished.action.action === "ENTRY" &&
-    finished.action.chainId === 5042002 &&
-    addressesEqual(finished.action.contract, input.poolAddress) &&
-    finished.action.roundId === input.roundId &&
-    finished.action.amountRaw === "1000000" &&
-    finished.action.predictionPriceCents === input.predictionPriceCents &&
-    addressesEqual(finished.action.destination, input.poolAddress);
-
-  if (!finishMatches) {
-    throw new Error("Verified entry authorization did not match the requested prediction.");
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.result.chainId !== 5042002 ||
+    !addressesEqual(finished.result.poolAddress, input.poolAddress) ||
+    finished.result.roundId !== input.roundId ||
+    finished.result.predictionPriceCents !== input.predictionPriceCents ||
+    finished.result.stakeRaw !== "1000000"
+  ) {
+    throw new Error("Confirmed transaction did not match the requested prediction.");
   }
 
-  return finished;
+  return finished.result;
 }

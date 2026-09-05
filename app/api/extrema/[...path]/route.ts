@@ -13,7 +13,10 @@ async function proxy(
 ) {
   const { path } = await context.params;
   const pathname = "/" + path.join("/");
-  const target = backendBaseUrl().replace(/\/$/, "") + pathname;
+  const target =
+    backendBaseUrl().replace(/\/$/, "") +
+    pathname +
+    request.nextUrl.search;
 
   const headers = new Headers();
   headers.set("content-type", request.headers.get("content-type") || "application/json");

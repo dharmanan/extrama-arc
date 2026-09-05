@@ -335,8 +335,10 @@ function warmStandardRoundsCache() {
 module.exports = {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_USDC_ADDRESS,
+  getArcProvider: getProvider,
   readArcWalletState,
   readStandardRounds,
   getStandardRoundsState,
+  refreshStandardRoundsCache,
   warmStandardRoundsCache,
 };

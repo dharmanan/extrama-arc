@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AssetMark, ProductHeader } from "../../product-components";
 import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
-import { authorizeEntryWithPasskey } from "../../lib/passkey-client";
+import { confirmEntryWithPasskey } from "../../lib/passkey-client";
 import {
   formatEntryCount,
   formatLocalDateTime,
@@ -26,7 +26,12 @@ export default function PoolDetailPage() {
   const [prediction, setPrediction] = useState("");
   const [entryBusy, setEntryBusy] = useState("");
   const [entryError, setEntryError] = useState("");
-  const [authorizationMessage, setAuthorizationMessage] = useState("");
+  const [entrySuccess, setEntrySuccess] = useState<{
+    ticketId: string;
+    entryTxHash: string;
+    explorerUrl: string;
+    approvalTxHash: string | null;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,7 +61,7 @@ export default function PoolDetailPage() {
     if (!state) return;
 
     setEntryError("");
-    setAuthorizationMessage("");
+    setEntrySuccess(null);
 
     const trimmed = prediction.trim();
     if (!/^\d+(?:\.\d{1,2})?$/.test(trimmed)) {
@@ -72,21 +77,47 @@ export default function PoolDetailPage() {
 
     const predictionPriceCents = Math.round(price * 100);
 
-    setEntryBusy("Waiting for passkey verification…");
+    setEntryBusy("Confirming…");
     try {
-      const authorization = await authorizeEntryWithPasskey({
+      const result = await confirmEntryWithPasskey({
         poolAddress: state.pool.poolAddress,
         roundId: state.pool.round.roundId,
         predictionPriceCents,
       });
 
-      setAuthorizationMessage(
-        `Passkey verified for ${price.toFixed(2)}. Secure entry authorization is valid for ${authorization.expiresInSeconds} seconds. No transaction has been sent yet.`,
-      );
+      setState((current) => current ? {
+        ...current,
+        pool: {
+          ...current.pool,
+          round: {
+            ...current.pool.round,
+            entryCount: result.after.entryCount,
+            totalStakeRaw: result.after.totalStakeRaw,
+            totalStakeUsdc: result.after.totalStakeUsdc,
+            escrowRemainingRaw: result.after.escrowRemainingRaw,
+            escrowRemainingUsdc: result.after.escrowRemainingUsdc,
+          },
+        },
+      } : current);
+
+      setEntrySuccess({
+        ticketId: result.ticketId,
+        entryTxHash: result.entryTxHash,
+        explorerUrl: result.explorerUrl,
+        approvalTxHash: result.approvalTxHash,
+      });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Passkey verification failed.";
       if (message === "authentication_required" || message === "invalid_session" || message === "session_expired") {
         setEntryError("Your EXTREMA session is locked or expired. Reconnect your wallet, then try again.");
+      } else if (message === "entry_insufficient_usdc") {
+        setEntryError("You need at least 1 USDC in your EXTREMA wallet to enter.");
+      } else if (message === "entry_already_entered") {
+        setEntryError("This EXTREMA wallet has already entered this round.");
+      } else if (message === "entry_price_taken") {
+        setEntryError("That exact price has already been taken. Choose another price.");
+      } else if (message === "entry_round_not_available") {
+        setEntryError("Predictions are no longer available for this round.");
       } else {
         setEntryError(message);
       }
@@ -180,15 +211,15 @@ export default function PoolDetailPage() {
                 onChange={(event) => {
                   setPrediction(event.target.value);
                   setEntryError("");
-                  setAuthorizationMessage("");
+                  setEntrySuccess(null);
                 }}
                 disabled={!pool.round.canEnter || Boolean(entryBusy)}
               />
             </label>
 
             <p>
-              Before EXTREMA can sign an entry, your passkey must approve this exact pool,
-              Round #{pool.round.roundId}, 1 USDC amount, and prediction price.
+              Confirm this prediction with Touch ID, Face ID, or your device passcode.
+              Once approved, EXTREMA will submit the 1 USDC entry automatically.
             </p>
 
             <button
@@ -197,7 +228,7 @@ export default function PoolDetailPage() {
               onClick={handleAuthorizeEntry}
               disabled={!pool.round.canEnter || Boolean(entryBusy)}
             >
-              {entryBusy || "Verify prediction with passkey"}
+              {entryBusy || "Confirm prediction · 1 USDC"}
             </button>
 
             {!pool.round.canEnter && (
@@ -213,8 +244,15 @@ export default function PoolDetailPage() {
               </p>
             )}
 
-            {authorizationMessage && (
-              <p className="wf-message">{authorizationMessage}</p>
+            {entrySuccess && (
+              <div className="wf-message">
+                <p><b>Prediction confirmed.</b> Ticket #{entrySuccess.ticketId} was minted on Arc Testnet.</p>
+                <p>
+                  <a href={entrySuccess.explorerUrl} target="_blank" rel="noreferrer">
+                    View transaction on ArcScan
+                  </a>
+                </p>
+              </div>
             )}
           </section>
         </div>

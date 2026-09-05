@@ -909,4 +909,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Section 3 is complete. Section 4 step-up backend is deployed and the pool UI now requests a prediction-bound passkey authorization without sending a transaction. Next: typecheck/build, then browser-test the passkey prompt and verify the returned authorization before enabling the real signer transaction.
+Section 3 is complete. Section 4 now has the full confirm-and-submit path implemented: one fresh device confirmation is bound to the exact 1 USDC entry payload, then the backend automatically performs any required exact USDC approval and submits the real Arc Testnet entry. Next: run backend/frontend checks and browser-test before sending the first real prediction transaction.
