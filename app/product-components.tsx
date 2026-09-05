@@ -10,7 +10,6 @@ import { useCopy, useLocale } from "./i18n";
 import {
   formatEntryCount,
   formatLocalDateTime,
-  formatTimeUntil,
   formatUsdc,
   humanRoundStatus,
 } from "./lib/display";
@@ -130,6 +129,71 @@ function localizedDirection(value: LivePool["direction"], locale: "en" | "tr") {
   return titleCase(value);
 }
 
+function formatCountdown(ms: number, locale: "en" | "tr") {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(locale === "tr" ? `${days}g` : `${days}d`);
+  if (days > 0 || hours > 0) parts.push(locale === "tr" ? `${hours}sa` : `${hours}h`);
+  parts.push(locale === "tr" ? `${minutes}dk` : `${minutes}m`);
+  parts.push(locale === "tr" ? `${seconds}sn` : `${seconds}s`);
+  return parts.join(" ");
+}
+
+export function RoundCountdown({
+  entryOpenAt,
+  entryCloseAt,
+  observationStartAt,
+  observationEndAt,
+}: {
+  entryOpenAt: string;
+  entryCloseAt: string;
+  observationStartAt: string;
+  observationEndAt: string;
+}) {
+  const { locale } = useLocale();
+  const t = useCopy();
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const openAt = new Date(entryOpenAt).getTime();
+  const closeAt = new Date(entryCloseAt).getTime();
+  const observationStart = new Date(observationStartAt).getTime();
+  const observationEnd = new Date(observationEndAt).getTime();
+
+  let label = t.observationEnded;
+  let target: number | null = null;
+
+  if (now < openAt) {
+    label = t.predictionsStartIn;
+    target = openAt;
+  } else if (now < closeAt) {
+    label = t.predictionsCloseIn;
+    target = closeAt;
+  } else if (now < observationStart) {
+    label = t.observationStartsIn;
+    target = observationStart;
+  } else if (now < observationEnd) {
+    label = t.observationEndsIn;
+    target = observationEnd;
+  }
+
+  return (
+    <p className="wf-message" style={{ fontVariantNumeric: "tabular-nums" }}>
+      <b>{label}</b>
+      {target !== null ? <> · {formatCountdown(target - now, locale)}</> : null}
+    </p>
+  );
+}
+
 function poolStatusLabel(pool: LivePool, locale: "en" | "tr") {
   if (pool.round.contractStatus === "ENTRY_OPEN" && !pool.round.canEnter) {
     return locale === "tr"
@@ -172,10 +236,13 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       </dl>
 
       <p><b>{poolStatusLabel(pool, locale)}</b></p>
-      <p>
-        {t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}
-        {pool.round.canEnter ? ` · ${formatTimeUntil(pool.round.entryCloseAt, locale)}` : ""}
-      </p>
+      <RoundCountdown
+        entryOpenAt={pool.round.entryOpenAt}
+        entryCloseAt={pool.round.entryCloseAt}
+        observationStartAt={pool.round.observationStartAt}
+        observationEndAt={pool.round.observationEndAt}
+      />
+      <p>{t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
 
       <Link href={`/pools/${pool.slug}`} className="wf-action">
         {pool.round.canEnter ? t.makePrediction : t.viewPool}
