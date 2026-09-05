@@ -54,6 +54,34 @@ export type LiveRoundResponse = {
   pool: LivePool;
 };
 
+export type EntryActionPayload = {
+  action: "ENTRY";
+  chainId: 5042002;
+  contract: string;
+  roundId: number;
+  amountRaw: "1000000";
+  predictionPriceCents: number;
+  destination: string;
+  walletAddress: string;
+};
+
+export type EntryActionStartResponse = {
+  actionId: string;
+  action: EntryActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type EntryActionFinishResponse = {
+  authorized: true;
+  actionId: string;
+  action: EntryActionPayload;
+  payloadHash: string;
+  authorizationToken: string;
+  expiresInSeconds: number;
+};
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
@@ -130,6 +158,21 @@ export const backendApi = {
     },
     get(slug: string) {
       return request<LiveRoundResponse>(`/rounds/${encodeURIComponent(slug)}`);
+    },
+  },
+  actions: {
+    startEntry(input: {
+      poolAddress: string;
+      roundId: number;
+      predictionPriceCents: number;
+    }) {
+      return post<EntryActionStartResponse>("/actions/entry/start", input);
+    },
+    finishEntry(actionId: string, credential: unknown) {
+      return post<EntryActionFinishResponse>("/actions/entry/finish", {
+        actionId,
+        credential,
+      });
     },
   },
   wallet: {

@@ -140,3 +140,62 @@ export async function authenticatePasskey(ownerAddress: string) {
 
   return result;
 }
+
+
+function addressesEqual(a: string, b: string) {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+export async function authorizeEntryWithPasskey(input: {
+  poolAddress: string;
+  roundId: number;
+  predictionPriceCents: number;
+}) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startEntry(input);
+
+  const actionMatches =
+    start.action.action === "ENTRY" &&
+    start.action.chainId === 5042002 &&
+    addressesEqual(start.action.contract, input.poolAddress) &&
+    start.action.roundId === input.roundId &&
+    start.action.amountRaw === "1000000" &&
+    start.action.predictionPriceCents === input.predictionPriceCents &&
+    addressesEqual(start.action.destination, input.poolAddress);
+
+  if (!actionMatches) {
+    throw new Error("Entry authorization details did not match the requested prediction.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Passkey verification was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishEntry(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  const finishMatches =
+    finished.authorized === true &&
+    finished.actionId === start.actionId &&
+    finished.payloadHash === start.payloadHash &&
+    finished.action.action === "ENTRY" &&
+    finished.action.chainId === 5042002 &&
+    addressesEqual(finished.action.contract, input.poolAddress) &&
+    finished.action.roundId === input.roundId &&
+    finished.action.amountRaw === "1000000" &&
+    finished.action.predictionPriceCents === input.predictionPriceCents &&
+    addressesEqual(finished.action.destination, input.poolAddress);
+
+  if (!finishMatches) {
+    throw new Error("Verified entry authorization did not match the requested prediction.");
+  }
+
+  return finished;
+}

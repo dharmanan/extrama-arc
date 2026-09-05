@@ -45,6 +45,10 @@ These items are real infrastructure, but they are **not substitutes for onchain 
 - [x] Private key is disclosed once to the user at wallet creation
 - [ ] Reconnect flow verified end-to-end with owner wallet + passkey
 - [ ] Fresh passkey step-up authorization implemented for critical transaction signing
+  - Backend step-up deployment proof (implementation only, browser verification still pending):
+    - `npm run backend:check -> PASS`
+    - Railway `/readyz -> {"ok":true,"service":"extrema-backend"}`
+    - action authorization database migration is part of backend startup before the server becomes ready
 
 ---
 
@@ -905,4 +909,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Section 3 is complete: Round #1 creation, backend live-round reads, and browser pool state are verified on Arc Testnet. Next: Section 4 real 1 USDC entry, beginning with fresh passkey step-up authorization before any backend signer transaction is enabled.
+Section 3 is complete. Section 4 step-up backend is deployed and the pool UI now requests a prediction-bound passkey authorization without sending a transaction. Next: typecheck/build, then browser-test the passkey prompt and verify the returned authorization before enabling the real signer transaction.

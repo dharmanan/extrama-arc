@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AssetMark, ProductHeader } from "../../product-components";
 import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
+import { authorizeEntryWithPasskey } from "../../lib/passkey-client";
 import {
   formatEntryCount,
   formatLocalDateTime,
@@ -22,6 +23,10 @@ export default function PoolDetailPage() {
   const [state, setState] = useState<LiveRoundResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [prediction, setPrediction] = useState("");
+  const [entryBusy, setEntryBusy] = useState("");
+  const [entryError, setEntryError] = useState("");
+  const [authorizationMessage, setAuthorizationMessage] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -46,6 +51,49 @@ export default function PoolDetailPage() {
       cancelled = true;
     };
   }, [params.slug]);
+
+  async function handleAuthorizeEntry() {
+    if (!state) return;
+
+    setEntryError("");
+    setAuthorizationMessage("");
+
+    const trimmed = prediction.trim();
+    if (!/^\d+(?:\.\d{1,2})?$/.test(trimmed)) {
+      setEntryError("Enter a price with up to 2 decimal places.");
+      return;
+    }
+
+    const price = Number(trimmed);
+    if (!Number.isFinite(price) || price <= 0) {
+      setEntryError("Enter a valid positive price.");
+      return;
+    }
+
+    const predictionPriceCents = Math.round(price * 100);
+
+    setEntryBusy("Waiting for passkey verification…");
+    try {
+      const authorization = await authorizeEntryWithPasskey({
+        poolAddress: state.pool.poolAddress,
+        roundId: state.pool.round.roundId,
+        predictionPriceCents,
+      });
+
+      setAuthorizationMessage(
+        `Passkey verified for ${price.toFixed(2)}. Secure entry authorization is valid for ${authorization.expiresInSeconds} seconds. No transaction has been sent yet.`,
+      );
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Passkey verification failed.";
+      if (message === "authentication_required" || message === "invalid_session" || message === "session_expired") {
+        setEntryError("Your EXTREMA session is locked or expired. Reconnect your wallet, then try again.");
+      } else {
+        setEntryError(message);
+      }
+    } finally {
+      setEntryBusy("");
+    }
+  }
 
   if (loading) {
     return (
@@ -122,13 +170,52 @@ export default function PoolDetailPage() {
           <section className="wf-panel">
             <h2>Make a prediction</h2>
             <p>One prediction costs exactly 1 USDC.</p>
+
+            <label className="wf-field">
+              Your predicted {pool.direction === "HIGH" ? "high" : "low"} price
+              <input
+                inputMode="decimal"
+                placeholder="e.g. 68420.50"
+                value={prediction}
+                onChange={(event) => {
+                  setPrediction(event.target.value);
+                  setEntryError("");
+                  setAuthorizationMessage("");
+                }}
+                disabled={!pool.round.canEnter || Boolean(entryBusy)}
+              />
+            </label>
+
             <p>
-              Secure entry is being enabled next. Until then, this button stays disabled so
-              no fake or local-only prediction can be created.
+              Before EXTREMA can sign an entry, your passkey must approve this exact pool,
+              Round #{pool.round.roundId}, 1 USDC amount, and prediction price.
             </p>
-            <button className="wf-action" type="button" disabled>
-              Prediction entry coming next
+
+            <button
+              className="wf-action"
+              type="button"
+              onClick={handleAuthorizeEntry}
+              disabled={!pool.round.canEnter || Boolean(entryBusy)}
+            >
+              {entryBusy || "Verify prediction with passkey"}
             </button>
+
+            {!pool.round.canEnter && (
+              <p className="wf-message">Predictions are closed for this round.</p>
+            )}
+
+            {entryError && (
+              <p className="wf-message">
+                {entryError}{" "}
+                {(entryError.includes("session") || entryError.includes("locked")) && (
+                  <Link href="/wallet">Reconnect wallet</Link>
+                )}
+              </p>
+            )}
+
+            {authorizationMessage && (
+              <p className="wf-message">{authorizationMessage}</p>
+            )}
           </section>
         </div>
       </section>
