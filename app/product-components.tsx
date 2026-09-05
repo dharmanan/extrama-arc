@@ -15,11 +15,11 @@ import {
   humanRoundStatus,
 } from "./lib/display";
 
-function formatHeaderUsdc(value: string) {
+function formatHeaderUsdc(value: string, locale: "en" | "tr") {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return value;
 
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat(locale === "tr" ? "tr-TR" : "en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(numeric);
@@ -82,7 +82,7 @@ export function ProductHeader() {
         </div>
         <Link href="/wallet" className="wf-action">
           {wallet.status === "ready" && wallet.address
-            ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${formatHeaderUsdc(onchainUsdc)} USDC` : ""}`
+            ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${formatHeaderUsdc(onchainUsdc, locale)} USDC` : ""}`
             : t.createConnectWallet}
         </Link>
       </div>
@@ -104,16 +104,30 @@ function titleCase(value: string) {
   return value.charAt(0) + value.slice(1).toLowerCase();
 }
 
-function formatUsdPrice(value: string | null) {
+function formatUsdPrice(value: string | null, locale: "en" | "tr") {
   if (value === null) return "—";
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return value;
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat(locale === "tr" ? "tr-TR" : "en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(numeric);
+}
+
+function localizedCadence(value: LivePool["cadence"], locale: "en" | "tr") {
+  if (locale === "tr") {
+    if (value === "DAILY") return "Günlük";
+    if (value === "WEEKLY") return "Haftalık";
+    return "Çeyreklik";
+  }
+  return titleCase(value);
+}
+
+function localizedDirection(value: LivePool["direction"], locale: "en" | "tr") {
+  if (locale === "tr") return value === "HIGH" ? "Yüksek" : "Düşük";
+  return titleCase(value);
 }
 
 function poolStatusLabel(pool: LivePool, locale: "en" | "tr") {
@@ -133,18 +147,18 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
     <article className="wf-card">
       <div className="wf-row">
         <AssetMark asset={pool.asset} />
-        <span>{titleCase(pool.cadence)} · {titleCase(pool.direction)}</span>
+        <span>{localizedCadence(pool.cadence, locale)} · {localizedDirection(pool.direction, locale)}</span>
       </div>
 
       <p>{t.round} <b>#{pool.round.roundId}</b></p>
 
       <dl className="wf-stats">
         <div>
-          <dt>{pool.market.available ? formatUsdPrice(pool.market.markPrice) : t.unavailable}</dt>
+          <dt>{pool.market.available ? formatUsdPrice(pool.market.markPrice, locale) : t.unavailable}</dt>
           <dd>{t.liveMark}</dd>
         </div>
         <div>
-          <dt>{formatUsdPrice(pool.round.lastPredictionPrice)}</dt>
+          <dt>{formatUsdPrice(pool.round.lastPredictionPrice, locale)}</dt>
           <dd>{t.latestPrediction}</dd>
         </div>
       </dl>
