@@ -39,6 +39,8 @@ export type LivePool = {
     sourceTimeIso: string | null;
     refreshedAtIso: string;
     refreshIntervalSeconds: 60;
+    source: string | null;
+    isSettlementSource: boolean;
   };
   round: LiveRoundState;
 };
