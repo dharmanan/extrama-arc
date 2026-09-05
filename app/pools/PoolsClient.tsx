@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PoolSummary } from "../product-components";
 import { backendApi, type LivePool } from "../lib/backend-api";
 import type { Asset, Cadence } from "../lib/domain";
+import { useCopy, useLocale } from "../i18n";
 
 const assets: ("All" | Asset)[] = ["All", "BTC", "ETH", "SOL", "HYPE"];
 const cadences: ("All" | Cadence)[] = ["All", "Daily", "Weekly", "Quarterly"];
@@ -13,6 +14,8 @@ function cadenceKey(value: Cadence) {
 }
 
 export default function PoolsClient() {
+  const { locale } = useLocale();
+  const t = useCopy();
   const [asset, setAsset] = useState<"All" | Asset>("All");
   const [cadence, setCadence] = useState<"All" | Cadence>("Daily");
   const [pools, setPools] = useState<LivePool[]>([]);
@@ -71,7 +74,7 @@ export default function PoolsClient() {
             type="button"
             onClick={() => setAsset(item)}
           >
-            {item}
+            {item === "All" ? t.all : item}
           </button>
         ))}
       </div>
@@ -85,25 +88,31 @@ export default function PoolsClient() {
             type="button"
             onClick={() => setCadence(item)}
           >
-            {item}
+            {item === "All"
+              ? t.all
+              : item === "Daily"
+                ? t.daily
+                : item === "Weekly"
+                  ? t.weekly
+                  : t.quarterly}
           </button>
         ))}
       </div>
 
-      {loading && <p>Reading live Arc Testnet rounds…</p>}
+      {loading && <p>{t.readingRounds}</p>}
 
       {!loading && error && (
         <section className="wf-panel wf-section">
-          <h2>Arc round data unavailable</h2>
+          <h2>{t.roundUnavailable}</h2>
           <p>{error}</p>
-          <p>No mock pool data is shown as a fallback.</p>
+          <p>{t.noMockFallback}</p>
         </section>
       )}
 
       {!loading && !error && (
         <>
           <p>
-            {filtered.length} pools shown · Arc Testnet block {blockNumber ?? "—"}.
+            {filtered.length} {t.poolsShown} · Arc Testnet block {blockNumber ?? "—"}.
           </p>
           <div className="wf-grid wf-section">
             {filtered.map((pool) => <PoolSummary pool={pool} key={pool.poolAddress} />)}
