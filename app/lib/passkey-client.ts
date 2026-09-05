@@ -141,7 +141,6 @@ export async function authenticatePasskey(ownerAddress: string) {
   return result;
 }
 
-
 function addressesEqual(a: string, b: string) {
   return a.toLowerCase() === b.toLowerCase();
 }
@@ -195,6 +194,59 @@ export async function confirmEntryWithPasskey(input: {
     finished.result.stakeRaw !== "1000000"
   ) {
     throw new Error("Confirmed transaction did not match the requested prediction.");
+  }
+
+  return finished.result;
+}
+
+export async function confirmTicketTransferWithPasskey(input: {
+  ticketAddress: string;
+  tokenId: string;
+  destinationAddress: string;
+}) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startTicketTransfer(input);
+
+  const actionMatches =
+    start.action.action === "TRANSFER_TICKET" &&
+    start.action.chainId === 5042002 &&
+    addressesEqual(start.action.contract, input.ticketAddress) &&
+    start.action.tokenId === input.tokenId &&
+    addressesEqual(start.action.from, start.action.walletAddress) &&
+    addressesEqual(start.action.destination, input.destinationAddress) &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Transfer confirmation details did not match the requested NFT transfer.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishTicketTransfer(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.result.chainId !== 5042002 ||
+    !addressesEqual(finished.result.ticketAddress, input.ticketAddress) ||
+    finished.result.tokenId !== input.tokenId ||
+    !addressesEqual(finished.result.destinationAddress, input.destinationAddress) ||
+    !addressesEqual(finished.result.ownerAfter, input.destinationAddress)
+  ) {
+    throw new Error("Confirmed transaction did not match the requested NFT transfer.");
   }
 
   return finished.result;

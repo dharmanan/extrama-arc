@@ -31,6 +31,46 @@ function canonicalEntryPayload({
   };
 }
 
+function canonicalTicketTransferPayload({
+  walletAddress,
+  ticketAddress,
+  tokenId,
+  destinationAddress,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'TRANSFER_TICKET',
+    chainId: 5042002,
+    contract: ticketAddress,
+    tokenId,
+    from: walletAddress,
+    destination: destinationAddress,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+async function insertActionRequest(params, actionType, payload) {
+  const payloadHash = sha256Hex(JSON.stringify(payload));
+
+  await db.query(
+    `INSERT INTO action_authorizations
+      (id, user_id, action_type, payload_hash, payload_json, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [params.id, params.userId, actionType, payloadHash, payload, params.expiresAt],
+  );
+
+  return {
+    id: params.id,
+    payload,
+    payloadHash,
+    expiresAt: params.expiresAt,
+    expiresInSeconds: Math.floor(ACTION_TTL_MS / 1000),
+  };
+}
+
 async function createEntryRequest(params) {
   const id = crypto.randomUUID();
   const nonce = crypto.randomBytes(24).toString('base64url');
@@ -40,22 +80,29 @@ async function createEntryRequest(params) {
     nonce,
     expiresAt,
   });
-  const payloadHash = sha256Hex(JSON.stringify(payload));
 
-  await db.query(
-    `INSERT INTO action_authorizations
-      (id, user_id, action_type, payload_hash, payload_json, expires_at)
-     VALUES ($1, $2, 'ENTRY', $3, $4, $5)`,
-    [id, params.userId, payloadHash, payload, expiresAt],
-  );
-
-  return {
-    id,
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'ENTRY',
     payload,
-    payloadHash,
+  );
+}
+
+async function createTicketTransferRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalTicketTransferPayload({
+    ...params,
+    nonce,
     expiresAt,
-    expiresInSeconds: Math.floor(ACTION_TTL_MS / 1000),
-  };
+  });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'TRANSFER_TICKET',
+    payload,
+  );
 }
 
 async function attachWebAuthnChallenge(userId, actionId, challenge, context) {
@@ -102,7 +149,16 @@ async function consumeWebAuthnChallenge(userId, actionId) {
   };
 }
 
-async function consumeVerifiedAction(userId, actionId, expectedPayloadHash) {
+async function consumeVerifiedAction(
+  userId,
+  actionId,
+  expectedPayloadHash,
+  expectedActionType,
+) {
+  if (!['ENTRY', 'TRANSFER_TICKET'].includes(expectedActionType)) {
+    throw new Error('action_authorization_invalid');
+  }
+
   const { rows } = await db.query(
     `UPDATE action_authorizations
         SET verified_at = NOW(),
@@ -110,13 +166,13 @@ async function consumeVerifiedAction(userId, actionId, expectedPayloadHash) {
       WHERE id = $1
         AND user_id = $2
         AND payload_hash = $3
-        AND action_type = 'ENTRY'
+        AND action_type = $4
         AND challenge_consumed_at IS NOT NULL
         AND verified_at IS NULL
         AND consumed_at IS NULL
         AND expires_at > NOW()
       RETURNING id, action_type, payload_hash, payload_json, verified_at, consumed_at`,
-    [actionId, userId, expectedPayloadHash],
+    [actionId, userId, expectedPayloadHash, expectedActionType],
   );
 
   if (!rows.length) throw new Error('action_authorization_invalid');
@@ -133,6 +189,7 @@ async function consumeVerifiedAction(userId, actionId, expectedPayloadHash) {
 
 module.exports = {
   createEntryRequest,
+  createTicketTransferRequest,
   attachWebAuthnChallenge,
   consumeWebAuthnChallenge,
   consumeVerifiedAction,

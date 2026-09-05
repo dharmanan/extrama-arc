@@ -96,6 +96,14 @@ app.use((error, req, res, next) => {
     'entry_transaction_failed',
     'entry_event_missing',
     'entry_postcondition_failed',
+    'transfer_destination_same',
+    'transfer_ticket_not_supported',
+    'transfer_ticket_not_found',
+    'transfer_not_ticket_owner',
+    'transfer_insufficient_gas',
+    'transfer_wallet_mismatch',
+    'transfer_transaction_failed',
+    'transfer_postcondition_failed',
   ]);
 
   if (safeKnownErrors.has(error.message)) {

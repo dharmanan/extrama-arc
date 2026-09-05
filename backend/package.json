@@ -7,7 +7,7 @@
     "dev": "node --watch src/server.js",
     "start": "npm run db:migrate && node src/server.js",
     "db:migrate": "node src/migrate.js",
-    "check": "node --check src/server.js && node --check src/config.js && node --check src/db.js && node --check src/migrate.js && node --check src/middleware/auth.js && node --check src/routes/auth.js && node --check src/routes/wallet.js && node --check src/routes/rounds.js && node --check src/routes/actions.js && node --check src/services/cryptoService.js && node --check src/services/arcService.js && node --check src/services/passkeyService.js && node --check src/services/actionAuthorizationService.js && node --check src/services/entryExecutionService.js && node --check src/services/sessionService.js && node --check src/services/walletService.js",
+    "check": "node --check src/server.js && node --check src/config.js && node --check src/db.js && node --check src/migrate.js && node --check src/middleware/auth.js && node --check src/routes/auth.js && node --check src/routes/wallet.js && node --check src/routes/rounds.js && node --check src/routes/actions.js && node --check src/services/cryptoService.js && node --check src/services/arcService.js && node --check src/services/passkeyService.js && node --check src/services/actionAuthorizationService.js && node --check src/services/entryExecutionService.js && node --check src/services/ticketTransferExecutionService.js && node --check src/services/sessionService.js && node --check src/services/walletService.js",
     "verify:rounds": "node scripts/verify-rounds.js"
   },
   "engines": {

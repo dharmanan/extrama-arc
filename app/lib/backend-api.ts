@@ -153,6 +153,45 @@ export type EntryActionFinishResponse = {
   result: EntryExecutionResult;
 };
 
+export type TicketTransferActionPayload = {
+  action: "TRANSFER_TICKET";
+  chainId: 5042002;
+  contract: string;
+  tokenId: string;
+  from: string;
+  destination: string;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type TicketTransferActionStartResponse = {
+  actionId: string;
+  action: TicketTransferActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type TicketTransferExecutionResult = {
+  chainId: 5042002;
+  walletAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  destinationAddress: string;
+  ownerBefore: string;
+  ownerAfter: string;
+  transferTxHash: string;
+  explorerUrl: string;
+};
+
+export type TicketTransferActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  result: TicketTransferExecutionResult;
+};
+
 export function isAuthSessionError(cause: unknown) {
   const message = cause instanceof Error ? cause.message : String(cause ?? "");
   return (
@@ -250,6 +289,19 @@ export const backendApi = {
     },
     finishEntry(actionId: string, credential: unknown) {
       return post<EntryActionFinishResponse>("/actions/entry/finish", {
+        actionId,
+        credential,
+      });
+    },
+    startTicketTransfer(input: {
+      ticketAddress: string;
+      tokenId: string;
+      destinationAddress: string;
+    }) {
+      return post<TicketTransferActionStartResponse>("/actions/ticket-transfer/start", input);
+    },
+    finishTicketTransfer(actionId: string, credential: unknown) {
+      return post<TicketTransferActionFinishResponse>("/actions/ticket-transfer/finish", {
         actionId,
         credential,
       });
