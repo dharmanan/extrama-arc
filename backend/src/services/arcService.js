@@ -364,6 +364,8 @@ async function readStandardRounds() {
               sourceTimeIso: liveMark.sourceTimeIso,
               refreshedAtIso: liveMarks.refreshedAtIso,
               refreshIntervalSeconds: 60,
+              source: liveMark.source || 'Binance USDⓈ-M Futures Mark Price',
+              isSettlementSource: Boolean(liveMark.isSettlementSource),
             }
           : {
               available: false,
@@ -371,6 +373,8 @@ async function readStandardRounds() {
               sourceTimeIso: null,
               refreshedAtIso: liveMarks.refreshedAtIso,
               refreshIntervalSeconds: 60,
+              source: null,
+              isSettlementSource: false,
             },
         round: {
           roundId: Number(roundId),
