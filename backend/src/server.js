@@ -10,6 +10,7 @@ const db = require('./db');
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const roundRoutes = require('./routes/rounds');
+const actionRoutes = require('./routes/actions');
 const arcService = require('./services/arcService');
 
 const app = express();
@@ -61,6 +62,7 @@ app.get('/health', async (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/rounds', roundRoutes);
+app.use('/api/actions', actionRoutes);
 
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
@@ -82,6 +84,8 @@ app.use((error, req, res, next) => {
     'passkey_not_registered',
     'passkey_not_found',
     'passkey_authentication_failed',
+    'action_challenge_expired',
+    'action_authorization_invalid',
   ]);
 
   if (safeKnownErrors.has(error.message)) {

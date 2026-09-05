@@ -253,10 +253,67 @@ async function finishAuthentication(userId, credentialResponse) {
   return true;
 }
 
+
+async function startStepUpAuthentication(userId, requestOrigin) {
+  const context = resolveWebAuthnContext(requestOrigin);
+  const credentials = await getCredentials(userId, context.rpID);
+
+  if (!credentials.length) {
+    throw new Error('passkey_not_registered');
+  }
+
+  const options = await generateAuthenticationOptions({
+    rpID: context.rpID,
+    allowCredentials: credentials.map((credential) => ({
+      id: credential.id,
+      type: 'public-key',
+    })),
+    userVerification: 'required',
+  });
+
+  return { options, context };
+}
+
+async function finishStepUpAuthentication(userId, credentialResponse, saved) {
+  const credentials = await getCredentials(userId, saved.rpID);
+  const matching = credentials.find((credential) => credential.id === credentialResponse.id);
+
+  if (!matching) throw new Error('passkey_not_found');
+
+  const verification = await verifyAuthenticationResponse({
+    response: credentialResponse,
+    expectedChallenge: saved.challenge,
+    expectedOrigin: saved.origin,
+    expectedRPID: saved.rpID,
+    credential: {
+      id: matching.id,
+      publicKey: matching.publicKey,
+      counter: matching.counter,
+    },
+    requireUserVerification: true,
+  });
+
+  if (!verification.verified) {
+    throw new Error('passkey_authentication_failed');
+  }
+
+  await db.query(
+    `UPDATE passkey_credentials
+        SET counter = $1,
+            last_used_at = NOW()
+      WHERE credential_id = $2`,
+    [verification.authenticationInfo.newCounter, credentialResponse.id],
+  );
+
+  return true;
+}
+
 module.exports = {
   resolveWebAuthnContext,
   startRegistration,
   finishRegistration,
   startAuthentication,
   finishAuthentication,
+  startStepUpAuthentication,
+  finishStepUpAuthentication,
 };
