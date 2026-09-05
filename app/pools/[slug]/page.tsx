@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { AssetMark, ProductHeader } from "../../product-components";
 import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
 import { confirmEntryWithPasskey } from "../../lib/passkey-client";
+import { useCopy, useLocale } from "../../i18n";
 import {
   formatEntryCount,
   formatLocalDateTime,
@@ -20,6 +21,8 @@ function titleCase(value: string) {
 
 export default function PoolDetailPage() {
   const params = useParams<{ slug: string }>();
+  const { locale } = useLocale();
+  const t = useCopy();
   const [state, setState] = useState<LiveRoundResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -35,25 +38,32 @@ export default function PoolDetailPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
     setLoading(true);
 
-    backendApi.rounds.get(params.slug)
-      .then((result) => {
+    async function refresh() {
+      try {
+        const result = await backendApi.rounds.get(params.slug);
         if (cancelled) return;
         setState(result);
         setError("");
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         if (cancelled) return;
         setState(null);
         setError(err instanceof Error ? err.message : "Unable to read pool.");
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    }
+
+    void refresh();
+    timer = setInterval(() => {
+      void refresh();
+    }, 60_000);
 
     return () => {
       cancelled = true;
+      if (timer) clearInterval(timer);
     };
   }, [params.slug]);
 
@@ -132,7 +142,7 @@ export default function PoolDetailPage() {
     return (
       <main className="wf-page">
         <ProductHeader />
-        <section className="wf-main"><p>Loading pool…</p></section>
+        <section className="wf-main"><p>{t.readingRounds}</p></section>
       </main>
     );
   }
@@ -142,9 +152,9 @@ export default function PoolDetailPage() {
       <main className="wf-page">
         <ProductHeader />
         <section className="wf-main">
-          <h1>Pool unavailable</h1>
-          <p>We could not load the latest round data. Please try again.</p>
-          <Link href="/pools">Back to pools</Link>
+          <h1>{t.poolUnavailable}</h1>
+          <p>{t.poolUnavailableBody}</p>
+          <Link href="/pools">{t.backToPools}</Link>
         </section>
       </main>
     );
@@ -156,7 +166,7 @@ export default function PoolDetailPage() {
     <main className="wf-page">
       <ProductHeader />
       <section className="wf-main">
-        <Link href="/pools">← Back to pools</Link>
+        <Link href="/pools">← {t.backToPools}</Link>
 
         <div className="wf-two-col wf-section">
           <section className="wf-panel">
@@ -165,26 +175,37 @@ export default function PoolDetailPage() {
               {pool.asset} · {titleCase(pool.cadence)} {titleCase(pool.direction)}
             </h1>
 
-            <p>Round <b>#{pool.round.roundId}</b></p>
-            <p><b>{humanRoundStatus(pool.round.contractStatus)}</b></p>
+            <p>{t.round} <b>#{pool.round.roundId}</b></p>
+            <p><b>{humanRoundStatus(pool.round.contractStatus, locale)}</b></p>
             {pool.round.canEnter && (
               <p>
-                Predictions close {formatLocalDateTime(pool.round.entryCloseAt)}
-                {" · "}{formatTimeUntil(pool.round.entryCloseAt)}
+                {t.predictionsClose} {formatLocalDateTime(pool.round.entryCloseAt, locale)}
+                {" · "}{formatTimeUntil(pool.round.entryCloseAt, locale)}
               </p>
             )}
 
-            <p>{formatEntryCount(pool.round.entryCount)}</p>
-            <p>Prize pool: <b>{formatUsdc(pool.round.totalStakeUsdc)}</b></p>
+            <p>{formatEntryCount(pool.round.entryCount, locale)}</p>
+            <p>{t.prizePool}: <b>{formatUsdc(pool.round.totalStakeUsdc, locale)}</b></p>
 
-            <h2>Round timing</h2>
-            <p>Predictions open until {formatLocalDateTime(pool.round.entryCloseAt)}</p>
+            <dl className="wf-stats">
+              <div>
+                <dt>{pool.market.available && pool.market.markPrice ? `${Number(pool.market.markPrice).toLocaleString(locale === "tr" ? "tr-TR" : "en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : t.unavailable}</dt>
+                <dd>{t.liveMark}</dd>
+              </div>
+              <div>
+                <dt>{pool.round.lastPredictionPrice ? `${Number(pool.round.lastPredictionPrice).toLocaleString(locale === "tr" ? "tr-TR" : "en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</dt>
+                <dd>{t.latestPrediction}</dd>
+              </div>
+            </dl>
+
+            <h2>{t.roundTiming}</h2>
+            <p>{t.predictionsOpenUntil} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
             <p>
-              Price observation runs from {formatLocalDateTime(pool.round.observationStartAt)}
-              {" to "}{formatLocalDateTime(pool.round.observationEndAt)}
+              {t.observationRuns} {formatLocalDateTime(pool.round.observationStartAt, locale)}
+              {" "}{t.to}{" "}{formatLocalDateTime(pool.round.observationEndAt, locale)}
             </p>
 
-            <h2>Price source</h2>
+            <h2>{t.priceSource}</h2>
             <p><b>{pool.source}</b> · {pool.sourceSymbol}</p>
 
             <div className="wf-row">
@@ -194,18 +215,18 @@ export default function PoolDetailPage() {
                 target="_blank"
                 rel="noreferrer"
               >
-                Verify on Arc
+                {t.verifyOnArc}
               </a>
-              <Link href={`/rounds/${pool.slug}`} className="wf-action">View round</Link>
+              <Link href={`/rounds/${pool.slug}`} className="wf-action">{t.viewRound}</Link>
             </div>
           </section>
 
           <section className="wf-panel">
-            <h2>Make a prediction</h2>
-            <p>One prediction costs exactly 1 USDC.</p>
+            <h2>{t.makePrediction}</h2>
+            <p>{t.onePredictionCosts}</p>
 
             <label className="wf-field">
-              Your predicted {pool.direction === "HIGH" ? "high" : "low"} price
+              {pool.direction === "HIGH" ? t.yourPredictedHigh : t.yourPredictedLow}
               <input
                 inputMode="decimal"
                 placeholder="e.g. 68420.50"
@@ -219,10 +240,7 @@ export default function PoolDetailPage() {
               />
             </label>
 
-            <p>
-              Confirm this prediction with Touch ID, Face ID, or your device passcode.
-              Once approved, EXTREMA will submit the 1 USDC entry automatically.
-            </p>
+            <p>{t.confirmBiometric}</p>
 
             <button
               className="wf-action"
@@ -230,11 +248,11 @@ export default function PoolDetailPage() {
               onClick={handleAuthorizeEntry}
               disabled={!pool.round.canEnter || Boolean(entryBusy)}
             >
-              {entryBusy || "Confirm prediction · 1 USDC"}
+              {entryBusy || t.confirmPrediction}
             </button>
 
             {!pool.round.canEnter && (
-              <p className="wf-message">Predictions are closed for this round.</p>
+              <p className="wf-message">{t.roundClosed}</p>
             )}
 
             {entryError && (
