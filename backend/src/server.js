@@ -10,6 +10,7 @@ const db = require('./db');
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const roundRoutes = require('./routes/rounds');
+const arcService = require('./services/arcService');
 
 const app = express();
 
@@ -93,6 +94,7 @@ app.use((error, req, res, next) => {
 
 const server = app.listen(config.PORT, () => {
   console.log(`[extrema-backend] listening on :${config.PORT}`);
+  arcService.warmStandardRoundsCache();
 });
 
 async function shutdown(signal) {

@@ -7,7 +7,7 @@ const router = express.Router();
 
 router.get('/', async (req, res, next) => {
   try {
-    const state = await arcService.readStandardRounds();
+    const state = await arcService.getStandardRoundsState({ forceFresh: req.query.fresh === '1' });
     res.json(state);
   } catch (error) {
     next(error);
@@ -16,7 +16,7 @@ router.get('/', async (req, res, next) => {
 
 router.get('/:slug', async (req, res, next) => {
   try {
-    const state = await arcService.readStandardRounds();
+    const state = await arcService.getStandardRoundsState({ forceFresh: req.query.fresh === '1' });
     const pool = state.pools.find((item) => item.slug === req.params.slug);
 
     if (!pool) {

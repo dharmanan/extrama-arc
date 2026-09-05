@@ -290,9 +290,53 @@ async function readStandardRounds() {
   };
 }
 
+const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
+let standardRoundsCache = null;
+let standardRoundsCacheAt = 0;
+let standardRoundsRefreshPromise = null;
+
+async function refreshStandardRoundsCache() {
+  if (standardRoundsRefreshPromise) return standardRoundsRefreshPromise;
+
+  standardRoundsRefreshPromise = readStandardRounds()
+    .then((state) => {
+      standardRoundsCache = state;
+      standardRoundsCacheAt = Date.now();
+      return state;
+    })
+    .finally(() => {
+      standardRoundsRefreshPromise = null;
+    });
+
+  return standardRoundsRefreshPromise;
+}
+
+async function getStandardRoundsState({ forceFresh = false } = {}) {
+  const ageMs = Date.now() - standardRoundsCacheAt;
+
+  if (!forceFresh && standardRoundsCache) {
+    if (ageMs > STANDARD_ROUNDS_CACHE_TTL_MS && !standardRoundsRefreshPromise) {
+      refreshStandardRoundsCache().catch((error) => {
+        console.error('[arc-round-cache] background refresh failed', error.message);
+      });
+    }
+    return standardRoundsCache;
+  }
+
+  return refreshStandardRoundsCache();
+}
+
+function warmStandardRoundsCache() {
+  refreshStandardRoundsCache().catch((error) => {
+    console.error('[arc-round-cache] warmup failed', error.message);
+  });
+}
+
 module.exports = {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_USDC_ADDRESS,
   readArcWalletState,
   readStandardRounds,
+  getStandardRoundsState,
+  warmStandardRoundsCache,
 };

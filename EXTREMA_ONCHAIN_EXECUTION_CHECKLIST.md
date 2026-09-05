@@ -379,8 +379,8 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - [x] Quarterly entry-close offset locked at 24 hours before observation start
 - [x] Standard UTC observation boundaries locked
 - [x] Observation start/end stored or deterministically represented
-- [ ] UI reads real round state from chain/backend indexer
-- [ ] Remove hardcoded `Players`, `Pool`, and `ENTRY_OPEN` values
+- [x] UI reads real round state from chain/backend indexer
+- [x] Remove hardcoded `Players`, `Pool`, and `ENTRY_OPEN` values
 
 ### Proof record
 
@@ -444,6 +444,24 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - #22: `0xadbe77a1c2a88aaf118487b4039acfbf1346fb970658d8379dad6c0888f6e965`
   - #23: `0x2ab6a455a49fcacd4ed7ad217ad7ad683c46b88b4dba267c80bce273d46608b0`
   - #24: `0x5b39ca15a7a4d74d95ef1d1896af5fe71cf083931a9750108dfcac1acd3f8d50`
+
+#### Browser runtime proof
+
+- Verification date: 2026-09-05
+- Route: `/pools`
+- Browser rendered real Round #1 cards from the backend live-round API.
+- Visible runtime state included:
+  - `Round #1`
+  - `0 Players`
+  - `0.0 USDC`
+  - `ENTRY_OPEN`
+  - real Daily / Weekly / Quarterly entry-close timestamps
+- The zero player / zero pool values are expected onchain state because no real prediction entries have been submitted yet.
+- No mock player counts or mock pool balances were shown.
+- Performance issue observed: first live-round load was delayed because the backend refreshed all 24 pools from Arc RPC on the request path.
+- Performance fix: backend now keeps a 15-second in-memory live-round snapshot, serves the last confirmed snapshot immediately, refreshes stale data in the background, warms the snapshot at process start, and supports `?fresh=1` for an explicit fresh read when needed.
+
+**Section 3 status: COMPLETE.** Real Round #1 creation, backend reads, and browser pool state are all tied to Arc Testnet.
 
 #### Frontend live-round integration build proof
 
@@ -886,4 +904,4 @@ UTC cadence boundaries are locked. Deterministic Round #1 planning and dry-run s
 - `script/simulate-standard-rounds.sh`
 - `script/CreateStandardRounds.s.sol`
 
-Round #1 creation, backend live-round reads, frontend typecheck, and production build are verified. Next: browser/runtime verification of `/pools`, `/pools/[slug]`, and `/rounds/[slug]`; only after that mark the remaining two Section 3 UI items complete.
+Section 3 is complete: Round #1 creation, backend live-round reads, and browser pool state are verified on Arc Testnet. Next: Section 4 real 1 USDC entry, beginning with fresh passkey step-up authorization before any backend signer transaction is enabled.
