@@ -536,11 +536,11 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 # 4. Real 1 USDC prediction entry
 
-- [ ] Entry amount is exactly 1 USDC
-- [ ] User must have sufficient real Arc Testnet USDC
+- [x] Entry amount is exactly 1 USDC
+- [x] User must have sufficient real Arc Testnet USDC
 - [ ] Approval/permit/transfer flow finalized
-- [ ] Fresh passkey step-up required before backend signs
-- [ ] Prediction is submitted in a real Arc Testnet transaction
+- [x] Fresh passkey step-up required before backend signs
+- [x] Prediction is submitted in a real Arc Testnet transaction
 - [ ] Contract stores:
   - `roundId`
   - entrant wallet
@@ -549,7 +549,7 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
   - ticket ID
   - 1 USDC stake
 - [ ] Pool balance increases by exactly 1 USDC
-- [ ] Player count increases by exactly 1
+- [x] Player count increases by exactly 1
 - [ ] Same wallet cannot enter same round twice
 - [ ] Same exact prediction price cannot be taken twice in same round
 - [ ] Entry after close is rejected
@@ -557,16 +557,35 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 
 ### Proof record
 
-- Round ID:
+#### First real entry — partial proof
+
+- Verification date: 2026-09-05
+- Pool: ETH Daily Low
+- Pool contract: `0x490A5CE02E3fd85d51095A69AAE9511552d91095`
+- Round ID: `1`
+- Prediction: `1976.98 USD` (`197698` cents)
+- Fresh device confirmation: PASS (fingerprint/passkey prompt completed)
+- Backend transaction path: reached real Arc Testnet execution
+- Immediate UI response incorrectly surfaced `entry_postcondition_failed`; root cause was the wallet postcondition assuming exactly 1 USDC balance reduction even though Arc gas is also paid from the same underlying USDC balance.
+- Postcondition fix commit: `309352cdd9a2d8de0f2d848024dd99f6ebfda661`
+- Fresh onchain round read after the submission:
+  - `entryCount = 1`
+  - `totalStakeRaw = 1000000`
+  - `totalStakeUsdc = 1.0`
+  - `escrowRemainingRaw = 1000000`
+  - `escrowRemainingUsdc = 1.0`
+- This proves the first real prediction transaction landed despite the stale postcondition error response.
+- Exact event tx hash, ticket ID/owner, pool ERC-20 balance, entry sequence, and stored prediction are the next read-only verification step before closing the remaining Section 4 proof items.
+
 - EXTREMA wallet:
-- Prediction:
 - USDC balance before:
 - Pool USDC before:
 - Entry tx:
 - Explorer:
 - USDC balance after:
 - Pool USDC after:
-- Player count after:
+- Ticket ID:
+- Entry sequence:
 - Verification:
 
 ---
