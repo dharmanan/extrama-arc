@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { AssetMark, ProductHeader } from "../product-components";
-import { backendApi, type OwnedTicket, type OwnedTicketsResponse } from "../lib/backend-api";
+import { backendApi, isAuthSessionError, type OwnedTicket, type OwnedTicketsResponse } from "../lib/backend-api";
 import { humanRoundStatus } from "../lib/display";
+import { authenticatePasskey } from "../lib/passkey-client";
+import { useAccount } from "wagmi";
 
 function titleCase(value: string) {
   return value.charAt(0) + value.slice(1).toLowerCase();
@@ -29,33 +31,57 @@ function ticketState(ticket: OwnedTicket) {
 }
 
 export default function TicketsPage() {
+  const { address: ownerAddress, isConnected } = useAccount();
   const [state, setState] = useState<OwnedTicketsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authBusy, setAuthBusy] = useState("");
+
+  const loadTickets = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await backendApi.wallet.tickets();
+      setState(result);
+      setError("");
+      setAuthRequired(false);
+    } catch (cause) {
+      setState(null);
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
+        setError("");
+      } else {
+        setAuthRequired(false);
+        setError(cause instanceof Error ? cause.message : "Unable to load tickets.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    void loadTickets();
+  }, [loadTickets]);
 
-    backendApi.wallet.tickets()
-      .then((result) => {
-        if (cancelled) return;
-        setState(result);
+  async function handleAuthenticate() {
+    if (!ownerAddress) return;
+
+    setAuthBusy("Authenticating with passkey...");
+    setError("");
+    try {
+      await authenticatePasskey(ownerAddress);
+      await loadTickets();
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
         setError("");
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setState(null);
-        const message = cause instanceof Error ? cause.message : "Unable to load tickets.";
-        setError(message);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+      } else {
+        setError(cause instanceof Error ? cause.message : "Passkey authentication failed.");
+      }
+    } finally {
+      setAuthBusy("");
+    }
+  }
 
   return (
     <main className="wf-page">
@@ -66,15 +92,32 @@ export default function TicketsPage() {
 
         {loading && <p>Loading your onchain tickets…</p>}
 
-        {!loading && error && (
+        {!loading && authRequired && (
           <section className="wf-panel wf-section">
-            <h2>Wallet access required</h2>
-            <p>
-              {error === "authentication_required" || error === "session_expired"
-                ? "Reconnect your EXTREMA wallet to read ticket ownership."
-                : "We could not read your tickets from Arc Testnet."}
-            </p>
-            <Link className="wf-action" href="/wallet">Open wallet</Link>
+            <h2>Session expired</h2>
+            <p>Authenticate with your passkey to load your onchain tickets.</p>
+            {isConnected && ownerAddress ? (
+              <button
+                className="wf-action"
+                type="button"
+                onClick={handleAuthenticate}
+                disabled={Boolean(authBusy)}
+              >
+                {authBusy || "Authenticate with passkey"}
+              </button>
+            ) : (
+              <Link className="wf-action" href="/wallet">Connect owner wallet</Link>
+            )}
+          </section>
+        )}
+
+        {!loading && !authRequired && error && (
+          <section className="wf-panel wf-section">
+            <h2>Tickets unavailable</h2>
+            <p>We could not read your tickets from Arc Testnet.</p>
+            <button className="wf-action" type="button" onClick={() => void loadTickets()}>
+              Try again
+            </button>
           </section>
         )}
 

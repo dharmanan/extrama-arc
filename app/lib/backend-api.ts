@@ -153,6 +153,15 @@ export type EntryActionFinishResponse = {
   result: EntryExecutionResult;
 };
 
+export function isAuthSessionError(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : String(cause ?? "");
+  return (
+    message === "authentication_required" ||
+    message === "session_expired" ||
+    message === "invalid_session"
+  );
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");

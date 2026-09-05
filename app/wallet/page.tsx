@@ -6,7 +6,7 @@ import { ProductHeader } from "../product-components";
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { arcTestnet } from "../lib/web3";
 import { shortAddress, useDemoState } from "../demo-state";
-import { backendApi } from "../lib/backend-api";
+import { backendApi, isAuthSessionError } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
 
 type Step = "owner" | "choice" | "create" | "recovery" | "ready";
@@ -36,6 +36,7 @@ export default function WalletPage() {
   const [chainBusy, setChainBusy] = useState("");
   const [chainError, setChainError] = useState("");
   const [copiedAddress, setCopiedAddress] = useState(false);
+  const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -79,8 +80,15 @@ export default function WalletPage() {
     try {
       const state = await backendApi.wallet.chainState();
       setChainState(state);
+      setSessionNeedsAuth(false);
     } catch (cause) {
-      setChainError(cause instanceof Error ? cause.message : "Arc Testnet state read failed.");
+      setChainState(null);
+      if (isAuthSessionError(cause)) {
+        setSessionNeedsAuth(true);
+        setChainError("");
+      } else {
+        setChainError(cause instanceof Error ? cause.message : "Arc Testnet state read failed.");
+      }
     } finally {
       setChainBusy("");
     }
@@ -136,6 +144,38 @@ export default function WalletPage() {
     }
   }
 
+  async function handleResumeSession() {
+    if (!ownerAddress) {
+      setStep("owner");
+      return;
+    }
+
+    setError("");
+    setChainError("");
+    setBusy("Authenticating with passkey...");
+    try {
+      await authenticatePasskey(ownerAddress);
+      const result = await backendApi.wallet.get();
+
+      if (!result.wallet?.address) {
+        throw new Error("No EXTREMA wallet exists for this owner wallet.");
+      }
+
+      createWallet(result.wallet.address);
+      setSessionNeedsAuth(false);
+      await refreshChainState();
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setSessionNeedsAuth(true);
+        setChainError("");
+      } else {
+        setChainError(cause instanceof Error ? cause.message : "Passkey authentication failed.");
+      }
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function handleReconnect() {
     if (!ownerAddress) return;
     setError("");
@@ -149,6 +189,7 @@ export default function WalletPage() {
       }
 
       createWallet(result.wallet.address);
+      setSessionNeedsAuth(false);
       setStep("ready");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Reconnect failed.");
@@ -252,7 +293,20 @@ export default function WalletPage() {
                 </button>
               </div>
 
-              {chainState ? (
+              {sessionNeedsAuth ? (
+                <section className="wf-panel wf-section">
+                  <h3>Session expired</h3>
+                  <p>Authenticate with your passkey to continue.</p>
+                  <button
+                    className="wf-action"
+                    type="button"
+                    onClick={handleResumeSession}
+                    disabled={Boolean(busy)}
+                  >
+                    {busy || "Authenticate with passkey"}
+                  </button>
+                </section>
+              ) : chainState ? (
                 <>
                   <p><b>Network:</b> {chainState.chain.name} · Chain ID {chainState.chain.id}</p>
                   <p><b>Block:</b> {chainState.chain.blockNumber}</p>
@@ -267,7 +321,7 @@ export default function WalletPage() {
                 <p>{chainBusy || "Arc Testnet balance not loaded yet."}</p>
               )}
 
-              {chainError && <p className="wf-message">{chainError}</p>}
+              {!sessionNeedsAuth && chainError && <p className="wf-message">{chainError}</p>
 
               <div className="wf-row">
                 <button className="wf-action" type="button" onClick={refreshChainState} disabled={Boolean(chainBusy)}>
