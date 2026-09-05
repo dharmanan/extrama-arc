@@ -14,6 +14,16 @@ import {
   humanRoundStatus,
 } from "./lib/display";
 
+function formatHeaderUsdc(value: string) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+
+  return new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(numeric);
+}
+
 export function ProductHeader() {
   const { wallet } = useDemoState();
   const [onchainUsdc, setOnchainUsdc] = useState<string | null>(null);
@@ -50,7 +60,7 @@ export function ProductHeader() {
       </nav>
       <Link href="/wallet" className="wf-action">
         {wallet.status === "ready" && wallet.address
-          ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${onchainUsdc} USDC` : ""}`
+          ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${formatHeaderUsdc(onchainUsdc)} USDC` : ""}`
           : "Create / Connect Wallet"}
       </Link>
     </header>
