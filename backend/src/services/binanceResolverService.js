@@ -4,7 +4,13 @@ const crypto = require('crypto');
 
 const BINANCE_USDM_BASE_URL = 'https://fapi.binance.com';
 const MARK_PRICE_KLINES_PATH = '/fapi/v1/markPriceKlines';
+const PREMIUM_INDEX_PATH = '/fapi/v1/premiumIndex';
 const MAX_LIMIT = 1500;
+const LIVE_MARK_CACHE_TTL_MS = 60_000;
+
+let liveMarkCache = null;
+let liveMarkCacheAt = 0;
+let liveMarkRefreshPromise = null;
 
 const ALLOWED_SYMBOLS = new Set([
   'BTCUSDT',
@@ -18,6 +24,99 @@ const CADENCE_INTERVALS = Object.freeze({
   WEEKLY: { interval: '15m', intervalMs: 15 * 60_000 },
   QUARTERLY: { interval: '4h', intervalMs: 4 * 60 * 60_000 },
 });
+
+async function fetchCurrentMarkPrice(symbol, fetchImpl = globalThis.fetch) {
+  if (!ALLOWED_SYMBOLS.has(symbol)) {
+    throw new Error('resolver_symbol_not_supported');
+  }
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('resolver_fetch_unavailable');
+  }
+
+  const requestUrl =
+    `${BINANCE_USDM_BASE_URL}${PREMIUM_INDEX_PATH}?symbol=${encodeURIComponent(symbol)}`;
+  const response = await fetchImpl(requestUrl, {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      'user-agent': 'EXTREMA-Market/0.1',
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(
+      `market_source_http_${response.status}:${body.slice(0, 160)}`,
+    );
+  }
+
+  const payload = await response.json();
+  if (!payload || payload.symbol !== symbol) {
+    throw new Error('market_source_response_invalid');
+  }
+
+  parsePositiveDecimal(payload.markPrice, 'mark_price');
+
+  const sourceTime = Number(payload.time);
+  if (!Number.isSafeInteger(sourceTime) || sourceTime <= 0) {
+    throw new Error('market_source_time_invalid');
+  }
+
+  return {
+    symbol,
+    markPriceRaw: payload.markPrice,
+    markPrice: payload.markPrice,
+    sourceTime,
+    sourceTimeIso: new Date(sourceTime).toISOString(),
+  };
+}
+
+async function refreshLiveMarkPrices(fetchImpl = globalThis.fetch) {
+  const symbols = Array.from(ALLOWED_SYMBOLS);
+  const entries = await Promise.all(
+    symbols.map(async (symbol) => {
+      try {
+        return [symbol, await fetchCurrentMarkPrice(symbol, fetchImpl)];
+      } catch (error) {
+        return [
+          symbol,
+          {
+            symbol,
+            unavailable: true,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        ];
+      }
+    }),
+  );
+
+  const prices = Object.fromEntries(entries);
+  const refreshedAt = Date.now();
+  liveMarkCache = {
+    source: 'Binance USDⓈ-M Futures Mark Price',
+    refreshedAt,
+    refreshedAtIso: new Date(refreshedAt).toISOString(),
+    prices,
+  };
+  liveMarkCacheAt = refreshedAt;
+  return liveMarkCache;
+}
+
+async function getLiveMarkPrices({ forceFresh = false, fetchImpl = globalThis.fetch } = {}) {
+  const ageMs = Date.now() - liveMarkCacheAt;
+  if (!forceFresh && liveMarkCache && ageMs < LIVE_MARK_CACHE_TTL_MS) {
+    return liveMarkCache;
+  }
+
+  if (!liveMarkRefreshPromise) {
+    liveMarkRefreshPromise = refreshLiveMarkPrices(fetchImpl)
+      .finally(() => {
+        liveMarkRefreshPromise = null;
+      });
+  }
+
+  return liveMarkRefreshPromise;
+}
 
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -307,6 +406,10 @@ async function resolveExtremaWindow(input) {
 module.exports = {
   BINANCE_USDM_BASE_URL,
   MARK_PRICE_KLINES_PATH,
+  PREMIUM_INDEX_PATH,
+  LIVE_MARK_CACHE_TTL_MS,
+  fetchCurrentMarkPrice,
+  getLiveMarkPrices,
   CADENCE_INTERVALS,
   fetchMarkPriceWindow,
   calculateExtrema,
