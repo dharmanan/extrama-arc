@@ -87,7 +87,7 @@ export default function WalletPage() {
         setSessionNeedsAuth(true);
         setChainError("");
       } else {
-        setChainError(cause instanceof Error ? cause.message : "Arc Testnet state read failed.");
+        setChainError("Arc Testnet balance could not be refreshed. Try again.");
       }
     } finally {
       setChainBusy("");

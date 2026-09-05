@@ -175,6 +175,7 @@ async function executeEntry(userId, payload) {
   }
 
   arcService.invalidateOwnedTicketsCache(walletAddress);
+  arcService.invalidateArcWalletStateCache(walletAddress);
 
   arcService.refreshStandardRoundsCache().catch((error) => {
     console.error('[arc-round-cache] post-entry refresh failed', error.message);

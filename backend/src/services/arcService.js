@@ -146,17 +146,23 @@ async function mapWithConcurrency(items, limit, mapper) {
   return results;
 }
 
+const ARC_WALLET_STATE_CACHE_TTL_MS = 10_000;
+const arcWalletStateCache = new Map();
+const arcWalletStateRefreshPromises = new Map();
+
 async function readArcWalletState(address) {
   if (!ethers.isAddress(address)) {
     throw new Error('invalid_wallet_address');
   }
 
+  const owner = ethers.getAddress(address);
   const provider = getProvider();
+
   const [network, blockNumber, code, nativeBalanceRaw] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlockNumber(),
-    provider.getCode(ARC_TESTNET_USDC_ADDRESS),
-    provider.getBalance(address),
+    rpcRead(() => provider.getNetwork()),
+    rpcRead(() => provider.getBlockNumber()),
+    rpcRead(() => provider.getCode(ARC_TESTNET_USDC_ADDRESS)),
+    rpcRead(() => provider.getBalance(owner)),
   ]);
 
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
@@ -169,10 +175,10 @@ async function readArcWalletState(address) {
 
   const usdc = new ethers.Contract(ARC_TESTNET_USDC_ADDRESS, USDC_ABI, provider);
   const [balanceRaw, decimals, symbol, name] = await Promise.all([
-    usdc.balanceOf(address),
-    usdc.decimals(),
-    usdc.symbol(),
-    usdc.name(),
+    rpcRead(() => usdc.balanceOf(owner)),
+    rpcRead(() => usdc.decimals()),
+    rpcRead(() => usdc.symbol()),
+    rpcRead(() => usdc.name()),
   ]);
 
   return {
@@ -199,10 +205,59 @@ async function readArcWalletState(address) {
       contractCodePresent: true,
     },
     wallet: {
-      address: ethers.getAddress(address),
-      explorerUrl: `https://testnet.arcscan.app/address/${ethers.getAddress(address)}`,
+      address: owner,
+      explorerUrl: `https://testnet.arcscan.app/address/${owner}`,
     },
   };
+}
+
+async function refreshArcWalletStateCache(address) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const key = ethers.getAddress(address).toLowerCase();
+  const existing = arcWalletStateRefreshPromises.get(key);
+  if (existing) return existing;
+
+  const refreshPromise = readArcWalletState(address)
+    .then((state) => {
+      arcWalletStateCache.set(key, {
+        state,
+        cachedAt: Date.now(),
+      });
+      return state;
+    })
+    .finally(() => {
+      arcWalletStateRefreshPromises.delete(key);
+    });
+
+  arcWalletStateRefreshPromises.set(key, refreshPromise);
+  return refreshPromise;
+}
+
+async function getArcWalletState(address, { forceFresh = false } = {}) {
+  if (!ethers.isAddress(address)) {
+    throw new Error('invalid_wallet_address');
+  }
+
+  const key = ethers.getAddress(address).toLowerCase();
+  const cached = arcWalletStateCache.get(key);
+
+  if (
+    !forceFresh &&
+    cached &&
+    Date.now() - cached.cachedAt <= ARC_WALLET_STATE_CACHE_TTL_MS
+  ) {
+    return cached.state;
+  }
+
+  return refreshArcWalletStateCache(address);
+}
+
+function invalidateArcWalletStateCache(address) {
+  if (!ethers.isAddress(address)) return;
+  arcWalletStateCache.delete(ethers.getAddress(address).toLowerCase());
 }
 
 async function readStandardRounds() {
@@ -560,6 +615,8 @@ module.exports = {
   ARC_TESTNET_USDC_ADDRESS,
   getArcProvider: getProvider,
   readArcWalletState,
+  getArcWalletState,
+  invalidateArcWalletStateCache,
   readOwnedTickets,
   getOwnedTicketsState,
   invalidateOwnedTicketsCache,

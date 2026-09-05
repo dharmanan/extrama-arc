@@ -25,7 +25,7 @@ router.get('/chain-state', async (req, res, next) => {
       return res.status(404).json({ error: 'wallet_not_found' });
     }
 
-    const state = await arcService.readArcWalletState(wallet.address);
+    const state = await arcService.getArcWalletState(wallet.address);
     res.json(state);
   } catch (error) {
     next(error);
