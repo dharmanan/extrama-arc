@@ -16,6 +16,14 @@ const schema = z.object({
   ALLOW_CODESPACE_ORIGINS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
   EXTREMA_FACTORY_ADDRESS: z.string().default("0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A"),
+  // AES-256-GCM envelope (v1.iv.ct.tag) of the resolver private key, produced
+  // with the same ENCRYPTION_KEY used for wallet material. Optional: when it is
+  // absent, resolver signing stays disabled and the rest of the lifecycle runs
+  // normally. Plaintext key material is never accepted here.
+  EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED: z
+    .string()
+    .regex(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, 'must be a v1 AES-256-GCM envelope')
+    .optional(),
 });
 
 const parsed = schema.safeParse(process.env);

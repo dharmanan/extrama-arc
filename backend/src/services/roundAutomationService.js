@@ -6,11 +6,14 @@ const db = require('../db');
 const { decrypt } = require('./cryptoService');
 const arcService = require('./arcService');
 const { resolveExtremaWindow } = require('./binanceResolverService');
+const resolverSignerService = require('./resolverSignerService');
 
 const ARC_CHAIN_ID = 5042002n;
 const MIN_ENTRIES = 3;
 const STATUS_ENTRY_OPEN = 0;
 const STATUS_LOCKED = 1;
+const STATUS_SETTLED = 2;
+const STATUS_CANCELLED = 3;
 
 // How far back to look for rounds still owed a lifecycle transition.
 const ROUND_SCAN_DEPTH = 12n;
@@ -43,6 +46,9 @@ const POOL_ABI = [
   'function nextRoundId() view returns (uint256)',
   'function createRound(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt) returns (uint256)',
   'function lockRound(uint256 roundId)',
+  'function resolver() view returns (address)',
+  'function cancelRound(uint256 roundId)',
+  'function settleRound(uint256 roundId,uint64 resolvedPriceCents)',
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
 ];
 
@@ -529,6 +535,199 @@ async function collectResolverActionsInternal(dueCancel, dueSettle) {
   return pending;
 }
 
+// Canonical Binance historical evidence for one round. Any gap or validation
+// failure in the source window raises resolver_data_incomplete, which must
+// prevent settlement rather than settle on partial data.
+async function buildSettlementEvidence(item) {
+  const { topology, round } = item;
+  const observationStartAt = new Date(Number(round.observationStartAt) * 1000).toISOString();
+  const observationEndAt = new Date(Number(round.observationEndAt) * 1000).toISOString();
+
+  let resolved;
+  try {
+    resolved = await resolveExtremaWindow({
+      symbol: RESOLVER_SYMBOLS[topology.asset],
+      cadence: topology.cadence,
+      observationStartAt,
+      observationEndAt,
+    });
+  } catch (error) {
+    const reason = new Error('resolver_data_incomplete');
+    reason.detail = error.message;
+    throw reason;
+  }
+
+  const side = topology.direction === 'HIGH' ? resolved.high : resolved.low;
+  if (!side || !/^[1-9][0-9]*$/.test(String(side.resolvedPriceCents))) {
+    throw new Error('resolver_data_incomplete');
+  }
+
+  return {
+    slug: slugOf(topology),
+    poolAddress: topology.poolAddress,
+    roundId: Number(item.roundId),
+    symbol: RESOLVER_SYMBOLS[topology.asset],
+    cadence: topology.cadence,
+    direction: topology.direction,
+    observationStartAt,
+    observationEndAt,
+    interval: resolved.interval,
+    resolvedPriceCents: String(side.resolvedPriceCents),
+    evidenceSha256: resolved.evidenceSha256,
+  };
+}
+
+// A send is never repeated. If the broadcast outcome is uncertain, onchain
+// state decides whether the transition already landed.
+async function sendOnceWithReconciliation({ send, hasLanded, label }) {
+  try {
+    const tx = await send();
+    const receipt = await tx.wait();
+    if (!receipt || receipt.status !== 1) throw new Error(`${label}_transaction_failed`);
+    return { txHash: tx.hash, reconciled: false };
+  } catch (error) {
+    const landed = await hasLanded().catch(() => false);
+    if (landed) return { txHash: null, reconciled: true };
+    throw error;
+  }
+}
+
+// Executes one resolver-authorized transition. Every call re-reads the live
+// resolver role and the live round immediately before writing, so a stale scan
+// can never cause a premature or duplicate transition.
+async function executeResolverAction(provider, now, item, signer) {
+  const context = { provider, address: item.topology.poolAddress };
+  const slug = slugOf(item.topology);
+  const roundId = Number(item.roundId);
+
+  const onchainResolver = ethers.getAddress(
+    await safeRead(() => item.pool.resolver(), context),
+  );
+  if (onchainResolver.toLowerCase() !== signer.address.toLowerCase()) {
+    throw new Error('resolver_signer_mismatch');
+  }
+
+  const round = await safeRead(() => item.pool.getRound(item.roundId), context);
+  const status = Number(round.status);
+  const entryCount = Number(round.entryCount);
+
+  // Another instance may have completed this already.
+  if (status === STATUS_CANCELLED || status === STATUS_SETTLED) {
+    return { slug, roundId, action: 'noop', reason: 'already_terminal' };
+  }
+  if (status !== STATUS_LOCKED || now < round.observationEndAt) {
+    return { slug, roundId, action: 'noop', reason: 'not_eligible' };
+  }
+
+  const writable = item.pool.connect(signer);
+
+  if (entryCount < MIN_ENTRIES) {
+    const result = await sendOnceWithReconciliation({
+      label: 'cancel',
+      send: () => writable.cancelRound(item.roundId),
+      hasLanded: async () => {
+        const after = await safeRead(() => item.pool.getRound(item.roundId), context);
+        return Number(after.status) === STATUS_CANCELLED;
+      },
+    });
+
+    const after = await safeRead(() => item.pool.getRound(item.roundId), context);
+    if (Number(after.status) !== STATUS_CANCELLED) {
+      throw new Error('cancel_postcondition_failed');
+    }
+
+    return { slug, roundId, action: 'cancelled', entryCount, ...result };
+  }
+
+  // Settlement evidence is built before the write and must be complete.
+  const evidence = await buildSettlementEvidence(item);
+  const resolvedPriceCents = BigInt(evidence.resolvedPriceCents);
+
+  const result = await sendOnceWithReconciliation({
+    label: 'settle',
+    send: () => writable.settleRound(item.roundId, resolvedPriceCents),
+    hasLanded: async () => {
+      const after = await safeRead(() => item.pool.getRound(item.roundId), context);
+      return (
+        Number(after.status) === STATUS_SETTLED &&
+        after.resolvedPriceCents === resolvedPriceCents
+      );
+    },
+  });
+
+  const after = await safeRead(() => item.pool.getRound(item.roundId), context);
+  if (
+    Number(after.status) !== STATUS_SETTLED ||
+    after.resolvedPriceCents !== resolvedPriceCents
+  ) {
+    throw new Error('settle_postcondition_failed');
+  }
+
+  return {
+    slug,
+    roundId,
+    action: 'settled',
+    entryCount,
+    resolvedPriceCents: evidence.resolvedPriceCents,
+    evidenceSha256: evidence.evidenceSha256,
+    ...result,
+  };
+}
+
+// Runs every eligible resolver action independently: one failing pool or one
+// unavailable price feed must not block the others.
+async function executeResolverActionsInternal(provider, now, dueCancel, dueSettle) {
+  const due = [...dueCancel, ...dueSettle];
+
+  if (due.length === 0) {
+    return { executed: [], failures: [], skipped: true, reason: 'no_resolver_actions_due' };
+  }
+
+  if (!resolverSignerService.isResolverSigningConfigured()) {
+    resolverSignerService.warnIfUnconfigured();
+    return {
+      executed: [],
+      failures: [],
+      skipped: true,
+      reason: 'resolver_signing_not_configured',
+      pending: await collectResolverActionsInternal(dueCancel, dueSettle),
+    };
+  }
+
+  let signer;
+  try {
+    signer = resolverSignerService.getResolverSigner(provider);
+  } catch (error) {
+    return {
+      executed: [],
+      failures: [],
+      skipped: true,
+      reason: error.message,
+    };
+  }
+
+  const executed = [];
+  const failures = [];
+
+  for (const item of due) {
+    try {
+      const outcome = await executeResolverAction(provider, now, item, signer);
+      if (outcome.action !== 'noop') executed.push(outcome);
+    } catch (error) {
+      failures.push({
+        slug: slugOf(item.topology),
+        poolAddress: item.topology.poolAddress,
+        roundId: Number(item.roundId),
+        action: Number(item.round.entryCount) < MIN_ENTRIES ? 'cancelRound' : 'settleRound',
+        reason: error.message,
+        detail: error.detail,
+      });
+    }
+  }
+
+  return { executed, failures, skipped: false };
+}
+
 function resolverSignature(pending) {
   return pending
     .map((item) => `${item.action}:${item.slug}#${item.roundId}:${item.resolvedPriceCents || ''}`)
@@ -547,14 +746,18 @@ async function runLifecycleInternal() {
 
   // Locking may have just made rounds eligible for a resolver transition, but
   // those only become due once observation ends, so re-scanning here would not
-  // change the outcome. Report what the pre-lock scan already established.
-  const pendingResolverActions = await collectResolverActionsInternal(dueCancel, dueSettle);
+  // change the outcome. Act on what the pre-lock scan already established.
+  const resolver = await executeResolverActionsInternal(provider, now, dueCancel, dueSettle);
+
+  if (resolver.executed.length > 0) {
+    await arcService.refreshStandardRoundsCache();
+  }
 
   return {
     chainTimestamp: Number(now),
     created,
     lock,
-    pendingResolverActions,
+    resolver,
     readFailures,
   };
 }
@@ -621,16 +824,39 @@ function runAndLog() {
         console.warn('[round-automation] pools skipped on unreadable state', JSON.stringify(result.readFailures));
       }
 
-      // Resolver work needs an operator key this process does not hold, so log
-      // it only when the pending set changes rather than once a minute.
-      const pending = result.pendingResolverActions || [];
-      const signature = resolverSignature(pending);
-      if (signature !== lastResolverSignature) {
-        lastResolverSignature = signature;
-        if (pending.length) {
+      for (const item of result.resolver?.executed || []) {
+        if (item.action === 'cancelled') {
+          console.log(
+            '[round-automation] round cancelled',
+            JSON.stringify({ slug: item.slug, roundId: item.roundId, txHash: item.txHash }),
+          );
+        } else if (item.action === 'settled') {
+          console.log(
+            '[round-automation] round settled',
+            JSON.stringify({
+              slug: item.slug,
+              roundId: item.roundId,
+              resolvedPriceCents: item.resolvedPriceCents,
+              evidenceSha256: item.evidenceSha256,
+              txHash: item.txHash,
+            }),
+          );
+        }
+      }
+
+      for (const failure of result.resolver?.failures || []) {
+        console.error('[round-automation] resolver action failed', JSON.stringify(failure));
+      }
+
+      // When signing is unavailable the work is still detected. Log it only
+      // when the pending set changes rather than once a minute.
+      if (result.resolver?.skipped && result.resolver.pending?.length) {
+        const signature = resolverSignature(result.resolver.pending);
+        if (signature !== lastResolverSignature) {
+          lastResolverSignature = signature;
           console.warn(
-            '[round-automation] resolver action required (not signed by backend)',
-            JSON.stringify(pending),
+            '[round-automation] resolver action skipped',
+            JSON.stringify({ reason: result.resolver.reason, pending: result.resolver.pending }),
           );
         }
       }
@@ -663,6 +889,7 @@ function stopRoundAutomation() {
 module.exports = {
   currentDailySchedule,
   ensureCurrentDailyRounds,
+  executeResolverAction,
   previewLifecycle,
   runLifecycle,
   startRoundAutomation,
