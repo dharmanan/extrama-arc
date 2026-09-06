@@ -8,6 +8,7 @@ const settlementEvidenceService = require('./settlementEvidenceService');
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
 const ARCHIVE_RETENTION_SECONDS = 90 * 24 * 60 * 60;
+const MAX_ROUND_ENTRY_READS = 200;
 
 const USDC_ABI = [
   'function balanceOf(address account) view returns (uint256)',
@@ -95,6 +96,11 @@ function toIso(seconds) {
 
 function slugify(asset, cadence, direction) {
   return `${asset.toLowerCase()}-${cadence.toLowerCase()}-${direction.toLowerCase()}`;
+}
+
+function formatCents(cents) {
+  const value = BigInt(cents);
+  return `${value / 100n}.${(value % 100n).toString().padStart(2, '0')}`;
 }
 
 function sleep(ms) {
@@ -1355,6 +1361,137 @@ async function readRoundResult({ slug, roundId }) {
   };
 }
 
+// Read-only prediction distribution for one round. Every price returned here
+// is an onchain entry read through entries(); nothing is derived, smoothed or
+// invented. A round with no tickets returns an empty list, which the client
+// states as "no predictions yet" rather than drawing an empty shape.
+//
+// originalEntrant is the immutable entrant recorded by the contract, not the
+// current ticket owner, so a transferred ticket still attributes its price to
+// whoever actually made the prediction.
+async function readRoundEntries({ slug, roundId }) {
+  if (
+    typeof slug !== 'string' ||
+    !Number.isSafeInteger(roundId) ||
+    roundId <= 0
+  ) {
+    throw new Error('round_entries_request_invalid');
+  }
+
+  const topology = ARC_POOL_TOPOLOGY.find(
+    (item) => slugify(item.asset, item.cadence, item.direction) === slug,
+  );
+  if (!topology) throw new Error('round_entries_not_supported');
+
+  const provider = getProvider();
+  const network = await rpcRead(() => provider.getNetwork());
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+
+  const poolAddress = ethers.getAddress(topology.poolAddress);
+  const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+
+  let round;
+  try {
+    round = await rpcRead(() => pool.getRound(roundId));
+  } catch {
+    throw new Error('round_entries_not_found');
+  }
+
+  if (Number(round.entryOpenAt) === 0) {
+    throw new Error('round_entries_not_found');
+  }
+
+  const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+  if (!contractStatus) throw new Error('extrema_round_status_invalid');
+
+  const allTicketIds = Array.from(
+    await rpcRead(() => pool.getRoundTicketIds(roundId)),
+    (id) => BigInt(id),
+  ).filter((id) => id !== 0n);
+  // The contract can grow this array without a protocol-level cap. Bound the
+  // secondary entries() reads per HTTP request; an oversized result remains
+  // explicitly incomplete instead of creating unbounded RPC work.
+  const ticketIds = allTicketIds.slice(0, MAX_ROUND_ENTRY_READS);
+
+  // One aggregated read where Multicall3 is present, an ordinary bounded
+  // fan-out where it is not. Either way a failed entries() read drops that
+  // one entry instead of fabricating a price for it.
+  let decodedEntries;
+  if (ticketIds.length === 0) {
+    decodedEntries = [];
+  } else if (await hasMulticall3(provider)) {
+    const results = await readMulticall3InChunks(
+      provider,
+      ticketIds.map((ticketId) => ({
+        target: poolAddress,
+        allowFailure: true,
+        callData: POOL_INTERFACE.encodeFunctionData('entries', [ticketId]),
+      })),
+    );
+    decodedEntries = results.map((result) =>
+      decodeMulticallResult(POOL_INTERFACE, 'entries', result),
+    );
+  } else {
+    decodedEntries = await mapWithConcurrency(ticketIds, 4, async (ticketId) => {
+      try {
+        return await rpcRead(() => pool.entries(ticketId));
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  const entries = [];
+  decodedEntries.forEach((decoded, index) => {
+    if (!decoded) return;
+    // entries() declares five flat output parameters, not one tuple, so the
+    // decoded result is read by name off the top level.
+    if (BigInt(decoded.roundId) !== BigInt(roundId)) return;
+    if (BigInt(decoded.ticketId) !== ticketIds[index]) return;
+
+    const predictionPriceCents = BigInt(decoded.predictionPriceCents);
+    entries.push({
+      ticketId: ticketIds[index].toString(),
+      originalEntrant: ethers.getAddress(decoded.originalEntrant),
+      predictionPriceCents: predictionPriceCents.toString(),
+      predictionPrice: formatCents(predictionPriceCents),
+      entrySequence: Number(decoded.entrySequence),
+    });
+  });
+
+  entries.sort((a, b) => a.entrySequence - b.entrySequence);
+
+  return {
+    chain: {
+      id: Number(network.chainId),
+      name: 'Arc Testnet',
+      explorerUrl: 'https://testnet.arcscan.app',
+    },
+    pool: {
+      slug,
+      poolAddress,
+      asset: topology.asset,
+      direction: topology.direction,
+      cadence: topology.cadence,
+      sourceSymbol: SOURCE_SYMBOLS[topology.asset],
+    },
+    round: {
+      roundId,
+      contractStatus,
+      entryCount: Number(round.entryCount),
+      // A read that could not resolve every ticket is stated, not hidden:
+      // the client can then avoid presenting a partial set as complete.
+      readCount: entries.length,
+      complete:
+        BigInt(allTicketIds.length) === BigInt(round.entryCount) &&
+        entries.length === allTicketIds.length,
+    },
+    entries,
+  };
+}
+
 // Read-only public settlement proof. Compares durably persisted settlement
 // evidence against the live onchain round. Never fabricates or re-derives
 // evidence: a SETTLED round with no persisted evidence is reported as
@@ -1725,6 +1862,7 @@ module.exports = {
   readClaimAuthorizationState,
   readRefundAuthorizationState,
   readRoundResult,
+  readRoundEntries,
   readRoundVerification,
   readRoundArchive,
   readStandardRounds,

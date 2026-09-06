@@ -1,9 +1,17 @@
 'use strict';
 
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
 const arcService = require('../services/arcService');
 
 const router = express.Router();
+
+const entriesLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 12,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+});
 
 router.get('/', async (req, res, next) => {
   try {
@@ -47,6 +55,33 @@ router.get('/:slug/:roundId/result', async (req, res, next) => {
     if (
       error.message === 'round_result_not_found' ||
       error.message === 'round_result_not_supported'
+    ) {
+      return res.status(404).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
+router.get('/:slug/:roundId/entries', entriesLimiter, async (req, res, next) => {
+  try {
+    if (!/^[1-9][0-9]*$/.test(req.params.roundId)) {
+      return res.status(400).json({ error: 'round_entries_request_invalid' });
+    }
+    const roundId = Number(req.params.roundId);
+    if (!Number.isSafeInteger(roundId) || roundId <= 0) {
+      return res.status(400).json({ error: 'round_entries_request_invalid' });
+    }
+
+    const result = await arcService.readRoundEntries({
+      slug: req.params.slug,
+      roundId,
+    });
+
+    res.json(result);
+  } catch (error) {
+    if (
+      error.message === 'round_entries_not_found' ||
+      error.message === 'round_entries_not_supported'
     ) {
       return res.status(404).json({ error: error.message });
     }

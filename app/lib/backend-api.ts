@@ -112,6 +112,38 @@ export type ArchiveResponse = {
   rounds: ArchiveRound[];
 };
 
+export type RoundEntry = {
+  ticketId: string;
+  originalEntrant: string;
+  predictionPriceCents: string;
+  predictionPrice: string;
+  entrySequence: number;
+};
+
+export type RoundEntriesResponse = {
+  chain: {
+    id: number;
+    name: string;
+    explorerUrl: string;
+  };
+  pool: {
+    slug: string;
+    poolAddress: string;
+    asset: Asset;
+    direction: "HIGH" | "LOW";
+    cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+    sourceSymbol: string;
+  };
+  round: {
+    roundId: number;
+    contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
+    entryCount: number;
+    readCount: number;
+    complete: boolean;
+  };
+  entries: RoundEntry[];
+};
+
 export type RoundVerificationIntegrity = {
   evidenceHashValid: boolean;
   poolIdentityMatches: boolean;
@@ -595,6 +627,11 @@ export const backendApi = {
     },
     archive(days = 90) {
       return request<ArchiveResponse>(`/rounds/archive?days=${days}`);
+    },
+    entries(slug: string, roundId: number) {
+      return request<RoundEntriesResponse>(
+        `/rounds/${encodeURIComponent(slug)}/${roundId}/entries`,
+      );
     },
     verification(slug: string, roundId: number) {
       return request<RoundVerificationResponse>(

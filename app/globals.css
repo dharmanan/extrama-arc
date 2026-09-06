@@ -615,7 +615,12 @@ img{max-width:100%}
    the homepage.
    ========================================================================== */
 
-.ex-pools{padding-bottom:clamp(56px,7vw,100px)}
+/* The board is read, not skimmed. Secondary text on this route is set a
+   step larger than the homepage and on a darker grey: --muted at #787a76
+   sits near 3.4:1 on paper, which is fine for a passing caption under a
+   headline but too faint for a table of live numbers. Scoped to the route
+   so the locked homepage keeps its own values. */
+.ex-pools{padding-bottom:clamp(56px,7vw,100px);--muted:#5a5d56}
 
 /* ---- A. Market header ---------------------------------------------------- */
 
@@ -639,15 +644,15 @@ img{max-width:100%}
 }
 .ex-window__label{
   margin:0;
-  font-size:clamp(10px,.72vw,11.5px);
-  font-weight:600;
+  font-size:clamp(11px,.85vw,12.5px);
+  font-weight:700;
   letter-spacing:.2em;
   text-transform:uppercase;
   color:var(--muted);
 }
 .ex-window__context{
   margin:0;
-  font-size:.92rem;
+  font-size:1.02rem;
   font-weight:600;
   color:var(--ink-2);
   letter-spacing:.01em;
@@ -664,7 +669,7 @@ img{max-width:100%}
 .ex-window__meta{
   margin:0;
   font-family:var(--mono);
-  font-size:.76rem;
+  font-size:.86rem;
   color:var(--muted);
   letter-spacing:.01em;
 }
@@ -685,8 +690,8 @@ img{max-width:100%}
 }
 .ex-rail__group{display:flex;align-items:baseline;gap:clamp(10px,1.4vw,18px);flex-wrap:wrap;min-width:0}
 .ex-rail__label{
-  font-size:.7rem;
-  font-weight:600;
+  font-size:.78rem;
+  font-weight:700;
   letter-spacing:.18em;
   text-transform:uppercase;
   color:var(--muted);
@@ -696,12 +701,12 @@ img{max-width:100%}
 .ex-rail__btn{
   border:0;
   background:transparent;
-  padding:2px 0;
-  font-size:.85rem;
+  padding:3px 0;
+  font-size:.98rem;
   font-weight:600;
-  letter-spacing:.03em;
+  letter-spacing:.02em;
   color:var(--muted);
-  border-bottom:1px solid transparent;
+  border-bottom:1.5px solid transparent;
   transition:color .18s ease,border-color .18s ease;
 }
 .ex-rail__btn:hover{color:var(--ink)}
@@ -709,7 +714,7 @@ img{max-width:100%}
 .ex-rail__meta{
   margin:0 0 0 auto;
   font-family:var(--mono);
-  font-size:.75rem;
+  font-size:.85rem;
   color:var(--muted);
   letter-spacing:.01em;
   white-space:nowrap;
@@ -718,7 +723,7 @@ img{max-width:100%}
 .ex-pools__note{
   margin:clamp(24px,3vw,40px) 0 0;
   font-family:var(--mono);
-  font-size:.82rem;
+  font-size:.92rem;
   color:var(--muted);
 }
 .ex-pools__error{
@@ -750,7 +755,7 @@ img{max-width:100%}
   line-height:1;
   letter-spacing:-.01em;
 }
-.ex-asset__name{font-size:.85rem;color:var(--muted);letter-spacing:.02em}
+.ex-asset__name{font-size:.95rem;color:var(--ink-2);letter-spacing:.02em}
 .ex-asset__mark{display:flex;align-items:baseline;gap:clamp(8px,1.1vw,14px);margin-inline-start:auto;min-width:0}
 .ex-asset__price{
   font-family:var(--mono);
@@ -761,8 +766,9 @@ img{max-width:100%}
 }
 .ex-asset__price[data-pending="true"]{color:var(--muted)}
 .ex-asset__source{
-  font-size:.68rem;
-  letter-spacing:.13em;
+  font-size:.76rem;
+  font-weight:500;
+  letter-spacing:.11em;
   text-transform:uppercase;
   color:var(--muted);
   white-space:nowrap;
@@ -774,33 +780,33 @@ img{max-width:100%}
 .ex-matrix__head{
   display:flex;
   align-items:center;
-  gap:8px;
-  padding:0 clamp(12px,1.3vw,20px) 9px;
-  font-size:.7rem;
-  font-weight:600;
-  letter-spacing:.18em;
-  text-transform:uppercase;
-  color:var(--muted);
-}
-.ex-matrix__head svg{width:17px;height:17px;flex:none;color:var(--ember)}
-
-.ex-cadence{
-  display:flex;
-  align-items:flex-start;
-  padding:clamp(15px,1.7vw,21px) clamp(10px,1.2vw,16px) clamp(15px,1.7vw,21px) 0;
-  border-top:1px solid var(--line);
-  font-size:.73rem;
-  font-weight:600;
+  gap:9px;
+  padding:0 clamp(12px,1.3vw,20px) 10px;
+  font-size:.82rem;
+  font-weight:700;
   letter-spacing:.16em;
   text-transform:uppercase;
   color:var(--ink-2);
 }
+.ex-matrix__head svg{width:19px;height:19px;flex:none;color:var(--ember)}
+
+.ex-cadence{
+  display:flex;
+  align-items:flex-start;
+  padding:clamp(17px,1.9vw,23px) clamp(10px,1.2vw,16px) clamp(17px,1.9vw,23px) 0;
+  border-top:1px solid var(--line);
+  font-size:.86rem;
+  font-weight:700;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--ink);
+}
 
 .ex-cell{
   display:grid;
-  gap:9px;
+  gap:11px;
   align-content:start;
-  padding:clamp(15px,1.7vw,21px) clamp(12px,1.3vw,20px);
+  padding:clamp(17px,1.9vw,23px) clamp(13px,1.4vw,22px);
   border-top:1px solid var(--line);
   border-left:1px solid var(--line);
   color:var(--ink);
@@ -812,18 +818,18 @@ img{max-width:100%}
 .ex-cell__dir{
   display:none;
   align-items:center;
-  gap:7px;
-  font-size:.68rem;
-  font-weight:600;
-  letter-spacing:.16em;
+  gap:8px;
+  font-size:.8rem;
+  font-weight:700;
+  letter-spacing:.14em;
   text-transform:uppercase;
-  color:var(--muted);
+  color:var(--ink-2);
 }
-.ex-cell__dir svg{width:15px;height:15px;flex:none;color:var(--ember)}
+.ex-cell__dir svg{width:17px;height:17px;flex:none;color:var(--ember)}
 
 .ex-cell__top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
-.ex-cell__round{font-family:var(--mono);font-size:.86rem;letter-spacing:.01em;white-space:nowrap}
-.ex-cell__status{font-size:.72rem;color:var(--muted);text-align:right;line-height:1.3}
+.ex-cell__round{font-family:var(--mono);font-size:1rem;font-weight:500;letter-spacing:0;white-space:nowrap}
+.ex-cell__status{font-size:.85rem;color:var(--muted);text-align:right;line-height:1.32}
 .ex-cell[data-open="true"] .ex-cell__status{color:var(--ember)}
 
 /* Content width, not equal thirds: the numbers cluster into a readable
@@ -833,15 +839,16 @@ img{max-width:100%}
 .ex-cell__val{
   font-family:var(--mono);
   font-variant-numeric:tabular-nums;
-  font-size:.9rem;
+  font-size:1.06rem;
   letter-spacing:-.01em;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
 }
 .ex-cell__key{
-  font-size:.63rem;
-  letter-spacing:.11em;
+  font-size:.73rem;
+  font-weight:500;
+  letter-spacing:.09em;
   text-transform:uppercase;
   color:var(--muted);
   white-space:nowrap;
@@ -857,13 +864,13 @@ img{max-width:100%}
   flex-wrap:wrap;
   padding-top:1px;
 }
-.ex-cell__time{font-family:var(--mono);font-size:.71rem;color:var(--muted)}
+.ex-cell__time{font-family:var(--mono);font-size:.82rem;color:var(--muted)}
 .ex-cell__cta{
   display:inline-flex;
   align-items:center;
   gap:6px;
-  font-size:.78rem;
-  font-weight:600;
+  font-size:.92rem;
+  font-weight:700;
   color:var(--ink);
   white-space:nowrap;
 }
@@ -900,4 +907,306 @@ img{max-width:100%}
   .ex-cell__stats{gap:clamp(12px,4vw,20px)}
   /* Wrap the full label rather than truncating it. */
   .ex-cell__key{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.28}
+}
+
+/* ==========================================================================
+   Pool detail. The market board for one instrument.
+   Left: what this market is, and what it costs right now. Right: the order
+   book itself, drawn from real onchain entries, with the entry action under
+   it. Same hairline grammar as the pools overview, one level closer in.
+   ========================================================================== */
+
+.ex-pool__back{
+  display:inline-block;
+  padding-block:clamp(20px,2.4vw,30px) 0;
+  font-size:.95rem;
+  font-weight:600;
+  color:var(--ink-2);
+  transition:color .18s ease;
+}
+.ex-pool__back:hover{color:var(--ink)}
+
+.ex-pool__grid{
+  display:grid;
+  grid-template-columns:minmax(0,5fr) minmax(0,7fr);
+  gap:clamp(30px,4.6vw,76px);
+  padding-block:clamp(22px,3vw,38px) clamp(40px,5vw,72px);
+  align-items:start;
+}
+
+/* ---- Left: market identity ----------------------------------------------- */
+
+.ex-pool__market{display:grid;gap:clamp(14px,1.7vw,20px);align-content:start;min-width:0}
+
+.ex-pool__id{display:flex;align-items:center;gap:11px;min-width:0}
+.ex-pool__id img{width:28px;height:28px;object-fit:contain;flex:none}
+.ex-pool__symbol{
+  font-size:1.05rem;
+  font-weight:700;
+  letter-spacing:.14em;
+}
+.ex-pool__name{font-size:.95rem;color:var(--ink-2)}
+
+.ex-pool__title{margin:0}
+
+.ex-pool__window{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:10px clamp(12px,1.6vw,20px);
+  margin:0;
+  padding-bottom:clamp(10px,1.4vw,16px);
+  border-bottom:1px solid var(--line);
+}
+.ex-pool__dir{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  font-size:.8rem;
+  font-weight:700;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--ink-2);
+}
+.ex-pool__dir svg{width:18px;height:18px;flex:none;color:var(--ember)}
+.ex-pool__window-range{font-family:var(--mono);font-size:.88rem;color:var(--muted)}
+.ex-pool__state{
+  margin-inline-start:auto;
+  font-size:.82rem;
+  font-weight:600;
+  color:var(--muted);
+  white-space:nowrap;
+}
+.ex-pool__state[data-open="true"]{color:var(--ember)}
+
+.ex-pool__price{
+  margin:clamp(4px,.6vw,8px) 0 0;
+  font-family:var(--mono);
+  font-variant-numeric:tabular-nums;
+  font-size:clamp(2.4rem,5vw,3.9rem);
+  line-height:1;
+  letter-spacing:-.035em;
+}
+.ex-pool__price[data-pending="true"]{font-size:clamp(1.4rem,2.6vw,2rem);color:var(--muted)}
+.ex-pool__price-meta{
+  margin:0;
+  font-size:.8rem;
+  font-weight:500;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+
+.ex-pool__facts{display:grid;margin:clamp(8px,1.2vw,14px) 0 0;border-top:1px solid var(--line-strong)}
+.ex-pool__facts>div{
+  display:grid;
+  gap:5px;
+  padding-block:clamp(12px,1.4vw,16px);
+  border-bottom:1px solid var(--line);
+}
+.ex-pool__facts dt{
+  font-size:.75rem;
+  font-weight:600;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-pool__facts dd{margin:0;font-size:.95rem;color:var(--ink);line-height:1.45}
+
+.ex-pool__actions{display:flex;flex-wrap:wrap;gap:10px;padding-top:clamp(6px,1vw,12px)}
+
+/* ---- Right: the book ----------------------------------------------------- */
+
+.ex-pool__book{
+  display:grid;
+  gap:clamp(16px,2vw,24px);
+  align-content:start;
+  min-width:0;
+  padding-inline-start:clamp(24px,3.4vw,56px);
+  border-left:1px solid var(--line);
+}
+
+.ex-book__head{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:14px clamp(18px,2.6vw,36px);
+  padding-bottom:clamp(12px,1.5vw,18px);
+  border-bottom:1px solid var(--line-strong);
+}
+.ex-book__title{
+  margin:0;
+  font-family:var(--serif);
+  font-weight:400;
+  font-size:clamp(1.5rem,2.6vw,2.1rem);
+  line-height:1.05;
+}
+.ex-book__totals{display:flex;gap:clamp(20px,3vw,44px)}
+.ex-book__total{display:grid;gap:4px;text-align:right}
+.ex-book__total-val{font-size:clamp(1.05rem,1.7vw,1.4rem);letter-spacing:-.01em}
+.ex-book__total-key{
+  font-size:.73rem;
+  font-weight:500;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+
+/* The distribution. Bars are counts of real entries, never a shape drawn
+   to look busy: an empty round shows a statement instead of a chart. */
+.ex-dist{position:relative;display:grid;gap:10px;padding-top:46px}
+.ex-dist__plot{
+  display:flex;
+  align-items:flex-end;
+  gap:3px;
+  height:clamp(150px,20vw,236px);
+  border-bottom:1px solid var(--line-strong);
+}
+.ex-dist__bin{flex:1;display:flex;align-items:flex-end;height:100%;min-width:0}
+.ex-dist__bar{
+  width:100%;
+  background:var(--ink-2);
+  border-radius:1px 1px 0 0;
+  transition:height .3s ease;
+}
+.ex-dist__bar[data-empty="true"]{height:1px !important;background:var(--line)}
+
+.ex-dist__axis{
+  display:flex;
+  justify-content:space-between;
+  font-family:var(--mono);
+  font-size:.8rem;
+  color:var(--muted);
+}
+
+.ex-dist__own{position:absolute;top:0;bottom:26px;width:0;z-index:1}
+.ex-dist__own-tag{
+  position:absolute;
+  top:0;
+  left:50%;
+  transform:translateX(-50%);
+  display:grid;
+  gap:2px;
+  padding:6px 10px;
+  background:var(--ember);
+  color:#fff;
+  border-radius:var(--r-sm);
+  white-space:nowrap;
+  text-align:center;
+}
+.ex-dist__own-key{font-size:.66rem;font-weight:600;letter-spacing:.11em;text-transform:uppercase;opacity:.86}
+.ex-dist__own-val{font-family:var(--mono);font-size:.92rem;letter-spacing:-.01em}
+.ex-dist__own-line{position:absolute;top:44px;bottom:0;left:0;width:2px;background:var(--ember)}
+
+.ex-dist--void{padding-top:0}
+.ex-dist__void{
+  margin:0;
+  display:grid;
+  place-content:center;
+  height:clamp(150px,20vw,236px);
+  border-bottom:1px solid var(--line-strong);
+  font-size:1rem;
+  color:var(--muted);
+}
+
+.ex-book__partial{
+  margin:0;
+  font-family:var(--mono);
+  font-size:.8rem;
+  color:var(--muted);
+}
+
+.ex-book__strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--line)}
+.ex-book__cell{
+  display:grid;
+  gap:6px;
+  padding:clamp(14px,1.7vw,19px) clamp(12px,1.4vw,20px);
+  border-left:1px solid var(--line);
+}
+.ex-book__cell:first-child{border-left:0;padding-inline-start:0}
+.ex-book__cell-key{
+  font-size:.73rem;
+  font-weight:500;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-book__cell-val{font-size:clamp(1rem,1.5vw,1.25rem);letter-spacing:-.01em}
+.ex-book__cell[data-live="true"] .ex-book__cell-val{color:var(--ember)}
+
+/* ---- Entry --------------------------------------------------------------- */
+
+.ex-entry{
+  display:grid;
+  gap:clamp(11px,1.3vw,15px);
+  padding-top:clamp(18px,2.2vw,28px);
+  border-top:1px solid var(--line-strong);
+}
+.ex-entry__title{
+  margin:0;
+  font-family:var(--serif);
+  font-weight:400;
+  font-size:clamp(1.3rem,2.1vw,1.7rem);
+  line-height:1.1;
+}
+.ex-entry__note{margin:0;font-size:.92rem;line-height:1.5;color:var(--ink-2);max-width:56ch}
+
+.ex-entry__field{display:grid;gap:7px}
+.ex-entry__label{
+  font-size:.75rem;
+  font-weight:600;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-entry__field input{
+  width:100%;
+  padding:14px 2px;
+  border:0;
+  border-bottom:1.5px solid var(--line-strong);
+  background:transparent;
+  font-family:var(--mono);
+  font-variant-numeric:tabular-nums;
+  font-size:clamp(1.3rem,2.2vw,1.75rem);
+  letter-spacing:-.02em;
+  color:var(--ink);
+  transition:border-color .18s ease;
+}
+.ex-entry__field input::placeholder{color:var(--line-strong)}
+.ex-entry__field input:focus{outline:0;border-bottom-color:var(--ember)}
+.ex-entry__field input:disabled{color:var(--muted);border-bottom-style:dashed}
+
+.ex-entry__submit{justify-self:start}
+
+.ex-entry__msg{
+  margin:0;
+  padding:12px 14px;
+  border-left:2px solid var(--line-strong);
+  background:rgba(16,21,20,.04);
+  font-size:.92rem;
+  line-height:1.5;
+  color:var(--ink-2);
+}
+.ex-entry__msg p{margin:0}
+.ex-entry__msg p + p{margin-top:6px}
+.ex-entry__msg a{border-bottom:1px solid var(--line-strong);font-weight:600;color:var(--ink)}
+.ex-entry__msg[data-tone="error"]{border-left-color:var(--ember);color:var(--ink)}
+.ex-entry__msg[data-tone="ok"]{border-left-color:var(--ink);color:var(--ink)}
+
+/* Tablet and phone. The book moves under the market, keeping its own rules. */
+@media(max-width:1000px){
+  .ex-pool__grid{grid-template-columns:minmax(0,1fr);gap:clamp(28px,5vw,44px)}
+  .ex-pool__book{padding-inline-start:0;border-left:0;border-top:1px solid var(--line-strong);padding-top:clamp(24px,4vw,36px)}
+}
+
+@media(max-width:560px){
+  .ex-pool__state{margin-inline-start:0;flex-basis:100%}
+  .ex-book__head{gap:12px}
+  .ex-book__totals{gap:clamp(18px,6vw,32px)}
+  .ex-book__total{text-align:left}
+  .ex-book__strip{grid-template-columns:minmax(0,1fr)}
+  .ex-book__cell{border-left:0;border-top:1px solid var(--line);padding-inline:0}
+  .ex-book__cell:first-child{border-top:0}
+  .ex-dist__plot{gap:2px}
 }

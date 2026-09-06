@@ -1,40 +1,276 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { AssetMark, ProductHeader, RoundCountdown } from "../../product-components";
-import { backendApi, type LiveRoundResponse } from "../../lib/backend-api";
+import { ProductHeader } from "../../product-components";
+import {
+  backendApi,
+  type LivePool,
+  type LiveRoundResponse,
+  type RoundEntriesResponse,
+} from "../../lib/backend-api";
+import { assetConfigs } from "../../lib/asset-config";
 import { confirmEntryWithPasskey } from "../../lib/passkey-client";
 import { useCopy, useLocale } from "../../i18n";
+import { useWalletSession } from "../../wallet-session";
 import { applyBinanceLiveMarketToPool, readBinanceLiveMarket } from "../../lib/live-market";
+import { formatLocalDateTime, formatUsdc, humanRoundStatus } from "../../lib/display";
 import {
-  formatEntryCount,
-  formatLocalDateTime,
-  formatUsdc,
-  humanRoundStatus,
-} from "../../lib/display";
+  buildPredictionDistribution,
+  distributionOffsetPercent,
+  parsePredictionCents,
+  parsePredictionInput,
+} from "../../lib/prediction-distribution";
 
-function titleCase(value: string) {
-  return value.charAt(0) + value.slice(1).toLowerCase();
+type Copy = ReturnType<typeof useCopy>;
+type Locale = "en" | "tr";
+
+function localeTag(locale: Locale) {
+  return locale === "tr" ? "tr-TR" : "en-US";
+}
+
+function horizonLabel(cadence: LivePool["cadence"], t: Copy) {
+  if (cadence === "DAILY") return t.home.horizonDayKey;
+  if (cadence === "WEEKLY") return t.home.horizonWeekKey;
+  return t.home.horizonQuarterKey;
+}
+
+function directionLabel(direction: LivePool["direction"], t: Copy) {
+  return direction === "HIGH" ? t.home.directionHighKey : t.home.directionLowKey;
+}
+
+function formatPredictionPrice(value: string | null, locale: Locale) {
+  const cents = value === null ? null : parsePredictionCents(value);
+  if (cents === null) return "—";
+  const whole = cents / BigInt(100);
+  const fraction = (cents % BigInt(100)).toString().padStart(2, "0");
+  const separator = locale === "tr" ? "," : ".";
+  return `$${new Intl.NumberFormat(localeTag(locale)).format(whole)}${separator}${fraction}`;
+}
+
+function formatMarketPrice(value: string | null, locale: Locale) {
+  if (value === null) return "—";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  return new Intl.NumberFormat(localeTag(locale), {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(numeric);
+}
+
+function formatAxisPrice(cents: bigint, locale: Locale) {
+  const whole = cents / BigInt(100);
+  const fraction = (cents % BigInt(100)).toString().padStart(2, "0");
+  const separator = locale === "tr" ? "," : ".";
+  return `${new Intl.NumberFormat(localeTag(locale)).format(whole)}${separator}${fraction}`;
+}
+
+function formatWindowRange(startIso: string, endIso: string, locale: Locale) {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  const day = new Intl.DateTimeFormat(localeTag(locale), {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+  });
+  const withYear = new Intl.DateTimeFormat(localeTag(locale), {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  return `${day.format(start)} → ${withYear.format(end)} UTC`;
+}
+
+function formatCountdown(ms: number, locale: Locale) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(locale === "tr" ? `${days}g` : `${days}d`);
+  if (days > 0 || hours > 0) parts.push(locale === "tr" ? `${hours}sa` : `${hours}h`);
+  parts.push(locale === "tr" ? `${minutes}dk` : `${minutes}m`);
+  parts.push(locale === "tr" ? `${seconds}sn` : `${seconds}s`);
+  return parts.join(" ");
+}
+
+/** Phase of the round, derived from real timestamps only. */
+function roundPhase(pool: LivePool, now: number) {
+  const openAt = new Date(pool.round.entryOpenAt).getTime();
+  const closeAt = new Date(pool.round.entryCloseAt).getTime();
+  const observationStart = new Date(pool.round.observationStartAt).getTime();
+  const observationEnd = new Date(pool.round.observationEndAt).getTime();
+
+  if (now < openAt) return { key: "PRE_OPEN" as const, target: openAt };
+  if (now < closeAt) return { key: "ENTRY_OPEN" as const, target: closeAt };
+  if (now < observationStart) return { key: "PRE_OBSERVATION" as const, target: observationStart };
+  if (now < observationEnd) return { key: "OBSERVING" as const, target: observationEnd };
+  return { key: "ENDED" as const, target: null };
+}
+
+function phaseLabel(key: ReturnType<typeof roundPhase>["key"], t: Copy) {
+  if (key === "PRE_OPEN") return t.predictionsStartIn;
+  if (key === "ENTRY_OPEN") return t.predictionsCloseIn;
+  if (key === "PRE_OBSERVATION") return t.observationStartsIn;
+  if (key === "OBSERVING") return t.observationEndsIn;
+  return t.observationEnded;
+}
+
+/** The direction motif carried over from the homepage and the pool board. */
+function DirectionMark({ direction }: { direction: LivePool["direction"] }) {
+  return (
+    <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+      {direction === "HIGH" ? (
+        <path d="M4 26 L12 14 L18 20 L28 6 M28 6 H21 M28 6 V13" strokeLinecap="round" strokeLinejoin="round" />
+      ) : (
+        <path d="M4 6 L12 18 L18 12 L28 26 M28 26 H21 M28 26 V19" strokeLinecap="round" strokeLinejoin="round" />
+      )}
+    </svg>
+  );
+}
+
+function Distribution({
+  entriesState,
+  entriesError,
+  entryCount,
+  ownPriceCents,
+  locale,
+  t,
+}: {
+  entriesState: RoundEntriesResponse | null;
+  entriesError: boolean;
+  entryCount: number;
+  ownPriceCents: bigint | null;
+  locale: Locale;
+  t: Copy;
+}) {
+  const pricesCents = useMemo(
+    () => (entriesState?.entries ?? [])
+      .map((entry) => parsePredictionCents(entry.predictionPriceCents))
+      .filter((price): price is bigint => price !== null),
+    [entriesState],
+  );
+  const model = useMemo(() => buildPredictionDistribution(pricesCents), [pricesCents]);
+
+  // The round read already knows how many entries exist. An empty round is
+  // stated as empty even when the entry read failed, because "no predictions
+  // yet" is then the fact; only a round that genuinely has entries we could
+  // not read is reported as unavailable.
+  const knownEntryCount = entriesState?.round.entryCount ?? entryCount;
+  if (knownEntryCount === 0) {
+    return (
+      <div className="ex-dist ex-dist--void">
+        <p className="ex-dist__void">{t.noPredictions}</p>
+      </div>
+    );
+  }
+
+  if (entriesError || !entriesState?.round.complete || !model) {
+    return (
+      <div className="ex-dist ex-dist--void">
+        <p className="ex-dist__void">{t.poolDistributionUnavailable}</p>
+      </div>
+    );
+  }
+
+  const ownOffset = ownPriceCents === null
+    ? null
+    : distributionOffsetPercent(ownPriceCents, model);
+  const ownPriceLabel = ownPriceCents === null
+    ? null
+    : formatPredictionPrice(ownPriceCents.toString(), locale);
+
+  return (
+    <div className="ex-dist">
+      {ownOffset !== null && ownPriceLabel !== null && (
+        <div className="ex-dist__own" style={{ left: `${ownOffset}%` }}>
+          <span className="ex-dist__own-tag">
+            <span className="ex-dist__own-key">{t.poolYourPrediction}</span>
+            <span className="ex-dist__own-val">{ownPriceLabel}</span>
+          </span>
+          <span className="ex-dist__own-line" aria-hidden="true" />
+        </div>
+      )}
+
+      <div className="ex-dist__plot" role="img" aria-label={t.poolDistribution}>
+        {model.bins.map((bin, index) => (
+          <span className="ex-dist__bin" key={index}>
+            <span
+              className="ex-dist__bar"
+              data-empty={bin.count === 0}
+              style={{ height: `${(bin.count / model.peak) * 100}%` }}
+            />
+          </span>
+        ))}
+      </div>
+
+      <div className="ex-dist__axis">
+        <span>{formatAxisPrice(model.fromCents, locale)}</span>
+        <span>{formatAxisPrice((model.fromCents + model.toCents) / BigInt(2), locale)}</span>
+        <span>{formatAxisPrice(model.toCents, locale)}</span>
+      </div>
+    </div>
+  );
 }
 
 export default function PoolDetailPage() {
   const params = useParams<{ slug: string }>();
   const { locale } = useLocale();
   const t = useCopy();
+  const { address } = useWalletSession();
+
   const [state, setState] = useState<LiveRoundResponse | null>(null);
+  const [entriesState, setEntriesState] = useState<RoundEntriesResponse | null>(null);
+  const [entriesError, setEntriesError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+
   const [prediction, setPrediction] = useState("");
   const [entryBusy, setEntryBusy] = useState("");
   const [entryError, setEntryError] = useState("");
+  const entriesRequestId = useRef(0);
   const [entrySuccess, setEntrySuccess] = useState<{
     ticketId: string;
     entryTxHash: string;
     explorerUrl: string;
     approvalTxHash: string | null;
   } | null>(null);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  // The distribution is a separate read from a separate contract call, so a
+  // failure there must never take the round view down with it.
+  const refreshEntries = useCallback(async (pool: LivePool) => {
+    const requestId = ++entriesRequestId.current;
+    try {
+      const result = await backendApi.rounds.entries(pool.slug, pool.round.roundId);
+      if (
+        result.pool.slug !== pool.slug ||
+        result.pool.poolAddress.toLowerCase() !== pool.poolAddress.toLowerCase() ||
+        result.round.roundId !== pool.round.roundId
+      ) {
+        throw new Error("round_entries_identity_mismatch");
+      }
+      if (requestId !== entriesRequestId.current) return;
+      setEntriesState(result);
+      setEntriesError(false);
+    } catch {
+      if (requestId !== entriesRequestId.current) return;
+      setEntriesState(null);
+      setEntriesError(true);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +289,7 @@ export default function PoolDetailPage() {
           pool: applyBinanceLiveMarketToPool(result.pool, live),
         });
         setError("");
+        void refreshEntries(result.pool);
       } catch (err: unknown) {
         if (cancelled) return;
         setState(null);
@@ -71,7 +308,7 @@ export default function PoolDetailPage() {
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [params.slug]);
+  }, [params.slug, refreshEntries]);
 
   async function handleAuthorizeEntry() {
     if (!state) return;
@@ -79,19 +316,24 @@ export default function PoolDetailPage() {
     setEntryError("");
     setEntrySuccess(null);
 
-    const trimmed = prediction.trim();
-    if (!/^\d+(?:\.\d{1,2})?$/.test(trimmed)) {
-      setEntryError("Enter a price with up to 2 decimal places.");
+    const openAt = new Date(state.pool.round.entryOpenAt).getTime();
+    const closeAt = new Date(state.pool.round.entryCloseAt).getTime();
+    const currentTime = Date.now();
+    if (
+      !state.pool.round.canEnter ||
+      state.pool.round.contractStatus !== "ENTRY_OPEN" ||
+      currentTime < openAt ||
+      currentTime >= closeAt
+    ) {
+      setEntryError("Predictions are no longer available for this round.");
       return;
     }
 
-    const price = Number(trimmed);
-    if (!Number.isFinite(price) || price <= 0) {
-      setEntryError("Enter a valid positive price.");
+    const predictionPriceCents = parsePredictionInput(prediction.trim());
+    if (predictionPriceCents === null) {
+      setEntryError("Enter a valid positive price with up to 2 decimal places.");
       return;
     }
-
-    const predictionPriceCents = Math.round(price * 100);
 
     setEntryBusy("Confirming…");
     try {
@@ -122,6 +364,8 @@ export default function PoolDetailPage() {
         explorerUrl: result.explorerUrl,
         approvalTxHash: result.approvalTxHash,
       });
+
+      void refreshEntries(state.pool);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Passkey verification failed.";
       if (message === "authentication_required" || message === "invalid_session" || message === "session_expired") {
@@ -146,143 +390,249 @@ export default function PoolDetailPage() {
 
   if (loading) {
     return (
-      <main className="wf-page">
+      <main className="ex-pools ex-pool">
         <ProductHeader />
-        <section className="wf-main"><p>{t.readingRounds}</p></section>
+        <div className="ex-shell">
+          <p className="ex-pools__note">{t.readingRounds}</p>
+        </div>
       </main>
     );
   }
 
   if (!state) {
     return (
-      <main className="wf-page">
+      <main className="ex-pools ex-pool">
         <ProductHeader />
-        <section className="wf-main">
-          <h1>{t.poolUnavailable}</h1>
-          <p>{t.poolUnavailableBody}</p>
-          <Link href="/pools">{t.backToPools}</Link>
-        </section>
+        <div className="ex-shell">
+          <div className="ex-pools__error">
+            <h1 className="ex-display ex-display--md">{t.poolUnavailable}</h1>
+            <p className="ex-lede">{error || t.poolUnavailableBody}</p>
+            <p className="ex-pools__note" style={{ marginTop: 0 }}>
+              <Link href="/pools" className="ex-pool__back">← {t.backToPools}</Link>
+            </p>
+          </div>
+        </div>
       </main>
     );
   }
 
   const { pool, chain } = state;
+  const config = assetConfigs[pool.asset];
+  const phase = roundPhase(pool, now);
+  const canSubmit = pool.round.canEnter && phase.key === "ENTRY_OPEN";
+
+  const ownEntry = address
+    ? (entriesState?.entries ?? []).find(
+        (entry) => entry.originalEntrant.toLowerCase() === address.toLowerCase(),
+      ) ?? null
+    : null;
+  const ownPriceCents = ownEntry ? parsePredictionCents(ownEntry.predictionPriceCents) : null;
+
+  const completePrices = entriesState?.round.complete
+    ? entriesState.entries
+        .map((entry) => parsePredictionCents(entry.predictionPriceCents))
+        .filter((price): price is bigint => price !== null)
+    : [];
+  const lowest = completePrices.length > 0
+    ? completePrices.reduce((value, price) => price < value ? price : value)
+    : null;
+  const highest = completePrices.length > 0
+    ? completePrices.reduce((value, price) => price > value ? price : value)
+    : null;
+
+  const partialRead =
+    entriesState !== null && !entriesState.round.complete && entriesState.round.entryCount > 0;
 
   return (
-    <main className="wf-page">
+    <main className="ex-pools ex-pool">
       <ProductHeader />
-      <section className="wf-main">
-        <Link href="/pools">← {t.backToPools}</Link>
 
-        <div className="wf-two-col wf-section">
-          <section className="wf-panel">
-            <AssetMark asset={pool.asset} />
-            <h1>
-              {pool.asset} · {titleCase(pool.cadence)} {titleCase(pool.direction)}
+      <div className="ex-shell">
+        <Link href="/pools" className="ex-pool__back">← {t.backToPools}</Link>
+
+        <div className="ex-pool__grid">
+          {/* ---- Market identity -------------------------------------- */}
+          <section className="ex-pool__market">
+            <span className="ex-pool__id">
+              <img src={config.brandSrc} alt="" />
+              <span className="ex-pool__symbol">{pool.asset}</span>
+              <span className="ex-pool__name">{config.name}</span>
+            </span>
+
+            <h1 className="ex-display ex-display--lg ex-pool__title">
+              {horizonLabel(pool.cadence, t)} {directionLabel(pool.direction, t)}
             </h1>
 
-            <p>{t.round} <b>#{pool.round.roundId}</b></p>
-            <p><b>{humanRoundStatus(pool.round.contractStatus, locale)}</b></p>
-            <RoundCountdown
-              entryOpenAt={pool.round.entryOpenAt}
-              entryCloseAt={pool.round.entryCloseAt}
-              observationStartAt={pool.round.observationStartAt}
-              observationEndAt={pool.round.observationEndAt}
-            />
+            <p className="ex-pool__window">
+              <span className="ex-pool__dir" data-direction={pool.direction}>
+                <DirectionMark direction={pool.direction} />
+                {directionLabel(pool.direction, t)}
+              </span>
+              <span className="ex-pool__window-range">
+                {formatWindowRange(pool.round.observationStartAt, pool.round.observationEndAt, locale)}
+              </span>
+              <span className="ex-pool__state" data-open={pool.round.canEnter}>
+                {humanRoundStatus(pool.round.contractStatus, locale)}
+              </span>
+            </p>
 
-            <p>{formatEntryCount(pool.round.entryCount, locale)}</p>
-            <p>{t.prizePool}: <b>{formatUsdc(pool.round.totalStakeUsdc, locale)}</b></p>
+            <p className="ex-pool__price" data-pending={pool.market.available ? "false" : "true"}>
+              {pool.market.available && pool.market.markPrice
+                ? formatMarketPrice(pool.market.markPrice, locale)
+                : t.unavailable}
+            </p>
+            <p className="ex-pool__price-meta">
+              {t.liveMark}
+              {pool.market.source ? ` · ${pool.market.source}` : ""} · {pool.sourceSymbol}
+            </p>
 
-            <dl className="wf-stats">
+            <dl className="ex-pool__facts">
               <div>
-                <dt>{pool.market.available && pool.market.markPrice ? `${Number(pool.market.markPrice).toLocaleString(locale === "tr" ? "tr-TR" : "en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : t.unavailable}</dt>
-                <dd>{t.liveMark}</dd>
+                <dt>{t.round}</dt>
+                <dd className="ex-num">#{pool.round.roundId}</dd>
               </div>
               <div>
-                <dt>{pool.round.lastPredictionPrice ? `${Number(pool.round.lastPredictionPrice).toLocaleString(locale === "tr" ? "tr-TR" : "en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}</dt>
-                <dd>{t.latestPrediction}</dd>
+                <dt>{t.predictionsOpenUntil}</dt>
+                <dd className="ex-num">{formatLocalDateTime(pool.round.entryCloseAt, locale)}</dd>
+              </div>
+              <div>
+                <dt>{t.poolObservationWindow}</dt>
+                <dd className="ex-num">
+                  {formatLocalDateTime(pool.round.observationStartAt, locale)} {t.to}{" "}
+                  {formatLocalDateTime(pool.round.observationEndAt, locale)}
+                </dd>
+              </div>
+              <div>
+                <dt>{t.priceSource}</dt>
+                <dd>{pool.source} · {pool.sourceSymbol}</dd>
               </div>
             </dl>
 
-            <h2>{t.roundTiming}</h2>
-            <p>{t.predictionsOpenUntil} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
-            <p>
-              {t.observationRuns} {formatLocalDateTime(pool.round.observationStartAt, locale)}
-              {" "}{t.to}{" "}{formatLocalDateTime(pool.round.observationEndAt, locale)}
-            </p>
-
-            <h2>{t.priceSource}</h2>
-            <p><b>{pool.source}</b> · {pool.sourceSymbol}</p>
-
-            <div className="wf-row">
+            <div className="ex-pool__actions">
               <a
-                className="wf-action"
+                className="ex-btn ex-btn--ghost"
                 href={`${chain.explorerUrl}/address/${pool.poolAddress}`}
                 target="_blank"
                 rel="noreferrer"
               >
                 {t.verifyOnArc}
               </a>
-              <Link href={`/rounds/${pool.slug}`} className="wf-action">{t.viewRound}</Link>
+              <Link href={`/rounds/${pool.slug}`} className="ex-btn ex-btn--ghost">
+                {t.viewRound}
+              </Link>
             </div>
           </section>
 
-          <section className="wf-panel">
-            <h2>{t.makePrediction}</h2>
-            <p>{t.onePredictionCosts}</p>
+          {/* ---- Order book ------------------------------------------- */}
+          <section className="ex-pool__book">
+            <div className="ex-book__head">
+              <h2 className="ex-book__title">{t.poolDistribution}</h2>
+              <div className="ex-book__totals">
+                <span className="ex-book__total">
+                  <span className="ex-book__total-val ex-num">{pool.round.entryCount}</span>
+                  <span className="ex-book__total-key">{t.entries}</span>
+                </span>
+                <span className="ex-book__total">
+                  <span className="ex-book__total-val ex-num">
+                    {formatUsdc(pool.round.totalStakeUsdc, locale)}
+                  </span>
+                  <span className="ex-book__total-key">{t.prizePool}</span>
+                </span>
+              </div>
+            </div>
 
-            <label className="wf-field">
-              {pool.direction === "HIGH" ? t.yourPredictedHigh : t.yourPredictedLow}
-              <input
-                inputMode="decimal"
-                placeholder="e.g. 68420.50"
-                value={prediction}
-                onChange={(event) => {
-                  setPrediction(event.target.value);
-                  setEntryError("");
-                  setEntrySuccess(null);
-                }}
-                disabled={!pool.round.canEnter || Boolean(entryBusy)}
-              />
-            </label>
+            <Distribution
+              entriesState={entriesState}
+              entriesError={entriesError}
+              entryCount={pool.round.entryCount}
+              ownPriceCents={ownPriceCents}
+              locale={locale}
+              t={t}
+            />
 
-            <p>{t.confirmBiometric}</p>
-
-            <button
-              className="wf-action"
-              type="button"
-              onClick={handleAuthorizeEntry}
-              disabled={!pool.round.canEnter || Boolean(entryBusy)}
-            >
-              {entryBusy || t.confirmPrediction}
-            </button>
-
-            {!pool.round.canEnter && (
-              <p className="wf-message">{t.roundClosed}</p>
-            )}
-
-            {entryError && (
-              <p className="wf-message">
-                {entryError}{" "}
-                {(entryError.includes("session") || entryError.includes("locked")) && (
-                  <Link href="/wallet">Reconnect wallet</Link>
-                )}
+            {partialRead && entriesState && (
+              <p className="ex-book__partial">
+                {entriesState.round.readCount} / {entriesState.round.entryCount} · {t.poolEntriesRead}
               </p>
             )}
 
-            {entrySuccess && (
-              <div className="wf-message">
-                <p><b>Prediction confirmed.</b> Ticket #{entrySuccess.ticketId} was minted on Arc Testnet.</p>
-                <p>
-                  <a href={entrySuccess.explorerUrl} target="_blank" rel="noreferrer">
-                    View transaction on ArcScan
-                  </a>
-                </p>
+            <div className="ex-book__strip">
+              <div className="ex-book__cell">
+                <span className="ex-book__cell-key">{t.poolLowest}</span>
+                <span className="ex-book__cell-val ex-num">{formatPredictionPrice(lowest?.toString() ?? null, locale)}</span>
               </div>
-            )}
+              <div className="ex-book__cell">
+                <span className="ex-book__cell-key">{t.poolHighest}</span>
+                <span className="ex-book__cell-val ex-num">{formatPredictionPrice(highest?.toString() ?? null, locale)}</span>
+              </div>
+              <div className="ex-book__cell" data-live={phase.key === "ENTRY_OPEN"}>
+                <span className="ex-book__cell-key">{phaseLabel(phase.key, t)}</span>
+                <span className="ex-book__cell-val ex-num">
+                  {phase.target === null ? "—" : formatCountdown(phase.target - now, locale)}
+                </span>
+              </div>
+            </div>
+
+            {/* ---- Entry ---------------------------------------------- */}
+            <div className="ex-entry">
+              <h3 className="ex-entry__title">{t.makePrediction}</h3>
+              <p className="ex-entry__note">{t.onePredictionCosts}</p>
+
+              <label className="ex-entry__field">
+                <span className="ex-entry__label">
+                  {pool.direction === "HIGH" ? t.yourPredictedHigh : t.yourPredictedLow}
+                </span>
+                <input
+                  inputMode="decimal"
+                  placeholder="0.00"
+                  value={prediction}
+                  onChange={(event) => {
+                    setPrediction(event.target.value);
+                    setEntryError("");
+                    setEntrySuccess(null);
+                  }}
+                  disabled={!canSubmit || Boolean(entryBusy)}
+                />
+              </label>
+
+              <button
+                className="ex-btn ex-btn--ink ex-entry__submit"
+                type="button"
+                onClick={handleAuthorizeEntry}
+                disabled={!canSubmit || Boolean(entryBusy)}
+              >
+                {entryBusy || t.confirmPrediction}
+              </button>
+
+              <p className="ex-entry__note">{t.confirmBiometric}</p>
+
+              {!canSubmit && (
+                <p className="ex-entry__msg">{t.roundClosed}</p>
+              )}
+
+              {entryError && (
+                <p className="ex-entry__msg" data-tone="error">
+                  {entryError}{" "}
+                  {(entryError.includes("session") || entryError.includes("locked")) && (
+                    <Link href="/wallet">Reconnect wallet</Link>
+                  )}
+                </p>
+              )}
+
+              {entrySuccess && (
+                <div className="ex-entry__msg" data-tone="ok">
+                  <p><b>Prediction confirmed.</b> Ticket #{entrySuccess.ticketId} was minted on Arc Testnet.</p>
+                  <p>
+                    <a href={entrySuccess.explorerUrl} target="_blank" rel="noreferrer">
+                      View transaction on ArcScan
+                    </a>
+                  </p>
+                </div>
+              )}
+            </div>
           </section>
         </div>
-      </section>
+      </div>
     </main>
   );
 }

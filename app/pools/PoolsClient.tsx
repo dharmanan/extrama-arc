@@ -143,6 +143,20 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
 
   const active = openRounds[0];
   const upcoming = nextRounds[0];
+  // Daily entry is canonically 00:00–20:00 UTC. Between a real Daily
+  // round's close and its observation start, the next Daily round has not
+  // necessarily been created onchain yet; that observation start is the
+  // canonical next entry opening. This derives only from the real round
+  // timing already on the board -- it never invents a pool or round.
+  const nextDailyOpening = pools
+    .filter((pool) => {
+      if (pool.cadence !== "DAILY") return false;
+      const closeAt = new Date(pool.round.entryCloseAt).getTime();
+      const nextOpenAt = new Date(pool.round.observationStartAt).getTime();
+      return Number.isFinite(closeAt) && Number.isFinite(nextOpenAt) && now >= closeAt && now < nextOpenAt;
+    })
+    .map((pool) => new Date(pool.round.observationStartAt).getTime())
+    .sort((a, b) => a - b)[0];
 
   if (active) {
     const target = new Date(active.round.entryCloseAt).getTime();
@@ -178,11 +192,23 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
     );
   }
 
-  // Neither an open nor an upcoming entry window exists for this selection.
-  // The daily cadence, for instance, closes entry at 20:00 UTC and the next
-  // round only appears after 00:00 UTC, so this gap is real. Say so plainly
-  // rather than leaving a hole in the composition, and never invent a
-  // target: the next round genuinely does not exist in the data yet.
+  if (nextDailyOpening !== undefined) {
+    return (
+      <div className="ex-window">
+        <p className="ex-window__label">{t.predictionWindow}</p>
+        <p className="ex-window__context">
+          {localizedCadence("DAILY", locale)} · {t.predictionsOpenIn}
+        </p>
+        <p className="ex-window__value">{formatOverviewCountdown(nextDailyOpening - now, locale)}</p>
+        <p className="ex-window__meta">
+          {t.opens} · {formatUtcCompact(new Date(nextDailyOpening).toISOString(), locale)}
+        </p>
+      </div>
+    );
+  }
+
+  // No selected cadence has a current, future, or canonically derivable
+  // prediction opening. Keep the one overview slot truthful.
   return (
     <div className="ex-window ex-window--empty">
       <p className="ex-window__label">{t.predictionWindow}</p>
@@ -324,7 +350,8 @@ export default function PoolsClient() {
   const { locale } = useLocale();
   const t = useCopy();
   const [asset, setAsset] = useState<"All" | Asset>("All");
-  const [cadence, setCadence] = useState<"All" | Cadence>("All");
+  // The board opens on the horizon that actually turns over every day.
+  const [cadence, setCadence] = useState<"All" | Cadence>("Daily");
   const [pools, setPools] = useState<LivePool[]>([]);
   const [blockNumber, setBlockNumber] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
