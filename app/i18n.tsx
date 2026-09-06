@@ -41,6 +41,7 @@ export const copy = {
   en: {
     pools: "Pools",
     leaderboard: "Leaderboard",
+    archive: "Archive",
     howItWorks: "How it works",
     myTickets: "My Tickets",
     createConnectWallet: "Create / Connect Wallet",
@@ -108,6 +109,7 @@ export const copy = {
   tr: {
     pools: "Havuzlar",
     leaderboard: "Liderlik",
+    archive: "Arşiv",
     howItWorks: "Nasıl çalışır",
     myTickets: "Biletlerim",
     createConnectWallet: "Cüzdan Oluştur / Bağla",
