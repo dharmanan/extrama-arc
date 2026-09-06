@@ -129,7 +129,7 @@ export const copy = {
       mechanicEyebrow: "The mechanic",
       mechanicTitle: "One exact price. One ticket.",
       mechanicLede:
-        "You name a single price — not a direction, not a range. When the round settles, the three closest predictions take the pool.",
+        "You name a single price. Not a direction, not a range. When the round settles, the three closest predictions take the pool.",
       step1Title: "Choose a market",
       step1Body: "Four assets, two directions, three time horizons. 24 pools in total.",
       step2Title: "Name one exact price",
@@ -139,7 +139,12 @@ export const copy = {
       step4Title: "Hold the NFT ticket",
       step4Body: "The ticket carries the claim. Whoever owns it when the round settles can claim the reward.",
 
-      horizonsEyebrow: "Three time horizons",
+      gridEyebrow: "The grid",
+      gridTitle: "Four assets. Two directions. Three horizons.",
+      gridLede: "24 standard pools, always the same shape. Pick the one you have a view on.",
+      gridAssetsLabel: "Assets",
+      gridDirectionsLabel: "Directions",
+      horizonsEyebrow: "Horizons",
       horizonDayKey: "Day",
       horizonDayWindow: "24 hours",
       horizonDayBody: "One trading day of observation. Decided by tomorrow.",
@@ -152,11 +157,9 @@ export const copy = {
 
       directionsEyebrow: "Two directions",
       directionHighKey: "High",
-      directionHighBody:
-        "Predict the highest price the market prints inside the observation window.",
+      directionHighBody: "The highest price printed in the window.",
       directionLowKey: "Low",
-      directionLowBody:
-        "Predict the lowest price the market prints inside the observation window.",
+      directionLowBody: "The lowest price printed in the window.",
 
       verifyEyebrow: "Verifiable result",
       verifyTitle: "Every round leaves evidence.",
@@ -288,7 +291,12 @@ export const copy = {
       step4Title: "NFT bileti elinde tut",
       step4Body: "Hak biletin üzerindedir. Tur kapandığında bilet kimdeyse ödülü o talep eder.",
 
-      horizonsEyebrow: "Üç zaman aralığı",
+      gridEyebrow: "Yapı",
+      gridTitle: "Dört varlık. İki yön. Üç zaman aralığı.",
+      gridLede: "Yirmi dört standart havuz, her zaman aynı biçimde. Hakkında fikrin olanı seç.",
+      gridAssetsLabel: "Varlıklar",
+      gridDirectionsLabel: "Yön",
+      horizonsEyebrow: "Zaman aralığı",
       horizonDayKey: "Gün",
       horizonDayWindow: "24 saat",
       horizonDayBody: "Tek bir işlem günü gözlenir. Yarın sonuçlanır.",
@@ -301,11 +309,9 @@ export const copy = {
 
       directionsEyebrow: "İki yön",
       directionHighKey: "Yüksek",
-      directionHighBody:
-        "Gözlem aralığında piyasanın gördüğü en yüksek fiyatı tahmin et.",
+      directionHighBody: "Aralıkta görülen en yüksek fiyat.",
       directionLowKey: "Düşük",
-      directionLowBody:
-        "Gözlem aralığında piyasanın gördüğü en düşük fiyatı tahmin et.",
+      directionLowBody: "Aralıkta görülen en düşük fiyat.",
 
       verifyEyebrow: "Doğrulanabilir sonuç",
       verifyTitle: "Her tur kanıt bırakır.",

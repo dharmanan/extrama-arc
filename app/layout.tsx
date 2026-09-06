@@ -6,7 +6,7 @@ import Web3Provider from "./providers/Web3Provider";
 import { LocaleProvider } from "./i18n";
 
 export const metadata: Metadata = {
-  title: "EXTREMA — Small predictions. Real rewards.",
+  title: "EXTREMA · Small predictions. Real rewards.",
   description:
     "Predict the next high or low of BTC, ETH, SOL or HYPE. Every entry costs exactly 1 USDC and every result settles onchain on Arc Testnet."
 };

@@ -8,6 +8,7 @@ import { readBinanceLiveMarket } from "./lib/live-market";
 import { useCopy, useLocale } from "./i18n";
 
 const HERO_IMAGE = "/images/extrema-mountains-v1.png";
+const PENDING_PRICE = "···";
 
 const BAND_ASSETS = [
   { symbol: "BTC", sourceSymbol: "BTCUSDT" },
@@ -20,7 +21,7 @@ type BandPrice = { markPrice: string; source: string };
 
 function formatMarkPrice(value: string, locale: "en" | "tr") {
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "—";
+  if (!Number.isFinite(numeric)) return PENDING_PRICE;
 
   return new Intl.NumberFormat(locale === "tr" ? "tr-TR" : "en-US", {
     style: "currency",
@@ -32,7 +33,7 @@ function formatMarkPrice(value: string, locale: "en" | "tr") {
 
 /**
  * Real Binance / CoinGecko mark prices only. When a price is unavailable the
- * slot stays empty — the homepage never substitutes an illustrative number.
+ * slot stays empty. The homepage never substitutes an illustrative number.
  */
 function LiveMarketBand() {
   const { locale } = useLocale();
@@ -80,7 +81,7 @@ function LiveMarketBand() {
               <span className="ex-band__symbol">{asset.symbol}</span>
             </span>
             <span className="ex-band__price" data-pending={price ? "false" : "true"}>
-              {price ? formatMarkPrice(price.markPrice, locale) : "—"}
+              {price ? formatMarkPrice(price.markPrice, locale) : PENDING_PRICE}
             </span>
           </div>
         );
@@ -124,7 +125,7 @@ export default function HomeClient() {
   return (
     <main>
       {/* ---------------------------------------------------------------
-          Hero — the artwork is the spatial structure, not a backdrop.
+          Hero. The artwork is the spatial structure, not a backdrop.
           Headline holds the dark left sky, the brand line holds the upper
           right, the peaks are left uncovered, and a full-width live data
           band anchors the bottom edge.
@@ -191,10 +192,12 @@ export default function HomeClient() {
 
       {/* --------------------------- Core mechanic --------------------------- */}
       <section className="ex-section">
-        <div className="ex-shell ex-mechanic">
-          <div className="ex-mechanic__aside">
-            <p className="ex-eyebrow">{t.home.mechanicEyebrow}</p>
-            <h2 className="ex-display ex-display--lg">{t.home.mechanicTitle}</h2>
+        <div className="ex-shell">
+          <div className="ex-mechanic__head">
+            <div>
+              <p className="ex-eyebrow">{t.home.mechanicEyebrow}</p>
+              <h2 className="ex-display ex-display--lg">{t.home.mechanicTitle}</h2>
+            </div>
             <p className="ex-lede">{t.home.mechanicLede}</p>
           </div>
 
@@ -227,92 +230,102 @@ export default function HomeClient() {
         </div>
       </section>
 
-      {/* --------------------------- Time horizons --------------------------- */}
+      {/* ------------------------------ Market spec ------------------------------
+          Assets, directions and horizons in one dense band. The 24 pools
+          stated as a spec sheet rather than two sparse card rows.
+         ------------------------------------------------------------------- */}
       <section className="ex-section" style={{ paddingTop: 0 }}>
         <div className="ex-shell">
-          <p className="ex-eyebrow" style={{ marginBottom: "clamp(20px,2.4vw,32px)" }}>
-            {t.home.horizonsEyebrow}
-          </p>
-          <div className="ex-band-split ex-band-split--3">
-            <article className="ex-horizon">
-              <h3 className="ex-horizon__key">{t.home.horizonDayKey}</h3>
-              <span className="ex-horizon__window">{t.home.horizonDayWindow}</span>
-              <p>{t.home.horizonDayBody}</p>
-            </article>
-            <article className="ex-horizon">
-              <h3 className="ex-horizon__key">{t.home.horizonWeekKey}</h3>
-              <span className="ex-horizon__window">{t.home.horizonWeekWindow}</span>
-              <p>{t.home.horizonWeekBody}</p>
-            </article>
-            <article className="ex-horizon">
-              <h3 className="ex-horizon__key">{t.home.horizonQuarterKey}</h3>
-              <span className="ex-horizon__window">{t.home.horizonQuarterWindow}</span>
-              <p>{t.home.horizonQuarterBody}</p>
-            </article>
+          <div className="ex-mechanic__head">
+            <div>
+              <p className="ex-eyebrow">{t.home.gridEyebrow}</p>
+              <h2 className="ex-display ex-display--lg">{t.home.gridTitle}</h2>
+            </div>
+            <p className="ex-lede">{t.home.gridLede}</p>
           </div>
-        </div>
-      </section>
 
-      {/* ---------------------------- Two directions ---------------------------- */}
-      <section className="ex-section" style={{ paddingTop: 0 }}>
-        <div className="ex-shell">
-          <p className="ex-eyebrow" style={{ marginBottom: "clamp(20px,2.4vw,32px)" }}>
-            {t.home.directionsEyebrow}
-          </p>
-          <div className="ex-band-split ex-band-split--2">
-            <article className="ex-direction">
-              <span className="ex-direction__key">
-                <DirectionMark direction="high" />
-                {t.home.directionHighKey}
-              </span>
-              <p>{t.home.directionHighBody}</p>
-            </article>
-            <article className="ex-direction">
-              <span className="ex-direction__key">
-                <DirectionMark direction="low" />
-                {t.home.directionLowKey}
-              </span>
-              <p>{t.home.directionLowBody}</p>
-            </article>
+          <div className="ex-spec">
+            <div className="ex-spec__row">
+              <span className="ex-spec__label">{t.home.gridAssetsLabel}</span>
+              <div className="ex-spec__items">
+                {BAND_ASSETS.map((asset) => (
+                  <span className="ex-spec__asset" key={asset.symbol}>
+                    <img src={assetConfigs[asset.symbol].brandSrc} alt="" />
+                    {asset.symbol}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="ex-spec__row">
+              <span className="ex-spec__label">{t.home.gridDirectionsLabel}</span>
+              <div className="ex-spec__items">
+                <span className="ex-spec__item">
+                  <span className="ex-spec__key">
+                    <DirectionMark direction="high" />
+                    {t.home.directionHighKey}
+                  </span>
+                  <span className="ex-spec__note">{t.home.directionHighBody}</span>
+                </span>
+                <span className="ex-spec__item">
+                  <span className="ex-spec__key">
+                    <DirectionMark direction="low" />
+                    {t.home.directionLowKey}
+                  </span>
+                  <span className="ex-spec__note">{t.home.directionLowBody}</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="ex-spec__row">
+              <span className="ex-spec__label">{t.home.horizonsEyebrow}</span>
+              <div className="ex-spec__items">
+                <span className="ex-spec__item">
+                  <span className="ex-spec__key">{t.home.horizonDayKey}</span>
+                  <span className="ex-spec__meta">{t.home.horizonDayWindow}</span>
+                </span>
+                <span className="ex-spec__item">
+                  <span className="ex-spec__key">{t.home.horizonWeekKey}</span>
+                  <span className="ex-spec__meta">{t.home.horizonWeekWindow}</span>
+                </span>
+                <span className="ex-spec__item">
+                  <span className="ex-spec__key">{t.home.horizonQuarterKey}</span>
+                  <span className="ex-spec__meta">{t.home.horizonQuarterWindow}</span>
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
       {/* --------------------------- Verifiable result --------------------------- */}
       <section className="ex-verify ex-section">
-        <div className="ex-shell ex-verify__grid">
-          <div>
-            <p className="ex-eyebrow ex-eyebrow--dark">{t.home.verifyEyebrow}</p>
-            <h2
-              className="ex-display ex-display--lg"
-              style={{ color: "var(--on-dark)", margin: "14px 0 16px" }}
-            >
-              {t.home.verifyTitle}
-            </h2>
+        <div className="ex-shell">
+          <div className="ex-verify__head">
+            <div>
+              <p className="ex-eyebrow ex-eyebrow--dark">{t.home.verifyEyebrow}</p>
+              <h2 className="ex-display ex-display--lg" style={{ color: "var(--on-dark)" }}>
+                {t.home.verifyTitle}
+              </h2>
+            </div>
             <p className="ex-lede ex-lede--dark">{t.home.verifyLede}</p>
           </div>
 
           <ul className="ex-evidence">
             <li>
               <span className="ex-evidence__tag">{t.home.verifyChainTag}</span>
-              <div>
-                <h3>{t.home.verifyChainTitle}</h3>
-                <p>{t.home.verifyChainBody}</p>
-              </div>
+              <h3>{t.home.verifyChainTitle}</h3>
+              <p>{t.home.verifyChainBody}</p>
             </li>
             <li>
               <span className="ex-evidence__tag">{t.home.verifyPriceTag}</span>
-              <div>
-                <h3>{t.home.verifyPriceTitle}</h3>
-                <p>{t.home.verifyPriceBody}</p>
-              </div>
+              <h3>{t.home.verifyPriceTitle}</h3>
+              <p>{t.home.verifyPriceBody}</p>
             </li>
             <li>
               <span className="ex-evidence__tag">{t.home.verifyOwnerTag}</span>
-              <div>
-                <h3>{t.home.verifyOwnerTitle}</h3>
-                <p>{t.home.verifyOwnerBody}</p>
-              </div>
+              <h3>{t.home.verifyOwnerTitle}</h3>
+              <p>{t.home.verifyOwnerBody}</p>
             </li>
           </ul>
         </div>

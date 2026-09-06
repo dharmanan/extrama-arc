@@ -7,12 +7,12 @@
    ========================================================================== */
 
 :root{
-  /* Surfaces — warm, paper-like, never pure white */
+  /* Surfaces. Warm, paper like, never pure white */
   --paper:#f4f1ea;
   --paper-2:#eae5d9;
   --paper-3:#e0dace;
 
-  /* Night — sampled from the mountain artwork, never pure black */
+  /* Night. Sampled from the mountain artwork, never pure black */
   --night:#0d0f0e;
   --night-2:#151917;
   --night-3:#1e2321;
@@ -27,7 +27,7 @@
   --on-dark-2:rgba(246,243,236,.72);
   --on-dark-3:rgba(246,243,236,.48);
 
-  /* Ember — the sunset in the artwork. Used sparingly, never as decoration. */
+  /* Ember. The sunset in the artwork. Used sparingly, never as decoration. */
   --ember:#c2743a;
   --ember-soft:rgba(194,116,58,.16);
 
@@ -50,7 +50,7 @@
   --r-pill:999px;
 
   /* Rhythm */
-  --section-y:clamp(64px,9vw,132px);
+  --section-y:clamp(52px,6vw,92px);
 }
 
 *{box-sizing:border-box}
@@ -113,7 +113,7 @@ img{max-width:100%}
 .ex-rule{height:1px;background:var(--line);border:0;margin:0}
 .ex-rule--dark{background:var(--line-dark)}
 
-/* Buttons — flat, sharp, confident. No gradients, no glow. */
+/* Buttons. Flat, sharp, confident. No gradients, no glow. */
 .ex-btn{
   display:inline-flex;
   align-items:center;
@@ -146,7 +146,7 @@ img{max-width:100%}
 .ex-section{padding-block:var(--section-y)}
 
 /* --------------------------------------------------------------------------
-   Global header — works over the dark homepage composition and light routes
+   Global header. Works over the dark homepage composition and light routes
    -------------------------------------------------------------------------- */
 
 .ex-header{
@@ -246,7 +246,7 @@ img{max-width:100%}
 }
 
 /* --------------------------------------------------------------------------
-   Homepage — hero composition
+   Homepage. Hero composition
    -------------------------------------------------------------------------- */
 
 .ex-hero{
@@ -302,7 +302,7 @@ img{max-width:100%}
 .ex-hero__title em{font-style:italic;color:#fff}
 
 /* Right-hand counterweight. Set at real size with a rule so it holds the
-   right side of the canvas — not decorative microcopy. */
+   right side of the canvas, not decorative microcopy. */
 .ex-hero__aside{
   grid-column:2;
   align-self:stretch;
@@ -316,7 +316,7 @@ img{max-width:100%}
 }
 
 /* Reference A's right-hand block: uppercase, widely tracked, one word per
-   line, right-aligned — the counterweight to the serif headline. */
+   line, right aligned. The counterweight to the serif headline. */
 .ex-hero__aside-line{
   margin:0;
   text-align:right;
@@ -431,16 +431,18 @@ img{max-width:100%}
 }
 
 /* --------------------------------------------------------------------------
-   Homepage — editorial sections
+   Homepage. Editorial sections
    -------------------------------------------------------------------------- */
 
-.ex-mechanic{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:clamp(28px,5vw,80px);align-items:start}
-.ex-mechanic__aside{display:grid;gap:16px;align-self:start}
-@media(min-width:901px){
-  /* Keeps the statement paired with the steps instead of stranding a void. */
-  .ex-mechanic__aside{position:sticky;top:clamp(40px,12vh,120px)}
+.ex-mechanic__head{
+  display:grid;
+  grid-template-columns:minmax(0,6fr) minmax(0,5fr);
+  gap:clamp(20px,4vw,64px);
+  align-items:end;
+  margin-bottom:clamp(26px,3.2vw,44px);
 }
-.ex-steps{display:grid;gap:0;margin:0;padding:0;list-style:none;counter-reset:step}
+.ex-mechanic__head .ex-eyebrow{margin-bottom:12px}
+.ex-steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 clamp(28px,4vw,64px);margin:0;padding:0;list-style:none;counter-reset:step}
 .ex-steps li{
   counter-increment:step;
   display:grid;
@@ -450,7 +452,7 @@ img{max-width:100%}
   padding-block:clamp(18px,2.2vw,26px);
   border-top:1px solid var(--line);
 }
-.ex-steps li:last-child{border-bottom:1px solid var(--line)}
+.ex-steps li:nth-last-child(-n+2){border-bottom:1px solid var(--line)}
 .ex-steps li::before{
   content:counter(step,decimal-leading-zero);
   font-family:var(--mono);
@@ -461,7 +463,7 @@ img{max-width:100%}
 .ex-steps h3{font-family:var(--serif);font-weight:400;font-size:clamp(1.25rem,2vw,1.7rem);margin:0 0 6px;line-height:1.16}
 .ex-steps p{margin:0;color:var(--ink-2);font-size:.97rem;line-height:1.55;max-width:46ch}
 
-/* Horizons + directions share a ruled band language — not cards. */
+/* Horizons and directions share a ruled band language, not cards. */
 .ex-band-split{display:grid;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .ex-band-split--3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .ex-band-split--2{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -482,19 +484,74 @@ img{max-width:100%}
 .ex-direction__mark{width:34px;height:34px;flex:none;color:var(--ember)}
 .ex-direction p{margin:0;color:var(--ink-2);font-size:.98rem;line-height:1.6;max-width:44ch}
 
-/* Verification — dark band, evidence chain */
+/* Market spec. One dense band replacing the two near empty ones.
+   Reads as a spec sheet: what you can pick, stated plainly. */
+.ex-spec{display:grid;border-top:1px solid var(--line)}
+.ex-spec__row{
+  display:grid;
+  grid-template-columns:minmax(96px,1fr) minmax(0,7fr);
+  gap:clamp(14px,3vw,44px);
+  padding-block:clamp(18px,2.4vw,30px);
+  border-bottom:1px solid var(--line);
+  align-items:center;
+}
+.ex-spec__label{
+  font-size:.72rem;
+  font-weight:600;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-spec__items{display:flex;flex-wrap:wrap;gap:clamp(16px,2.6vw,40px);align-items:baseline}
+.ex-spec__asset{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  font-family:var(--serif);
+  font-size:clamp(1.15rem,1.7vw,1.55rem);
+}
+.ex-spec__asset img{width:22px;height:22px;object-fit:contain}
+.ex-spec__item{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}
+.ex-spec__key{
+  font-family:var(--serif);
+  font-size:clamp(1.15rem,1.7vw,1.55rem);
+  line-height:1.1;
+  display:inline-flex;
+  align-items:center;
+  gap:9px;
+  white-space:nowrap;
+}
+.ex-spec__key .ex-direction__mark{width:22px;height:22px}
+.ex-spec__meta{font-family:var(--mono);font-size:.78rem;color:var(--muted);white-space:nowrap}
+.ex-spec__note{font-size:.9rem;color:var(--ink-2);line-height:1.5}
+
+@media(max-width:760px){
+  .ex-spec__row{grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
+  .ex-spec__items{gap:14px 22px}
+}
+
+/* Verification. Dark band, evidence chain */
 .ex-verify{background:var(--night);color:var(--on-dark)}
-.ex-verify__grid{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:clamp(28px,5vw,72px);align-items:start}
-.ex-evidence{display:grid;gap:0;margin:0;padding:0;list-style:none}
+.ex-verify__head{
+  display:grid;
+  grid-template-columns:minmax(0,6fr) minmax(0,5fr);
+  gap:clamp(20px,4vw,64px);
+  align-items:end;
+  margin-bottom:clamp(26px,3.2vw,44px);
+}
+.ex-evidence{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:0 clamp(24px,3.2vw,52px);
+  margin:0;padding:0;list-style:none;
+}
 .ex-evidence li{
   display:grid;
-  grid-template-columns:auto minmax(0,1fr);
-  gap:clamp(16px,2.4vw,30px);
-  padding-block:clamp(18px,2.2vw,26px);
+  gap:8px;
+  align-content:start;
+  padding-top:clamp(16px,1.8vw,22px);
   border-top:1px solid var(--line-dark);
-  align-items:baseline;
 }
-.ex-evidence li:last-child{border-bottom:1px solid var(--line-dark)}
 .ex-evidence__tag{
   font-family:var(--mono);
   font-size:.74rem;
@@ -506,12 +563,8 @@ img{max-width:100%}
 .ex-evidence h3{font-family:var(--serif);font-weight:400;font-size:clamp(1.2rem,1.9vw,1.6rem);margin:0 0 6px;color:var(--on-dark)}
 .ex-evidence p{margin:0;color:var(--on-dark-2);font-size:.95rem;line-height:1.58;max-width:52ch}
 
-/* Payout — proportional, geometric, not celebratory */
-.ex-payout{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:clamp(28px,5vw,72px);align-items:start}
-@media(min-width:901px){
-  .ex-verify__grid>:first-child,
-  .ex-payout>:first-child{position:sticky;top:clamp(40px,12vh,120px);align-self:start}
-}
+/* Payout. Proportional, geometric, not celebratory */
+.ex-payout{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:clamp(28px,5vw,72px);align-items:center}
 .ex-split{display:grid;gap:18px}
 .ex-split__bar{display:flex;height:14px;border-radius:var(--r-sm);overflow:hidden;background:var(--paper-3)}
 .ex-split__seg{height:100%}
@@ -524,7 +577,7 @@ img{max-width:100%}
 .ex-split__pct{font-family:var(--mono);font-size:clamp(1.1rem,1.8vw,1.5rem);font-variant-numeric:tabular-nums}
 .ex-split__label{font-size:.76rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 
-/* Closing composition — the artwork returns */
+/* Closing composition. The artwork returns */
 .ex-close{position:relative;isolation:isolate;overflow:hidden;background:var(--night);color:var(--on-dark)}
 .ex-close__media{position:absolute;inset:0;z-index:-2}
 .ex-close__media img{width:100%;height:100%;object-fit:cover;object-position:50% 34%;display:block}
@@ -540,7 +593,11 @@ img{max-width:100%}
 .ex-foot small{font-size:.78rem;color:var(--muted);letter-spacing:.06em}
 
 @media(max-width:900px){
-  .ex-mechanic,.ex-verify__grid,.ex-payout{grid-template-columns:minmax(0,1fr)}
+  .ex-mechanic__head,.ex-verify__head,.ex-payout{grid-template-columns:minmax(0,1fr)}
+  .ex-mechanic__head,.ex-verify__head{align-items:start;gap:14px}
+  .ex-steps,.ex-evidence{grid-template-columns:minmax(0,1fr)}
+  .ex-steps li:nth-last-child(-n+2){border-bottom:0}
+  .ex-steps li:last-child{border-bottom:1px solid var(--line)}
   .ex-band-split--3,.ex-band-split--2{grid-template-columns:minmax(0,1fr)}
   .ex-band-split>*{border-left:0;border-top:1px solid var(--line);padding-inline:0}
   .ex-band-split>*:first-child{border-top:0}
