@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { assetConfigs } from "./lib/data";
+import { assetConfigs } from "./lib/asset-config";
 import type { Asset } from "./lib/domain";
 import { shortAddress, useWalletSession } from "./wallet-session";
 import { backendApi, type LivePool } from "./lib/backend-api";

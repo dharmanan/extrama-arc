@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "./product-components";
-import { assetConfigs } from "./lib/data";
+import { assetConfigs } from "./lib/asset-config";
 import { readBinanceLiveMarket } from "./lib/live-market";
 import { useCopy, useLocale } from "./i18n";
 

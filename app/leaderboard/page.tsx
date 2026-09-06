@@ -1,5 +1,4 @@
 import { ProductHeader } from "../product-components";
-import { results } from "../lib/data";
 
 const players = [
   { rank: 1, wallet: "0x7a8...3f1e", wins: 8, podiums: 15, earned: 8420 },
@@ -20,7 +19,6 @@ export default function LeaderboardPage() {
           <thead><tr><th>Rank</th><th>Wallet</th><th>Wins</th><th>Podiums</th><th>USDC earned</th></tr></thead>
           <tbody>{players.map((player) => <tr key={player.wallet}><td>#{player.rank}</td><td>{player.wallet}</td><td>{player.wins}</td><td>{player.podiums}</td><td>{player.earned}</td></tr>)}</tbody>
         </table>
-        <p>Settled demo rounds available: {results.length}</p>
       </section>
     </main>
   );
