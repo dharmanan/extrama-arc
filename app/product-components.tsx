@@ -5,14 +5,8 @@ import Link from "next/link";
 import { assetConfigs } from "./lib/asset-config";
 import type { Asset } from "./lib/domain";
 import { shortAddress, useWalletSession } from "./wallet-session";
-import { backendApi, type LivePool } from "./lib/backend-api";
+import { backendApi } from "./lib/backend-api";
 import { useCopy, useLocale } from "./i18n";
-import {
-  formatEntryCount,
-  formatLocalDateTime,
-  formatUsdc,
-  humanRoundStatus,
-} from "./lib/display";
 
 function formatHeaderUsdc(value: string, locale: "en" | "tr") {
   const numeric = Number(value);
@@ -118,36 +112,6 @@ export function AssetMark({ asset }: { asset: Asset }) {
   );
 }
 
-function titleCase(value: string) {
-  return value.charAt(0) + value.slice(1).toLowerCase();
-}
-
-function formatUsdPrice(value: string | null, locale: "en" | "tr") {
-  if (value === null) return "—";
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return value;
-  return new Intl.NumberFormat(locale === "tr" ? "tr-TR" : "en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(numeric);
-}
-
-function localizedCadence(value: LivePool["cadence"], locale: "en" | "tr") {
-  if (locale === "tr") {
-    if (value === "DAILY") return "Gün";
-    if (value === "WEEKLY") return "Hafta";
-    return "Çeyrek";
-  }
-  return titleCase(value);
-}
-
-function localizedDirection(value: LivePool["direction"], locale: "en" | "tr") {
-  if (locale === "tr") return value === "HIGH" ? "Yüksek" : "Düşük";
-  return titleCase(value);
-}
-
 function formatCountdown(ms: number, locale: "en" | "tr") {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const days = Math.floor(totalSeconds / 86400);
@@ -213,53 +177,3 @@ export function RoundCountdown({
   );
 }
 
-function poolStatusLabel(pool: LivePool, locale: "en" | "tr") {
-  if (pool.round.contractStatus === "ENTRY_OPEN" && !pool.round.canEnter) {
-    return locale === "tr"
-      ? "Tahminler kapandı · kilit bekleniyor"
-      : "Predictions closed · awaiting lock";
-  }
-  return humanRoundStatus(pool.round.contractStatus, locale);
-}
-
-export function PoolSummary({ pool }: { pool: LivePool }) {
-  const { locale } = useLocale();
-  const t = useCopy();
-
-  return (
-    <article className="wf-card">
-      <div className="wf-row">
-        <AssetMark asset={pool.asset} />
-        <span>{localizedCadence(pool.cadence, locale)} · {localizedDirection(pool.direction, locale)}</span>
-      </div>
-
-      <p>{t.round} <b>#{pool.round.roundId}</b></p>
-
-      <dl className="wf-stats">
-        <div>
-          <dt>{pool.market.available ? formatUsdPrice(pool.market.markPrice, locale) : t.unavailable}</dt>
-          <dd>
-            {t.liveMark}
-            {pool.market.available && pool.market.source ? ` · ${pool.market.source}` : ""}
-          </dd>
-        </div>
-        <div>
-          <dt>{formatUsdPrice(pool.round.lastPredictionPrice, locale)}</dt>
-          <dd>{t.latestPrediction}</dd>
-        </div>
-      </dl>
-
-      <dl className="wf-stats">
-        <div><dt>{formatEntryCount(pool.round.entryCount, locale)}</dt><dd>{t.entries}</dd></div>
-        <div><dt>{formatUsdc(pool.round.totalStakeUsdc, locale)}</dt><dd>{t.prizePool}</dd></div>
-      </dl>
-
-      <p><b>{poolStatusLabel(pool, locale)}</b></p>
-      <p>{t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
-
-      <Link href={`/pools/${pool.slug}`} className="wf-action">
-        {pool.round.canEnter ? t.makePrediction : t.viewPool}
-      </Link>
-    </article>
-  );
-}

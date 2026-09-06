@@ -43,6 +43,14 @@ export function useLocale() {
 export const copy = {
   en: {
     pools: "Pools",
+    poolsEyebrow: "Markets",
+    poolsTitle: "Choose the extreme.",
+    poolsLede:
+      "24 live prediction markets across four assets, two directions, and three horizons.",
+    poolsAssetFilter: "Asset",
+    poolsHorizonFilter: "Horizon",
+    poolsBlock: "Arc Testnet block",
+    poolsNoWindow: "No open prediction window",
     leaderboard: "Leaderboard",
     leaderboardWindow: "LAST 90 DAYS",
     leaderboardRank: "Rank",
@@ -203,6 +211,14 @@ export const copy = {
   },
   tr: {
     pools: "Havuzlar",
+    poolsEyebrow: "Piyasalar",
+    poolsTitle: "Uç noktayı seç.",
+    poolsLede:
+      "Dört varlık, iki yön ve üç zaman aralığında 24 canlı tahmin piyasası.",
+    poolsAssetFilter: "Varlık",
+    poolsHorizonFilter: "Zaman aralığı",
+    poolsBlock: "Arc Testnet bloğu",
+    poolsNoWindow: "Açık tahmin penceresi yok",
     leaderboard: "Liderlik",
     leaderboardWindow: "SON 90 GÜN",
     leaderboardRank: "Sıra",

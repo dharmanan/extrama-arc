@@ -604,3 +604,300 @@ img{max-width:100%}
   .ex-band-split>*:first-child{border-top:0}
   .ex-split__legend{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+/* ==========================================================================
+   Pools overview
+   An editorial market board, not a card grid. The 24 pools are stated as
+   four asset sections, each a 3 x 2 instrument matrix (horizon down the
+   side, direction across the top), so the whole architecture is visible
+   at a glance. One countdown only, used as the compositional counterweight
+   to the title. Same hairline rules, serif display and mono numerals as
+   the homepage.
+   ========================================================================== */
+
+.ex-pools{padding-bottom:clamp(56px,7vw,100px)}
+
+/* ---- A. Market header ---------------------------------------------------- */
+
+.ex-pools__head{
+  display:grid;
+  grid-template-columns:minmax(0,7fr) minmax(0,5fr);
+  gap:clamp(24px,4vw,64px);
+  align-items:end;
+  padding-block:clamp(34px,4.8vw,68px);
+}
+.ex-pools__intro{display:grid;gap:clamp(13px,1.5vw,19px);align-content:start;min-width:0}
+
+/* The one countdown. Sized to hold the right half of the composition. */
+.ex-window{
+  justify-self:stretch;
+  display:grid;
+  gap:9px;
+  padding-top:clamp(14px,1.7vw,20px);
+  border-top:1px solid var(--line-strong);
+  min-width:0;
+}
+.ex-window__label{
+  margin:0;
+  font-size:clamp(10px,.72vw,11.5px);
+  font-weight:600;
+  letter-spacing:.2em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-window__context{
+  margin:0;
+  font-size:.92rem;
+  font-weight:600;
+  color:var(--ink-2);
+  letter-spacing:.01em;
+}
+.ex-window__value{
+  margin:0;
+  font-family:var(--mono);
+  font-variant-numeric:tabular-nums;
+  font-size:clamp(1.85rem,3.6vw,3rem);
+  line-height:1;
+  letter-spacing:-.03em;
+  color:var(--ink);
+}
+.ex-window__meta{
+  margin:0;
+  font-family:var(--mono);
+  font-size:.76rem;
+  color:var(--muted);
+  letter-spacing:.01em;
+}
+/* No open or upcoming entry window for the current selection. Stated, not
+   faked: there is no real target to count toward. */
+.ex-window--empty .ex-window__context{color:var(--muted);font-weight:500}
+
+/* ---- B. Filter rail ------------------------------------------------------ */
+
+.ex-rail{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:baseline;
+  gap:clamp(14px,2.4vw,42px);
+  padding-block:clamp(12px,1.3vw,16px);
+  border-top:1px solid var(--line-strong);
+  border-bottom:1px solid var(--line);
+}
+.ex-rail__group{display:flex;align-items:baseline;gap:clamp(10px,1.4vw,18px);flex-wrap:wrap;min-width:0}
+.ex-rail__label{
+  font-size:.7rem;
+  font-weight:600;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+  color:var(--muted);
+  white-space:nowrap;
+}
+.ex-rail__set{display:flex;flex-wrap:wrap;gap:clamp(9px,1.2vw,17px)}
+.ex-rail__btn{
+  border:0;
+  background:transparent;
+  padding:2px 0;
+  font-size:.85rem;
+  font-weight:600;
+  letter-spacing:.03em;
+  color:var(--muted);
+  border-bottom:1px solid transparent;
+  transition:color .18s ease,border-color .18s ease;
+}
+.ex-rail__btn:hover{color:var(--ink)}
+.ex-rail__btn[data-active="true"]{color:var(--ink);border-bottom-color:var(--ink)}
+.ex-rail__meta{
+  margin:0 0 0 auto;
+  font-family:var(--mono);
+  font-size:.75rem;
+  color:var(--muted);
+  letter-spacing:.01em;
+  white-space:nowrap;
+}
+
+.ex-pools__note{
+  margin:clamp(24px,3vw,40px) 0 0;
+  font-family:var(--mono);
+  font-size:.82rem;
+  color:var(--muted);
+}
+.ex-pools__error{
+  display:grid;
+  gap:12px;
+  padding-block:clamp(28px,3.4vw,44px);
+  border-bottom:1px solid var(--line);
+}
+
+/* ---- C. Pool board ------------------------------------------------------- */
+
+.ex-board{display:grid}
+
+.ex-asset{border-bottom:1px solid var(--line)}
+.ex-asset:last-child{border-bottom:0}
+
+.ex-asset__head{
+  display:flex;
+  align-items:baseline;
+  gap:clamp(10px,1.6vw,22px);
+  flex-wrap:wrap;
+  padding-block:clamp(20px,2.3vw,30px) clamp(12px,1.3vw,16px);
+}
+.ex-asset__id{display:flex;align-items:center;gap:11px;min-width:0}
+.ex-asset__id img{width:25px;height:25px;object-fit:contain;flex:none}
+.ex-asset__symbol{
+  font-family:var(--serif);
+  font-size:clamp(1.5rem,2.5vw,2.15rem);
+  line-height:1;
+  letter-spacing:-.01em;
+}
+.ex-asset__name{font-size:.85rem;color:var(--muted);letter-spacing:.02em}
+.ex-asset__mark{display:flex;align-items:baseline;gap:clamp(8px,1.1vw,14px);margin-inline-start:auto;min-width:0}
+.ex-asset__price{
+  font-family:var(--mono);
+  font-variant-numeric:tabular-nums;
+  font-size:clamp(1rem,1.6vw,1.32rem);
+  letter-spacing:-.01em;
+  color:var(--ink);
+}
+.ex-asset__price[data-pending="true"]{color:var(--muted)}
+.ex-asset__source{
+  font-size:.68rem;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+  color:var(--muted);
+  white-space:nowrap;
+}
+
+/* The instrument matrix: horizon down the side, direction across the top. */
+.ex-matrix{display:grid;grid-template-columns:minmax(74px,.46fr) minmax(0,1fr) minmax(0,1fr)}
+
+.ex-matrix__head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:0 clamp(12px,1.3vw,20px) 9px;
+  font-size:.7rem;
+  font-weight:600;
+  letter-spacing:.18em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-matrix__head svg{width:17px;height:17px;flex:none;color:var(--ember)}
+
+.ex-cadence{
+  display:flex;
+  align-items:flex-start;
+  padding:clamp(15px,1.7vw,21px) clamp(10px,1.2vw,16px) clamp(15px,1.7vw,21px) 0;
+  border-top:1px solid var(--line);
+  font-size:.73rem;
+  font-weight:600;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--ink-2);
+}
+
+.ex-cell{
+  display:grid;
+  gap:9px;
+  align-content:start;
+  padding:clamp(15px,1.7vw,21px) clamp(12px,1.3vw,20px);
+  border-top:1px solid var(--line);
+  border-left:1px solid var(--line);
+  color:var(--ink);
+  transition:background-color .18s ease;
+}
+.ex-cell:hover{background:rgba(16,21,20,.04)}
+.ex-cell--empty{align-content:center;color:var(--muted)}
+
+.ex-cell__dir{
+  display:none;
+  align-items:center;
+  gap:7px;
+  font-size:.68rem;
+  font-weight:600;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-cell__dir svg{width:15px;height:15px;flex:none;color:var(--ember)}
+
+.ex-cell__top{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.ex-cell__round{font-family:var(--mono);font-size:.86rem;letter-spacing:.01em;white-space:nowrap}
+.ex-cell__status{font-size:.72rem;color:var(--muted);text-align:right;line-height:1.3}
+.ex-cell[data-open="true"] .ex-cell__status{color:var(--ember)}
+
+/* Content width, not equal thirds: the numbers cluster into a readable
+   block instead of stretching thin across a wide cell. */
+.ex-cell__stats{display:grid;grid-template-columns:repeat(3,minmax(0,max-content));gap:clamp(14px,2.2vw,34px)}
+.ex-cell__stat{display:grid;gap:3px;min-width:0}
+.ex-cell__val{
+  font-family:var(--mono);
+  font-variant-numeric:tabular-nums;
+  font-size:.9rem;
+  letter-spacing:-.01em;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.ex-cell__key{
+  font-size:.63rem;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+  color:var(--muted);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.ex-cell__foot{
+  display:flex;
+  align-items:baseline;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+  padding-top:1px;
+}
+.ex-cell__time{font-family:var(--mono);font-size:.71rem;color:var(--muted)}
+.ex-cell__cta{
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  font-size:.78rem;
+  font-weight:600;
+  color:var(--ink);
+  white-space:nowrap;
+}
+.ex-cell__cta span{transition:transform .18s ease}
+.ex-cell:hover .ex-cell__cta span{transform:translateX(3px)}
+
+/* Tablet. Keep the paired HIGH/LOW logic, move the horizon to its own line. */
+@media(max-width:900px){
+  .ex-pools__head{grid-template-columns:minmax(0,1fr);align-items:start;gap:clamp(20px,4vw,30px)}
+  .ex-window{justify-self:start;min-width:min(360px,100%)}
+  .ex-rail__meta{margin-inline-start:0;flex-basis:100%}
+  .ex-matrix{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  /* The horizon column is gone, so the empty corner header must go too or
+     it would push LOW onto its own line. */
+  .ex-matrix__head--spacer{display:none}
+  .ex-matrix__head{padding-inline:0 clamp(12px,1.3vw,20px)}
+  .ex-matrix__head + .ex-matrix__head{padding-inline:clamp(12px,1.3vw,20px)}
+  .ex-cadence{
+    grid-column:1 / -1;
+    padding:clamp(14px,2.4vw,18px) 0 7px;
+    border-top:1px solid var(--line-strong);
+  }
+  .ex-cell{border-left:0}
+  .ex-cell + .ex-cell{border-left:1px solid var(--line)}
+}
+
+/* Phone. One column, so each cell states its own direction. */
+@media(max-width:560px){
+  .ex-matrix{grid-template-columns:minmax(0,1fr)}
+  .ex-matrix__head{display:none}
+  .ex-cell,.ex-cell + .ex-cell{border-left:0;padding-inline:0}
+  .ex-cell__dir{display:inline-flex}
+  .ex-asset__mark{margin-inline-start:0;flex-basis:100%}
+  .ex-cell__stats{gap:clamp(12px,4vw,20px)}
+  /* Wrap the full label rather than truncating it. */
+  .ex-cell__key{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.28}
+}
