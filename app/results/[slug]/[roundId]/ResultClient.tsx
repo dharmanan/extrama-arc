@@ -94,7 +94,7 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
       <div className="ex-shell">
         <Link href="/pools" className="ex-pool__back">← {t.result.backToPools}</Link>
 
-        <section className="ex-result__head">
+        <section className="ex-result__head" style={{ paddingBottom: "clamp(30px, 3.6vw, 48px)" }}>
           <div className="ex-result__identity">
             <p className="ex-eyebrow">{t.result.eyebrow}</p>
             <span className="ex-pool__id">
@@ -152,11 +152,11 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
         )}
 
         {!settled && !cancelled && (
-          <section className="ex-result__progress" aria-labelledby="result-progress">
-            <div className="ex-result__section-head">
+          <section className="ex-result__progress" aria-labelledby="result-progress" style={{ paddingBlock: "clamp(30px, 3.6vw, 46px)" }}>
+            <div className="ex-result__section-head" style={{ gridTemplateColumns: "minmax(220px, 1.7fr) minmax(280px, 4fr)", paddingBottom: "clamp(14px, 1.8vw, 22px)" }}>
               <div>
                 <p className="ex-eyebrow">{t.result.progress}</p>
-                <h2 id="result-progress" className="ex-display ex-display--md">{t.result.pending}</h2>
+                <h2 id="result-progress" className="ex-display" style={{ fontSize: "clamp(1.3rem, 1.8vw, 1.65rem)", lineHeight: 1 }}>{t.result.pending}</h2>
               </div>
               <p>{t.result.pendingBody}</p>
             </div>
