@@ -15,6 +15,12 @@ const STATUS_LOCKED = 1;
 // How far back to look for rounds still owed a lifecycle transition.
 const ROUND_SCAN_DEPTH = 12n;
 
+// The Arc public RPC intermittently answers eth_call with an empty result
+// under sustained load, which ethers surfaces as CALL_EXCEPTION with no revert
+// data. Reads are therefore retried; sends never are.
+const READ_MAX_ATTEMPTS = 5;
+const READ_BASE_DELAY_MS = 200;
+
 const RESOLVER_SYMBOLS = Object.freeze({
   BTC: 'BTCUSDT',
   ETH: 'ETHUSDT',
@@ -88,6 +94,59 @@ async function withAutomationLock(work) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A genuine contract revert carries revert data. A view call that comes back
+// with none is a transport failure, not a decision by the contract, so it is
+// the one CALL_EXCEPTION shape that may safely be retried.
+function isTransientReadError(error) {
+  if (!error) return false;
+
+  const message = String(error.shortMessage || error.message || '').toLowerCase();
+  const infoMessage = String(error.info?.error?.message || '').toLowerCase();
+
+  if (error.info?.error?.code === -32005) return true;
+  if (message.includes('rate limit') || infoMessage.includes('rate limit')) return true;
+  if (['NETWORK_ERROR', 'SERVER_ERROR', 'TIMEOUT', 'UNKNOWN_ERROR'].includes(error.code)) {
+    return true;
+  }
+  if (error.code === 'CALL_EXCEPTION' && (error.data === null || error.data === undefined)) {
+    return true;
+  }
+
+  return false;
+}
+
+// Bounded exponential backoff for READ operations only. Never used for sends.
+async function safeRead(operation, context = {}) {
+  let lastError;
+
+  for (let attempt = 0; attempt < READ_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientReadError(error) || attempt === READ_MAX_ATTEMPTS - 1) break;
+
+      // Before spending more attempts on an empty CALL_EXCEPTION, confirm the
+      // contract is actually there, so a genuinely missing pool is not masked
+      // by retries. An unreadable getCode is inconclusive, so keep retrying.
+      if (error.code === 'CALL_EXCEPTION' && context.provider && context.address) {
+        const code = await context.provider
+          .getCode(context.address)
+          .catch(() => null);
+        if (code === '0x') break;
+      }
+
+      await sleep(READ_BASE_DELAY_MS * 2 ** attempt);
+    }
+  }
+
+  throw lastError;
+}
+
 function getAutomationProvider() {
   return new ethers.JsonRpcProvider(
     config.ARC_TESTNET_RPC_URL,
@@ -98,8 +157,8 @@ function getAutomationProvider() {
 
 async function readChainNow(provider) {
   const [network, latestBlock] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlock('latest'),
+    safeRead(() => provider.getNetwork()),
+    safeRead(() => provider.getBlock('latest')),
   ]);
   if (network.chainId !== ARC_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
   if (!latestBlock) throw new Error('arc_latest_block_unavailable');
@@ -151,30 +210,59 @@ async function scanLifecycle(provider, now) {
   const dueLock = [];
   const dueCancel = [];
   const dueSettle = [];
+  const readFailures = [];
 
   for (const item of topology) {
     const pool = new ethers.Contract(item.poolAddress, POOL_ABI, provider);
-    const nextRoundId = await pool.nextRoundId();
-    if (nextRoundId <= 1n) continue;
+    const context = { provider, address: item.poolAddress };
 
-    const oldest = oldestScannedRoundId(nextRoundId);
-    for (let roundId = nextRoundId - 1n; roundId >= oldest; roundId -= 1n) {
-      const round = await pool.getRound(roundId);
-      const status = Number(round.status);
+    // A pool that cannot be read completely is reported and skipped. It
+    // contributes no due work, so nothing is written to it on incomplete
+    // information, and the remaining pools are still evaluated.
+    try {
+      const nextRoundId = await safeRead(() => pool.nextRoundId(), context);
+      if (nextRoundId <= 1n) continue;
 
-      if (status === STATUS_ENTRY_OPEN && now >= round.entryCloseAt) {
-        dueLock.push({ topology: item, pool, roundId, round });
-        continue;
+      const oldest = oldestScannedRoundId(nextRoundId);
+      for (let roundId = nextRoundId - 1n; roundId >= oldest; roundId -= 1n) {
+        let round;
+        try {
+          round = await safeRead(() => pool.getRound(roundId), context);
+        } catch (error) {
+          readFailures.push({
+            slug: slugOf(item),
+            poolAddress: item.poolAddress,
+            roundId: Number(roundId),
+            operation: 'getRound',
+            error: error.shortMessage || error.message,
+          });
+          continue;
+        }
+
+        const status = Number(round.status);
+
+        if (status === STATUS_ENTRY_OPEN && now >= round.entryCloseAt) {
+          dueLock.push({ topology: item, pool, roundId, round });
+          continue;
+        }
+
+        if (status === STATUS_LOCKED && now >= round.observationEndAt) {
+          const bucket = Number(round.entryCount) < MIN_ENTRIES ? dueCancel : dueSettle;
+          bucket.push({ topology: item, pool, roundId, round });
+        }
       }
-
-      if (status === STATUS_LOCKED && now >= round.observationEndAt) {
-        const bucket = Number(round.entryCount) < MIN_ENTRIES ? dueCancel : dueSettle;
-        bucket.push({ topology: item, pool, roundId, round });
-      }
+    } catch (error) {
+      readFailures.push({
+        slug: slugOf(item),
+        poolAddress: item.poolAddress,
+        roundId: null,
+        operation: 'nextRoundId',
+        error: error.shortMessage || error.message,
+      });
     }
   }
 
-  return { dueLock, dueCancel, dueSettle };
+  return { dueLock, dueCancel, dueSettle, readFailures };
 }
 
 async function ensureCurrentDailyRoundsInternal() {
@@ -197,35 +285,56 @@ async function ensureCurrentDailyRoundsInternal() {
   const owners = new Set();
   const states = [];
 
+  const readFailures = [];
+
   for (const topology of dailyPools) {
     const pool = new ethers.Contract(topology.poolAddress, POOL_ABI, provider);
-    const [owner, cadence, nextRoundId] = await Promise.all([
-      pool.owner(),
-      pool.CADENCE(),
-      pool.nextRoundId(),
-    ]);
+    const context = { provider, address: topology.poolAddress };
 
-    if (Number(cadence) !== 0) {
-      throw new Error(`daily_cadence_mismatch_${topology.poolAddress}`);
+    // Isolate per pool: an unreadable pool is skipped rather than aborting the
+    // other seven. It is never written to, because it never reaches states[].
+    try {
+      const [owner, cadence, nextRoundId] = await Promise.all([
+        safeRead(() => pool.owner(), context),
+        safeRead(() => pool.CADENCE(), context),
+        safeRead(() => pool.nextRoundId(), context),
+      ]);
+
+      if (Number(cadence) !== 0) {
+        throw new Error(`daily_cadence_mismatch_${topology.poolAddress}`);
+      }
+
+      const normalizedOwner = ethers.getAddress(owner);
+      owners.add(normalizedOwner);
+
+      const latestRoundId = nextRoundId - 1n;
+      const latestRound =
+        latestRoundId >= 1n
+          ? await safeRead(() => pool.getRound(latestRoundId), context)
+          : null;
+
+      states.push({
+        topology,
+        pool,
+        owner: normalizedOwner,
+        nextRoundId,
+        latestRoundId,
+        latestRound,
+      });
+    } catch (error) {
+      readFailures.push({
+        slug: slugOf(topology),
+        poolAddress: topology.poolAddress,
+        roundId: null,
+        operation: 'daily_pool_state',
+        error: error.shortMessage || error.message,
+      });
     }
-
-    const normalizedOwner = ethers.getAddress(owner);
-    owners.add(normalizedOwner);
-
-    const latestRoundId = nextRoundId - 1n;
-    const latestRound =
-      latestRoundId >= 1n ? await pool.getRound(latestRoundId) : null;
-
-    states.push({
-      topology,
-      pool,
-      owner: normalizedOwner,
-      nextRoundId,
-      latestRoundId,
-      latestRound,
-    });
   }
 
+  if (states.length === 0) {
+    return { skipped: true, reason: 'daily_pool_state_unreadable', readFailures };
+  }
   if (owners.size !== 1) throw new Error('daily_pool_owner_mismatch');
   const [ownerAddress] = Array.from(owners);
 
@@ -237,7 +346,8 @@ async function ensureCurrentDailyRoundsInternal() {
     return {
       skipped: true,
       reason: 'daily_rounds_already_current',
-      roundCount: 8,
+      roundCount: states.length,
+      readFailures,
     };
   }
 
@@ -247,10 +357,13 @@ async function ensureCurrentDailyRoundsInternal() {
 
   for (const state of states) {
     // Re-read immediately before deciding to write so a prior partial run is safe.
-    const nextRoundId = await state.pool.nextRoundId();
+    const context = { provider, address: state.topology.poolAddress };
+    const nextRoundId = await safeRead(() => state.pool.nextRoundId(), context);
     const latestRoundId = nextRoundId - 1n;
     const latestRound =
-      latestRoundId >= 1n ? await state.pool.getRound(latestRoundId) : null;
+      latestRoundId >= 1n
+        ? await safeRead(() => state.pool.getRound(latestRoundId), context)
+        : null;
 
     if (sameSchedule(latestRound, schedule)) {
       results.push({
@@ -283,7 +396,7 @@ async function ensureCurrentDailyRoundsInternal() {
       throw new Error(`daily_round_create_failed_${state.topology.poolAddress}`);
     }
 
-    const created = await state.pool.getRound(nextRoundId);
+    const created = await safeRead(() => state.pool.getRound(nextRoundId), context);
     if (!sameSchedule(created, schedule) || Number(created.status) !== 0) {
       throw new Error(
         `daily_round_create_postcondition_failed_${state.topology.poolAddress}`,
@@ -305,6 +418,7 @@ async function ensureCurrentDailyRoundsInternal() {
     entryOpenAt: new Date(Number(schedule.entryOpenAt) * 1000).toISOString(),
     entryCloseAt: new Date(Number(schedule.entryCloseAt) * 1000).toISOString(),
     results,
+    readFailures,
   };
 }
 
@@ -315,10 +429,16 @@ async function lockDueRoundsInternal(provider, now, dueLock) {
     return { locked: [], failures: [], skipped: true, reason: 'no_rounds_due_lock' };
   }
 
-  const ownerAddress = ethers.getAddress(await dueLock[0].pool.owner());
+  const ownerAddress = ethers.getAddress(
+    await safeRead(() => dueLock[0].pool.owner(), {
+      provider,
+      address: dueLock[0].topology.poolAddress,
+    }),
+  );
   const signer = await getPoolOwnerSigner(provider, ownerAddress);
 
-  if ((await provider.getBalance(signer.address)) === 0n) {
+  const gasBalance = await safeRead(() => provider.getBalance(signer.address));
+  if (gasBalance === 0n) {
     throw new Error('automation_signer_insufficient_gas');
   }
 
@@ -327,17 +447,22 @@ async function lockDueRoundsInternal(provider, now, dueLock) {
 
   for (const item of dueLock) {
     try {
+      const context = { provider, address: item.topology.poolAddress };
+
       // Re-read immediately before the write so a concurrent lock is a no-op.
-      const fresh = await item.pool.getRound(item.roundId);
+      const fresh = await safeRead(() => item.pool.getRound(item.roundId), context);
       if (Number(fresh.status) !== STATUS_ENTRY_OPEN || now < fresh.entryCloseAt) {
         continue;
       }
 
+      // Single attempt. A send is never retried, because an uncertain
+      // broadcast can only be resolved by re-reading state, which the next
+      // scheduled run does.
       const tx = await item.pool.connect(signer).lockRound(item.roundId);
       const receipt = await tx.wait();
       if (!receipt || receipt.status !== 1) throw new Error('lock_transaction_failed');
 
-      const after = await item.pool.getRound(item.roundId);
+      const after = await safeRead(() => item.pool.getRound(item.roundId), context);
       if (Number(after.status) !== STATUS_LOCKED) throw new Error('lock_postcondition_failed');
 
       locked.push({
@@ -416,7 +541,7 @@ async function runLifecycleInternal() {
 
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
-  const { dueLock, dueCancel, dueSettle } = await scanLifecycle(provider, now);
+  const { dueLock, dueCancel, dueSettle, readFailures } = await scanLifecycle(provider, now);
 
   const lock = await lockDueRoundsInternal(provider, now, dueLock);
 
@@ -430,6 +555,7 @@ async function runLifecycleInternal() {
     created,
     lock,
     pendingResolverActions,
+    readFailures,
   };
 }
 
@@ -438,11 +564,12 @@ async function runLifecycleInternal() {
 async function previewLifecycle() {
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
-  const { dueLock, dueCancel, dueSettle } = await scanLifecycle(provider, now);
+  const { dueLock, dueCancel, dueSettle, readFailures } = await scanLifecycle(provider, now);
 
   return {
     chainTimestamp: Number(now),
     chainTimeIso: new Date(Number(now) * 1000).toISOString(),
+    readFailures,
     dueLock: dueLock.map((item) => ({
       slug: slugOf(item.topology),
       roundId: Number(item.roundId),
@@ -489,6 +616,9 @@ function runAndLog() {
       }
       if (result.lock?.failures?.length) {
         console.error('[round-automation] lock failures', JSON.stringify(result.lock.failures));
+      }
+      if (result.readFailures?.length) {
+        console.warn('[round-automation] pools skipped on unreadable state', JSON.stringify(result.readFailures));
       }
 
       // Resolver work needs an operator key this process does not hold, so log
