@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { ethers } = require('ethers');
 const db = require('../db');
 
 function sha256Hex(value) {
@@ -11,9 +12,25 @@ function normalizeAddress(address) {
   return String(address).toLowerCase();
 }
 
+// The semantic pool identity is an EVM address, which is case-insensitive,
+// but PostgreSQL VARCHAR primary key comparisons are case-sensitive. Every
+// query parameter that touches pool_address is normalized to lowercase
+// here, at the persistence boundary, so 0xAbC... and 0xabc... can never
+// become two logical rows even if a future caller passes a differently
+//-cased address than the canonical topology's checksummed form. The
+// canonical topology has always supplied checksummed addresses, so this
+// has caused no known production issue -- this is defense in depth, not a
+// fix for an observed failure.
+function normalizePoolAddressForStorage(address) {
+  return normalizeAddress(address);
+}
+
 function rowToRecord(row) {
   return {
-    poolAddress: row.pool_address,
+    // Re-checksummed for display/consumption, matching how every other
+    // address in this codebase is presented, even though it is stored
+    // lowercased.
+    poolAddress: ethers.getAddress(row.pool_address),
     roundId: Number(row.round_id),
     slug: row.slug,
     asset: row.asset,
@@ -119,6 +136,8 @@ async function upsertOrValidateSettlementEvidence(input) {
     throw error;
   }
 
+  const poolAddress = normalizePoolAddressForStorage(input.poolAddress);
+
   const insertResult = await db.query(
     `INSERT INTO settlement_evidence (
        pool_address, round_id, slug, asset, direction, cadence, symbol, interval,
@@ -128,7 +147,7 @@ async function upsertOrValidateSettlementEvidence(input) {
      ON CONFLICT (pool_address, round_id) DO NOTHING
      RETURNING *`,
     [
-      input.poolAddress,
+      poolAddress,
       input.roundId,
       input.slug,
       input.asset,
@@ -156,7 +175,7 @@ async function upsertOrValidateSettlementEvidence(input) {
   // silently overwriting -- this is the idempotency guarantee.
   const existing = await db.query(
     `SELECT * FROM settlement_evidence WHERE pool_address = $1 AND round_id = $2`,
-    [input.poolAddress, input.roundId],
+    [poolAddress, input.roundId],
   );
   if (existing.rows.length === 0) {
     // Lost a race between the failed insert and this read; safe to retry
@@ -179,7 +198,7 @@ async function upsertOrValidateSettlementEvidence(input) {
 async function getSettlementEvidence({ poolAddress, roundId }) {
   const result = await db.query(
     `SELECT * FROM settlement_evidence WHERE pool_address = $1 AND round_id = $2`,
-    [poolAddress, roundId],
+    [normalizePoolAddressForStorage(poolAddress), roundId],
   );
   if (result.rows.length === 0) return null;
 
@@ -197,7 +216,7 @@ async function recordSettlementTxHash({ poolAddress, roundId, txHash }) {
     `UPDATE settlement_evidence
         SET settlement_tx_hash = $3
       WHERE pool_address = $1 AND round_id = $2 AND settlement_tx_hash IS NULL`,
-    [poolAddress, roundId, txHash],
+    [normalizePoolAddressForStorage(poolAddress), roundId, txHash],
   );
 }
 

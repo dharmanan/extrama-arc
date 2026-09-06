@@ -7,6 +7,7 @@ const { decrypt } = require('./cryptoService');
 const arcService = require('./arcService');
 const { resolveExtremaWindow } = require('./binanceResolverService');
 const resolverSignerService = require('./resolverSignerService');
+const settlementEvidenceService = require('./settlementEvidenceService');
 
 const ARC_CHAIN_ID = 5042002n;
 const MIN_ENTRIES = 3;
@@ -892,6 +893,7 @@ async function buildSettlementEvidence(item) {
     slug: slugOf(topology),
     poolAddress: topology.poolAddress,
     roundId: Number(item.roundId),
+    asset: topology.asset,
     symbol: RESOLVER_SYMBOLS[topology.asset],
     cadence: topology.cadence,
     direction: topology.direction,
@@ -900,6 +902,11 @@ async function buildSettlementEvidence(item) {
     interval: resolved.interval,
     resolvedPriceCents: String(side.resolvedPriceCents),
     evidenceSha256: resolved.evidenceSha256,
+    sourceDataSha256: resolved.sourceDataSha256,
+    // Used exactly as returned by resolveExtremaWindow() -- never
+    // re-JSON.stringify'd here -- so the persisted hash always matches
+    // the exact bytes that were originally hashed.
+    canonicalEvidenceJson: resolved.canonicalEvidenceJson,
   };
 }
 
@@ -967,7 +974,38 @@ async function executeResolverAction(provider, now, item, signer) {
 
   // Settlement evidence is built before the write and must be complete.
   const evidence = await buildSettlementEvidence(item);
-  const resolvedPriceCents = BigInt(evidence.resolvedPriceCents);
+
+  // Mandatory: durably persist the evidence, or, if evidence for this exact
+  // (poolAddress, roundId) already exists from a prior attempt, load and
+  // validate it instead of overwriting. This await stays on the direct
+  // control path with no try/catch around it -- if it throws (integrity
+  // conflict, hash mismatch, or a genuine DB failure), executeResolverAction
+  // exits here and settleRound is never called. The outer per-pool loop in
+  // executeResolverActionsInternal already isolates this as a failure for
+  // this one pool and continues with the others, which is correct.
+  //
+  // The resolvedPriceCents actually used to settle comes from THIS
+  // persisted record, never directly from the fresh evidence object above:
+  // a later Binance response can never silently change what a round
+  // already prepared for settlement actually settles at.
+  const persisted = await settlementEvidenceService.upsertOrValidateSettlementEvidence({
+    poolAddress: evidence.poolAddress,
+    roundId: evidence.roundId,
+    slug: evidence.slug,
+    asset: evidence.asset,
+    direction: evidence.direction,
+    cadence: evidence.cadence,
+    symbol: evidence.symbol,
+    interval: evidence.interval,
+    observationStartAt: evidence.observationStartAt,
+    observationEndAt: evidence.observationEndAt,
+    resolvedPriceCents: evidence.resolvedPriceCents,
+    evidenceSha256: evidence.evidenceSha256,
+    sourceDataSha256: evidence.sourceDataSha256,
+    canonicalEvidenceJson: evidence.canonicalEvidenceJson,
+  });
+
+  const resolvedPriceCents = BigInt(persisted.resolvedPriceCents);
 
   const result = await sendOnceWithReconciliation({
     label: 'settle',
@@ -989,13 +1027,37 @@ async function executeResolverAction(provider, now, item, signer) {
     throw new Error('settle_postcondition_failed');
   }
 
+  // Best-effort only, wrapped in its own try/catch: the round is already
+  // genuinely SETTLED onchain at this point, so a failure recording the
+  // supplementary tx hash must never make this settlement appear failed.
+  // This update touches only settlement_tx_hash (see
+  // settlementEvidenceService.recordSettlementTxHash) -- it cannot alter
+  // canonical evidence, its hash, or the resolved price. If the broadcast
+  // was reconciled rather than directly confirmed (result.txHash is null),
+  // no hash is invented; verification continues to work from the
+  // canonical evidence and onchain state alone.
+  if (result.txHash) {
+    try {
+      await settlementEvidenceService.recordSettlementTxHash({
+        poolAddress: evidence.poolAddress,
+        roundId: evidence.roundId,
+        txHash: result.txHash,
+      });
+    } catch (error) {
+      console.warn(
+        '[settlement-evidence] settlement tx hash record failed',
+        JSON.stringify({ slug, roundId, reason: error.message }),
+      );
+    }
+  }
+
   return {
     slug,
     roundId,
     action: 'settled',
     entryCount,
-    resolvedPriceCents: evidence.resolvedPriceCents,
-    evidenceSha256: evidence.evidenceSha256,
+    resolvedPriceCents: persisted.resolvedPriceCents,
+    evidenceSha256: persisted.evidenceSha256,
     ...result,
   };
 }

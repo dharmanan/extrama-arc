@@ -1360,13 +1360,14 @@ async function readRoundResult({ slug, roundId }) {
 // evidence: a SETTLED round with no persisted evidence is reported as
 // EVIDENCE_MISSING, not VERIFIED.
 //
-// PHASE A note: the live resolver settlement path (executeResolverAction in
-// roundAutomationService.js) does not yet write to settlement_evidence --
-// that gating is deferred to Phase B until PostgreSQL schema readiness is
-// proven in production (see settlementEvidenceService.verifySettlementEvidenceStorage
-// and its startup check in server.js). Until Phase B ships, every SETTLED
-// round is expected to report EVIDENCE_MISSING here, which is correct and
-// truthful, not a bug.
+// Since Phase B, executeResolverAction in roundAutomationService.js
+// durably persists (or validates existing) evidence before every
+// settleRound broadcast, so a genuinely new settlement should always have
+// a matching row here. EVIDENCE_MISSING on a SETTLED round now signals a
+// real integrity or legacy-data problem -- for example a round settled
+// before Phase B shipped -- not an expected, routine state. This
+// function never regenerates or backfills evidence for such a round; it
+// only ever reports what is actually and durably known.
 async function readRoundVerification({ slug, roundId }) {
   if (
     typeof slug !== 'string' ||
