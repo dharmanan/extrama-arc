@@ -57,6 +57,7 @@ export function ProductHeader() {
       <nav>
         <Link href="/pools">{t.pools}</Link>
         <Link href="/leaderboard">{t.leaderboard}</Link>
+        <Link href="/archive">{t.archive}</Link>
         <Link href="/how-it-works">{t.howItWorks}</Link>
         <Link href="/tickets">{t.myTickets}</Link>
       </nav>
