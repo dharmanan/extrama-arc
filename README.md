@@ -4,7 +4,26 @@ ETHOnline 2026 Arc hackathon project.
 
 ## Current phase
 
-Product structure and backend infrastructure first. Visual design is intentionally deferred until the full flow is stable.
+Core implementation is in production. The project is now in production hardening plus final UI and proof work.
+
+What is live:
+
+- 24 pool contracts and 24 paired ERC-721 ticket collections on Arc Testnet (chain `5042002`)
+- Real Arc Testnet USDC, real 1 USDC prediction entry, real ticket minting and transfer
+- Passkey authentication and passkey step-up for critical signing
+- Backend on Railway, frontend on Vercel, PostgreSQL on Railway
+- Round lifecycle automation: scan, Daily round creation, permissionless locking, and resolver-authorized cancellation and settlement
+- Binance mark-price settlement source with deterministic evidence hashing
+
+What is still open:
+
+- Weekly and Quarterly round creation are not yet automated
+- Demo state still exists on some routes and is being removed
+- Leaderboard and settlement verification pages are not yet backed by real data
+- Cancellation, settlement, winners, payouts, and claim are implemented but not yet proven by a live Arc transaction
+- Visual design is partially complete
+
+`EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md` is the source of truth for what is proven versus what is merely implemented. This README is a summary and does not claim a complete product.
 
 ## Architecture
 
@@ -24,9 +43,21 @@ Product structure and backend infrastructure first. Visual design is intentional
 - one EXTREMA wallet per owner account
 
 ### Deployment
-- Frontend: Vercel later
-- Backend: Railway
-- Database: Railway PostgreSQL
+- Frontend: Vercel, live
+- Backend: Railway, live
+- Database: Railway PostgreSQL, live
+
+### Round lifecycle automation
+
+Runs inside the backend process on Railway. Coordinated across instances with PostgreSQL advisory locks so a duplicate instance cannot duplicate a transaction.
+
+- Scans every pool at every cadence and isolates per-pool read failures
+- Creates the current Daily round from the pool owner wallet. Weekly and Quarterly creation are not implemented yet
+- Locks due rounds. `lockRound` is permissionless, so the owner wallet acts only as a funded sender
+- Cancels underfilled rounds and settles eligible rounds from the resolver signer
+- Re-reads live `pool.resolver()` before every resolver action and refuses to sign on mismatch
+- Never resends a transaction. On an unknown send outcome it re-reads the round to determine whether the transition landed
+- Retries transient Arc RPC read failures with bounded backoff. Broadcasts are never retried
 
 ## Wallet flow
 
@@ -133,6 +164,10 @@ npm run check:all
 - `WEBAUTHN_ORIGINS`
 - `WEBAUTHN_RP_ID` in production
 
+Optional, required only for resolver-authorized cancellation and settlement:
+
+- `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED`
+
 Generate secrets:
 
 ```bash
@@ -140,6 +175,16 @@ openssl rand -hex 32
 ```
 
 Use separate values for `ENCRYPTION_KEY` and `JWT_SECRET`.
+
+### Resolver signer
+
+`EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED` holds the resolver key as an AES-256-GCM envelope in the `v1.<iv>.<ct>.<tag>` format produced by `cryptoService`, encrypted under the same `ENCRYPTION_KEY`. The config schema accepts only that shape, so a plaintext private key cannot be configured.
+
+Build the envelope with `backend/scripts/encrypt-resolver-key.js`. It reads the key from a Foundry keystore, a keystore file, or a hidden prompt, verifies the derived address against the deployed resolver, and prints only the envelope. The key never reaches argv, shell history, disk, or logs.
+
+At startup the backend decrypts the envelope, derives the address, and compares it to the live `pool.resolver()`. The result is logged and does not gate automation. Correctness is enforced independently before every cancel or settle.
+
+If the variable is absent, the backend still runs. Scanning, Daily round creation, and locking continue, and cancellation and settlement are skipped.
 
 ## Official result source
 
@@ -155,12 +200,11 @@ Symbols:
 
 ## Design
 
-The current UI is only a structural wireframe.
+Visual design has begun. The prerequisites that originally gated it are met: frontend and backend checks pass, migrations run, passkey registration and login work end to end, EXTREMA wallet creation and reconnect work, and the Arc contract and USDC flows are stable in production.
 
-Final visual design begins only after:
-1. frontend checks pass,
-2. backend checks pass,
-3. PostgreSQL migration works,
-4. passkey registration/login works end-to-end,
-5. EXTREMA wallet creation/reconnect works,
-6. Arc contracts and USDC flow are stable.
+Current state:
+
+- Complete: the global design token foundation in `app/globals.css`, and the homepage
+- Not started: the remaining routes, which still render the structural wireframe
+
+The redesign is presentation only. It has not modified any backend, contract, schedule, or signer path, and the live data routes continue to read real Arc state.

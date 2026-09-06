@@ -25,6 +25,73 @@
 
 ---
 
+## Status legend
+
+Every item in this document resolves to exactly one of three states.
+
+| State | Meaning |
+|---|---|
+| **COMPLETE / LIVE PROVEN** | Executed against real Arc Testnet state and evidenced here with the transaction hash, contract read, or recorded output. Marked `[x]`. |
+| **IMPLEMENTED / WAITING FOR LIVE PROOF** | Code exists, is deployed, and is verified as far as it can be without a real transaction. The blocking factor is calendar time or an unreached chain state, not missing work. Marked `[ ]` with an explicit label. |
+| **NOT IMPLEMENTED / REMAINING** | Work still to be done. Marked `[ ]`. |
+
+Code existing is never sufficient to mark an item `[x]`. A checkbox is only ticked when its proof is recorded in this file.
+
+---
+
+## Production state snapshot
+
+Snapshot date: 2026-09-06. Reference commit: `7dad17a21ad764bdc1aaeaba6cf6fb719c3b6734`.
+
+This section is a summary. The authoritative per-item status remains in the numbered sections below.
+
+### Live in production
+
+- 24 pool contracts and 24 paired ERC-721 ticket collections deployed on Arc Testnet (`5042002`)
+- Real Arc Testnet USDC (`0x3600000000000000000000000000000000000000`), no mock token
+- Real prediction entry at a fixed 1 USDC stake
+- ERC-721 ticket minting, ticket transfer, and current-NFT-owner claim/refund rights enforced onchain
+- Passkey authentication and passkey step-up for critical signing
+- Encrypted per-user EXTREMA wallets
+- Backend on Railway, frontend on Vercel, PostgreSQL on Railway
+- Binance USDⓈ-M Futures mark-price klines as the settlement source, with deterministic evidence hashing
+- Live result API reading real round state
+- Backend claim flow and backend refund flow
+- 90-day onchain archive read path
+- Round lifecycle automation running in Railway: scan, DAILY round creation, permissionless `lockRound`, and resolver-authorized `cancelRound` / `settleRound`
+- Arc RPC hardening: bounded retry for transient reads plus correct ethers v6 rate-limit shape detection
+- Resolver signer provisioned to Railway as an encrypted envelope and verified against `pool.resolver()` at backend startup
+- Resolver funded for gas on Arc Testnet
+
+### Implemented, not yet live proven
+
+The lifecycle engine can perform these actions and the resolver is correctly configured to sign them, but no such transaction has been broadcast yet. The blocking factor is that the relevant rounds have not reached their eligibility time.
+
+| Action | Round | State | Eligible after |
+|---|---|---|---|
+| `cancelRound` | ETH Daily High #1 | `LOCKED`, 1 entry | `2026-09-07T00:00:00Z` |
+| `cancelRound` | ETH Daily Low #1 | `LOCKED`, 1 entry | `2026-09-07T00:00:00Z` |
+| `settleRound` | ETH Weekly High #1 | `LOCKED`, 3 entries | `2026-09-14T00:00:00Z` |
+
+Nothing downstream of those transactions is proven either: real refund execution, real winner determination, real treasury distribution, real claim, and live double-claim rejection all wait on them.
+
+### Remaining implementation
+
+1. WEEKLY round creation automation
+2. QUARTERLY round creation automation
+3. Demo/mock runtime state removal
+4. Real leaderboard
+5. Real settlement verification page backed by a real endpoint
+6. Final mock-state removal audit
+7. Wrong-network detection and switch proof
+8. Final security gate items
+9. Final Arc Testnet end-to-end proof
+10. Secondary NFT marketplace
+
+See [Current roadmap](#current-roadmap) at the end of this document for the execution order.
+
+---
+
 # 0. Infrastructure baseline
 
 These items are real infrastructure, but they are **not substitutes for onchain proof**.
@@ -536,6 +603,26 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - Because the 24-pool topology covers every combination of BTC/ETH/SOL/HYPE × HIGH/LOW × DAILY/WEEKLY/QUARTERLY, cadence, direction, and asset round-creation checks are proven onchain.
 - The stale Foundry artifact warning is non-blocking; the verification script compiled and completed successfully.
 
+### 3.1 Automated round creation
+
+Round #1 for all 24 pools was created by a one-time broadcast script. Ongoing creation of subsequent rounds is handled by the lifecycle automation in `backend/src/services/roundAutomationService.js`, which runs continuously on Railway.
+
+- [x] DAILY round creation automated
+  - `ensureCurrentDailyRoundsInternal()` selects the DAILY subset of the pool topology, computes the canonical schedule from chain time, verifies the pool cadence enum before writing, and calls `createRound` from the pool owner wallet.
+  - Owner authority is required: `createRound` is `onlyOwner`.
+  - Multi-instance safety uses a PostgreSQL advisory lock so two Railway instances cannot create the same round twice.
+- [ ] WEEKLY round creation automated **(NOT IMPLEMENTED / REMAINING)**
+- [ ] QUARTERLY round creation automated **(NOT IMPLEMENTED / REMAINING)**
+
+Current WEEKLY/QUARTERLY behaviour, and why this is a real gap:
+
+- The lifecycle scan (`scanLifecycle`) reads every pool at every cadence, so WEEKLY and QUARTERLY rounds are correctly observed.
+- Locking, cancellation, and settlement are cadence-agnostic and already apply to WEEKLY and QUARTERLY rounds.
+- Only **creation** is DAILY-only. The canonical cadence constants for all three cadences already exist in the service (`DAILY` entry close 4h before observation start with a 24h window; `WEEKLY` 24h before with a 7d window; `QUARTERLY` 24h before with a quarter-boundary window), so the missing work is the creation path, not the schedule definition.
+- Consequence: once WEEKLY Round #1 and QUARTERLY Round #1 complete their lifecycle, no WEEKLY or QUARTERLY Round #2 will appear without a manual broadcast.
+
+QUARTERLY additionally has no fixed duration constant, because a quarter is 89 to 92 days depending on the calendar. Its creation path must derive `observationEndAt` from the next quarter boundary rather than from a fixed offset.
+
 ---
 
 # 4. Real 1 USDC prediction entry
@@ -812,12 +899,35 @@ Planned intervals:
   - Read-only resolver `settleRound` reverted with `ObservationNotEnded`.
   - Result: `SETTLEMENT_BEFORE_END_FORK_SMOKE=PASS`
   - No Arc Testnet transaction was broadcast.
-- [ ] Resolver submits resolved price to Arc Testnet contract
-- [ ] Contract transitions to `SETTLED`
-- [ ] Settlement cannot be repeated
-- [ ] Settled price readable onchain
-- [ ] Settlement tx recorded
-- [ ] Verification page shows source proof + onchain result
+- [ ] Resolver submits resolved price to Arc Testnet contract **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Contract transitions to `SETTLED` **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Settlement cannot be repeated **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Settled price readable onchain **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Settlement tx recorded **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Verification page shows source proof + onchain result **(NOT IMPLEMENTED / REMAINING)**
+  - `app/verify/[roundId]/page.tsx` still renders from the `app/lib/data.ts` demo fixture, not from a real settlement/evidence endpoint.
+
+### 7.3 Resolver signing path is resolved
+
+The operational gap recorded in earlier revisions of this document, that the deployed resolver had no production signing mechanism, is **closed**. This item is now infrastructure-complete; only the live transaction proof is outstanding.
+
+- [x] Resolver signing mechanism exists in production
+  - `backend/src/services/resolverSignerService.js` decrypts an AES-256-GCM envelope into an in-memory `ethers.Wallet` and never logs, returns, or persists the key material.
+  - The envelope reuses the existing `cryptoService` format and the existing `ENCRYPTION_KEY`. It is supplied to Railway as `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED`.
+  - `backend/src/config.js` accepts only the `v1.<iv>.<ct>.<tag>` envelope shape, so a plaintext private key cannot be configured even by mistake.
+  - `backend/scripts/encrypt-resolver-key.js` produces the envelope locally from a Foundry keystore, a keystore file, or a hidden prompt. It verifies the derived address and aborts on mismatch. No key ever reaches argv, shell history, disk, or logs.
+- [x] Resolver signer verified against onchain `pool.resolver()` at backend startup
+  - `verifyResolverConfiguration()` decrypts the envelope, derives the address, reads live `pool.resolver()`, and compares them.
+  - Railway startup proof (2026-09-06):
+    - `[round-automation] daily scheduler active`
+    - `[round-automation] resolver signer verified {"resolver":"0x1EDC4594195fFb134315c3258DE974563Ed9762A"}`
+  - This preflight is informational and does not gate automation. Correctness is guarded independently: `executeResolverAction()` re-reads `pool.resolver()` before every single cancel or settle and refuses to sign on `resolver_signer_mismatch`.
+- [x] Resolver funded for gas on Arc Testnet
+  - Read-only balance check (2026-09-06): resolver `0x1EDC4594195fFb134315c3258DE974563Ed9762A` holds a positive Arc balance; pool owner `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b` likewise. Arc couples native gas and ERC-20 USDC into one underlying balance.
+- [ ] Live `settleRound` broadcast **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - Earliest eligible round is ETH Weekly High #1 after `2026-09-14T00:00:00Z`.
+
+No private key, envelope value, or `ENCRYPTION_KEY` value appears in this repository. See [docs/REFUND_CANCELLATION_READINESS.md](docs/REFUND_CANCELLATION_READINESS.md) for the full mechanism description.
 
 ### Proof record
 
@@ -960,14 +1070,20 @@ Planned intervals:
 
 # 8. Real winner determination
 
-- [ ] Winner #1 calculated from actual entries
-- [ ] Winner #2 calculated from actual entries
-- [ ] Winner #3 calculated from actual entries
-- [ ] Distance calculation verified
-- [ ] Earlier-entry tie break verified
-- [ ] Tx/log-index final tie break verified
-- [ ] Winner ticket IDs stored or deterministically derivable
-- [ ] Results page reads real settled result
+Winner ranking is computed onchain by `ExtremaPool` at settlement time. Every item below is therefore blocked on the first live `settleRound`, not on missing code.
+
+- [ ] Winner #1 calculated from actual entries **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Winner #2 calculated from actual entries **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Winner #3 calculated from actual entries **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Distance calculation verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Earlier-entry tie break verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Tx/log-index final tie break verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Winner ticket IDs stored or deterministically derivable **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Results page reads real settled result **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - The backend result API already reads real Arc round state and correctly returns no winners before settlement (see proof below).
+  - `app/results/[roundId]/page.tsx` still imports `getResultByRoundId` from the `app/lib/data.ts` demo fixture, so the frontend result surface must be migrated to the real endpoint before this can be ticked.
+
+Local contract-level proof of the ranking and tie-break rules already exists in section 2.2 and section 10's lifecycle simulation. That is contract logic proof, not live proof.
 
 ### Proof record
 
@@ -1011,26 +1127,32 @@ Gross pool distribution:
 - 13.5% third
 - 10% treasury
 
-- [ ] Payout math verified with token decimals
-- [ ] Total allocation equals 100%
-- [ ] Treasury amount verified
-- [ ] Winner entitlements linked to NFT ownership
-- [ ] No payout to original entrant if ticket was transferred
-- [ ] Double claim prevented
-- [ ] Claim state readable onchain
+All items below are enforced by `ExtremaPool` and proven by the local lifecycle test suite. They are blocked on the first live `settleRound`.
+
+- [ ] Payout math verified with token decimals **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Total allocation equals 100% **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Treasury amount verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Winner entitlements linked to NFT ownership **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] No payout to original entrant if ticket was transferred **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Double claim prevented **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Claim state readable onchain **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
 
 ---
 
 # 10. Real claim flow
 
-- [ ] Claim requires settled round
-- [ ] Claim requires current ownership of winning NFT
-- [ ] Critical claim signing requires fresh passkey step-up
-- [ ] Real Arc Testnet claim transaction submitted
-- [ ] USDC leaves pool/contract
-- [ ] USDC arrives in rightful wallet
-- [ ] Claim state changes onchain
-- [ ] Second claim attempt fails
+The backend claim flow exists and its negative authorization gates have already been verified against live Arc state (see the readiness smoke below). What remains is a successful claim, which requires a settled round with a winning ticket.
+
+- [ ] Claim requires settled round **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - The negative half is already proven against live Arc state: both the backend-wallet and external-owner paths refused a pre-settlement claim with `claim_round_not_settled`.
+- [ ] Claim requires current ownership of winning NFT **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Critical claim signing requires fresh passkey step-up **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - Payload binding, single-use nonce, and replay rejection are proven at the action authorization layer by `CLAIM_ACTION_AUTH_SMOKE=PASS`. A real browser WebAuthn claim has not occurred.
+- [ ] Real Arc Testnet claim transaction submitted **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] USDC leaves pool/contract **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] USDC arrives in rightful wallet **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Claim state changes onchain **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Second claim attempt fails **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
 
 ### Proof record
 
@@ -1142,14 +1264,27 @@ Gross pool distribution:
 
 Rule: fewer than 3 valid entries → round cancelled/refundable.
 
-- [ ] Round with 0 entries cancels correctly
-- [ ] Round with 1 entry cancels correctly
-- [ ] Round with 2 entries cancels correctly
-- [ ] Round with 3 entries does not cancel for minimum-participant rule
+- [ ] Round with 0 entries cancels correctly **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Round with 1 entry cancels correctly **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - Two such rounds are queued: ETH Daily High #1 and ETH Daily Low #1, both `LOCKED` with 1 entry, eligible after `2026-09-07T00:00:00Z`.
+- [ ] Round with 2 entries cancels correctly **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Round with 3 entries does not cancel for minimum-participant rule **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - Proven at contract level (`TooManyEntriesForCancellation`) and at fork level. ETH Weekly High #1 has exactly 3 entries and is the live case.
 - [x] Refund entitlement linked to ticket/current ownership rule as finalized
 - [x] Fresh passkey step-up required for refund transaction
-- [ ] Real Arc Testnet refund transaction verified
-- [ ] Double refund prevented
+- [ ] Real Arc Testnet refund transaction verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Double refund prevented **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+
+### 11.1 Automated cancellation status
+
+`cancelRound` is now automated in the lifecycle engine and no longer requires a manual operator action.
+
+- The resolver signing path is production-provisioned and verified at startup. See [section 7.3](#73-resolver-signing-path-is-resolved).
+- `executeResolverAction()` re-reads live `pool.resolver()` before signing, re-reads the round to confirm it is still eligible, and no-ops on terminal or ineligible state.
+- `sendOnceWithReconciliation()` never resends a transaction. If a send outcome is unknown, it re-reads the round to determine whether the transition actually landed.
+- Refunds are deliberately **not** automated. Cancellation releases the escrow, and the current NFT owner then initiates the refund through the existing `REFUND_TICKET` step-up flow. This is a design decision, not a gap: the contract pays the current ticket owner, and the backend must not spend on their behalf without their fresh authorization.
+
+No `cancelRound` transaction has been broadcast. The earliest eligible moment is `2026-09-07T00:00:00Z`.
 
 ### Proof record
 
@@ -1211,9 +1346,11 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
   runs the hardened script with Foundry available and records the actual
   output below.
 - See [docs/REFUND_CANCELLATION_READINESS.md](docs/REFUND_CANCELLATION_READINESS.md)
-  for the full implementation breakdown and the outstanding resolver-signer
-  gap. This is code readiness only — it does not satisfy any "real Arc
-  Testnet" item above, and no Arc Testnet transaction has been broadcast.
+  for the full implementation breakdown. The resolver-signer gap described in
+  earlier revisions of that document is now closed; see
+  [section 7.3](#73-resolver-signing-path-is-resolved). This remains code
+  readiness only. It does not satisfy any "real Arc Testnet" item above, and
+  no refund transaction has been broadcast.
 
 #### Live Arc Testnet lock proof
 
@@ -1251,6 +1388,8 @@ Verification:
 - No cancellation or refund transaction has been sent yet.
 - Earliest valid live cancellation remains after `observationEndAt = 2026-09-07T00:00:00Z` (03:00 Türkiye time).
 
+Note on how this proof was produced versus how locking works now: these two locks were executed manually from the local Foundry keystore. Locking is since automated. `lockRound` is permissionless, so the lifecycle engine locks due rounds using the owner wallet purely as a funded sender, not as an authority. The manual keystore path described above is no longer the production mechanism for any lifecycle action; see [section 7.3](#73-resolver-signing-path-is-resolved).
+
 #### Live cancellation/refund proof
 
 - Round ID:
@@ -1266,12 +1405,16 @@ Verification:
 
 # 12. Real leaderboard
 
+Current state: **NOT IMPLEMENTED / REMAINING.** `app/leaderboard/page.tsx` renders a hardcoded four-row `players` array with invented wallet fragments, win counts, podium counts, and USDC earnings, and reports a count derived from the `app/lib/data.ts` demo fixture. None of it is real. This is a fabricated-metric surface in the normal product path and must be replaced, not merely relabelled.
+
 - [ ] Leaderboard source defined from settled onchain rounds/indexed events
 - [ ] No seeded/mock users
 - [ ] No seeded/mock scores
 - [ ] Ranking formula documented
 - [ ] Wallet identities derived from real participation
 - [ ] Historical settled rounds rebuild leaderboard deterministically
+
+A real leaderboard cannot produce meaningful output until at least one round has settled, because every ranking input derives from settled results. Until then the honest surface is an explicit empty state, not placeholder rows.
 
 ### Proof record
 
@@ -1285,6 +1428,24 @@ Verification:
 # 13. Remove all mock product state
 
 This section is not complete until every normal user path is backed by real testnet state.
+
+### Known demo state still in the normal runtime
+
+Verified against the repository at `7dad17a`. These are not test fixtures; they are reachable on normal product routes.
+
+| File | What it still contains | Reached from |
+|---|---|---|
+| `app/lib/data.ts` | Synthetic `pools`, `results`, and `tickets` arrays plus `getPoolBySlug` / `getResultByRoundId` / `getTicketsForWallet` | imported by the files below |
+| `app/demo-state.tsx` | localStorage-backed financial state (`extrema-demo-state-v4`): demo wallet balance, seeded tickets, seeded prediction entries, and `fundWallet` / `enterPrediction` / `claimTicket` mutators | mounted globally by `app/layout.tsx` |
+| `app/leaderboard/page.tsx` | Hardcoded player rankings and USDC earnings | `/leaderboard` |
+| `app/verify/[roundId]/page.tsx` | Settlement result rendered from the demo fixture | `/verify/[roundId]` |
+| `app/results/[roundId]/page.tsx` | Result and pool rendered from the demo fixture | `/results/[roundId]` |
+| `app/rounds/[slug]/RoundUserState.tsx` | Consumes `useDemoState` for user position | `/rounds/[slug]` |
+| `app/wallet/page.tsx` | Consumes `useDemoState` | `/wallet` |
+
+`app/lib/data.ts` also exports `assetConfigs` and `formatUsd`, which are legitimate presentation helpers used by `home-client.tsx` and `product-components.tsx`. Those must survive the cleanup. The financial arrays must not.
+
+The live surfaces (`/pools`, `/pools/[slug]`, `/tickets`) already read real Arc state through the backend and are not affected.
 
 - [ ] Remove mock USDC balance
 - [ ] Remove mock faucet
@@ -1308,8 +1469,10 @@ This section is not complete until every normal user path is backed by real test
 
 # 14. Security gate before final UI
 
-- [ ] Fresh passkey step-up implemented for entry
-- [ ] Fresh passkey step-up implemented for claim
+- [x] Fresh passkey step-up implemented for entry
+  - Live proof: fingerprint confirmation preceded real Arc entry tx `0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312` (section 0 and section 4).
+- [ ] Fresh passkey step-up implemented for claim **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+  - `CLAIM_ACTION_AUTH_SMOKE=PASS` covers payload binding, single use, and replay rejection in an in-memory harness. A real browser WebAuthn claim requires a settled round.
 - [x] Fresh passkey step-up implemented for refund
 - [ ] Action challenge bound to:
   - action type
@@ -1327,7 +1490,11 @@ This section is not complete until every normal user path is backed by real test
 - [ ] `npm audit` remains 0
 - [ ] Backend dependency audit remains 0
 - [ ] Secret rotation procedure documented
+  - Must now cover `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED` alongside `ENCRYPTION_KEY` and `JWT_SECRET`. Rotating `ENCRYPTION_KEY` invalidates the resolver envelope and every per-user wallet envelope, so the procedure has to sequence re-encryption, not just replacement.
 - [ ] No private key, JWT secret, encryption key, or credentials committed to Git
+  - Requires a repeatable secret scan, not a one-time inspection.
+
+Note on the resolver secret: the resolver key is held only as an AES-256-GCM envelope in the Railway environment. Neither the envelope nor the key is in this repository, and `backend/src/config.js` rejects any value that is not in envelope shape.
 
 ---
 
@@ -1438,31 +1605,53 @@ Implementation order:
 
 # 17. Design phase
 
-Only begin after Sections 1–16 are functionally complete and proven.
+The original plan deferred all visual work until sections 1 to 16 were complete. That ordering has been partially revised: the global visual foundation and the homepage were redesigned ahead of schedule, while the functional sections continue in parallel.
 
-- [ ] Replace structural wireframe with final EXTREMA visual design
-- [ ] Preserve all verified real onchain flows
+- [ ] Replace structural wireframe with final EXTREMA visual design **(IN PROGRESS)**
+  - Complete: global design token system in `app/globals.css`, and the homepage.
+  - Not started: `/pools`, `/pools/[slug]`, `/rounds/[slug]`, `/results/[roundId]`, `/verify/[roundId]`, `/tickets`, `/leaderboard`, `/how-it-works`, `/wallet`. These still render the structural wireframe.
+- [x] Preserve all verified real onchain flows
+  - The redesign touched presentation only. No backend, contract, schedule, or signer path was modified, and the live `/pools` and `/tickets` data paths continue to read real Arc state.
 - [ ] Re-run complete Arc Testnet end-to-end test after design integration
+
+Two known frontend issues are open and unrelated to visual work:
+
+- A route conflict exists between `app/results/[roundId]` and `app/results/[slug]/[roundId]`. It predates the redesign and originates in commit `6a251d8`. It breaks local serving and needs a decision on which route shape is canonical.
+- The homepage pair row still lacks the Circle USDC and Arc brand marks. `public/brands/usdc.svg` and `public/brands/arc.svg` do not exist in the repository, and no asset may be fabricated for them.
 
 ---
 
-## Current next action
+## Current roadmap
 
-**Core next action: close the resolver-signing operational gap, then perform the real Daily Round #1 cancellation/refund proof after the observation window ends.**
+The resolver-signing gap that previously headed this section is closed. Locking, cancellation, and settlement now run from the deployed lifecycle automation.
 
-Section 7's historical Binance Mark Price source, DAILY/WEEKLY/QUARTERLY coverage, and deterministic resolver calculations are already proven. The remaining Section 7 blocker is operational: the deployed resolver address has no legitimate production signing mechanism wired into this repo.
+Execution order:
 
-Before `2026-09-07T00:00:00Z` (03:00 Türkiye time):
-1. Choose and verify a legitimate resolver signing path without committing, pasting, or exposing a private key.
-2. Do not rotate the deployed resolver casually and do not broadcast an early cancellation/settlement transaction.
-3. Keep the hardened transferred-refund fork harness as safety evidence only: original-entrant rejection with `NotTicketOwner` is proven; full current-owner USDC movement remains unproven on generic Anvil unless a later run genuinely proves it.
+1. **Weekly and Quarterly round creation automation.** Extend `ensureCurrentDailyRoundsInternal` into a cadence-general creation path. QUARTERLY must derive its observation end from the next calendar quarter boundary, not a fixed offset. Without this, no Round #2 appears at either cadence.
+2. **Remove demo/mock runtime financial state.** Delete the synthetic `pools`, `results`, and `tickets` from `app/lib/data.ts` and retire `app/demo-state.tsx` from the normal runtime. Keep `assetConfigs` and `formatUsd`. See the table in section 13.
+3. **Real settlement verification endpoint and page.** Back `/verify/[roundId]` and `/results/[roundId]` with the real settlement, evidence-hash, and winner data instead of the demo fixture.
+4. **Real leaderboard.** Derive rankings deterministically from settled onchain rounds. Show an explicit empty state until a round settles.
+5. **Complete the visual design.** Extend the homepage foundation across the remaining routes, and resolve the `app/results` route conflict.
+6. **Live cancel and refund proof.** After `2026-09-07T00:00:00Z`, verify the automation cancels ETH Daily High #1 and ETH Daily Low #1, then exercise both refund paths and record the evidence listed in section 11.
+7. **Live settle, winner, and claim proof.** After `2026-09-14T00:00:00Z`, verify settlement of ETH Weekly High #1, then winners, treasury share, a real claim, and double-claim rejection.
+8. **Final security gate.** Section 14 in full: replay verification, JWT-only rejection, rate limits, session expiry, dependency audit, secret rotation procedure including the resolver envelope, and a secret scan.
+9. **Final Arc Testnet end-to-end proof.** Section 15, one complete round from creation to claim.
+10. **Hackathon submission packaging.**
 
-After `observationEndAt`:
-1. Lock the underfilled ETH Daily Round #1 on Arc Testnet.
-2. Cancel it using the legitimate resolver signing path.
-3. Refund the backend-owned ETH Daily Low Ticket #1 through the backend-wallet refund flow.
-4. Refund the externally owned ETH Daily High Ticket #1 through the connected-current-owner flow.
-5. Record the real Arc transaction hashes and verify receipt success, exact `Transfer` and `RefundClaimed` events, `refunded(tokenId) == true`, and the required pool/escrow accounting evidence. Do not use the owner's net balance as an exact +1 USDC proof because the owner also pays Arc gas from the same underlying balance.
-6. Prove the second refund attempt is rejected.
+Items 6 and 7 are gated by calendar time, not by work. Items 1 to 5 can proceed in parallel with the wait.
 
-The mandatory secondary NFT marketplace remains locked in **Section 16** and comes only after the core settlement → winners → payouts → claim/refund path is proven.
+### Secondary NFT marketplace
+
+Section 16 states that the marketplace is a required EXTREMA product feature. That requirement is preserved and not downgraded here. It remains a **separate post-core track**: it is not in the numbered list above because it must not begin until the core settlement, winner, payout, and claim/refund path is live proven, which is item 7. Its own implementation order is recorded at the end of section 16.
+
+### Live actions pending
+
+No cancel or settle transaction has been broadcast. The lifecycle engine will act on its own once each round becomes eligible.
+
+| Action | Round | Eligible after |
+|---|---|---|
+| `cancelRound` | ETH Daily High #1 | `2026-09-07T00:00:00Z` |
+| `cancelRound` | ETH Daily Low #1 | `2026-09-07T00:00:00Z` |
+| `settleRound` | ETH Weekly High #1 | `2026-09-14T00:00:00Z` |
+
+When these land, record the transaction hashes in the empty proof blocks in sections 7, 8, and 11 rather than only in this summary.

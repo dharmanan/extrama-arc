@@ -91,66 +91,92 @@ reached the external USDC-transfer boundary inside `pool.refund()`. The
 script was not re-executed here (no Foundry in this sandbox), so the
 USDC-movement proof remains unestablished either way.
 
-## Resolver signer gap
+## Resolver signer: gap closed
 
-Deployed resolver address (as reported by the pool contracts' `resolver()`
-at the time of writing): `0x1EDC4594195fFb134315c3258DE974563Ed9762A`.
+Deployed resolver address, as reported by the pool contracts' `resolver()`:
+`0x1EDC4594195fFb134315c3258DE974563Ed9762A`.
 
-The repo currently reads and displays this **public** resolver address (e.g.
-in the fork smoke scripts, via `pool.resolver()`), but there is **no
-legitimate production signing mechanism wired up for it**. Concretely:
+Earlier revisions of this document recorded that no production resolver
+signing mechanism existed, that manual keystore signing was the operating
+mechanism, and that this repo should not automate resolver signing. **All
+three statements are now out of date.** A production signing path exists,
+manual signing is no longer the mechanism for any lifecycle action, and
+cancellation and settlement are automated.
 
-- `backend/src/services/binanceResolverService.js` computes settlement
-  prices from Binance data, but nothing in this repo holds or uses a private
-  key capable of signing as the resolver.
-- `backend/src/services/walletService.js`'s encrypted-signer pattern exists
-  only for **per-user EXTREMA wallets** (random keys generated and encrypted
-  at wallet creation). It is not a template that should be reused for the
-  resolver, because the resolver is a single shared operational key, not a
-  per-user key — a different security posture (see options below).
-- No `.env.example`, config schema entry, or code path in this repo accepts
-  or expects a resolver private key. This is intentional and should stay
-  that way.
+### What was chosen
 
-**This document does not ask for, request, or store a resolver private key,
-and none should be added to the repo, environment examples, or config
-schema.** The resolver should also not be rotated as part of closing this
-gap — rotating a deployed resolver is a contract-level operational decision
-with its own review, independent of this readiness pass.
+Option 3 from the earlier option list, envelope encryption, adapted to reuse
+the existing `cryptoService` primitive rather than standing up a separate
+microservice. The resolver was **not** rotated and `pool.resolver()` was not
+changed, preserving the existing role separation.
 
-### Secure operational options (for Koray to decide, not implemented here)
+### Mechanism
 
-1. **Hardware-backed signer (HSM / cloud KMS)** — e.g. AWS KMS or GCP Cloud
-   KMS with a secp256k1 key, signing via a narrow, audited signing service
-   that only the settlement/cancellation cron path can call. The private
-   key material never leaves the KMS.
-2. **Multisig / Safe with a bounded relayer** — the resolver role is held by
-   a Safe (or similar) requiring 2-of-N human approval for each
-   `settleRound`/`cancelRound` call, with an on-call runbook for daily
-   rounds. Slower, but removes any single hot key from the picture.
-3. **Dedicated signer microservice with envelope encryption** — analogous to
-   `cryptoService.js`'s AES-256-GCM pattern, but deployed as an isolated
-   process with its own restricted IAM role, its own secrets store entry
-   (not `ENCRYPTION_KEY`, not shared with per-user wallets), and full audit
-   logging of every signature it produces.
-4. **Manual, air-gapped signing for now** — given this is still a hackathon
-   deployment with very low round volume (see below), Koray manually signs
-   and broadcasts `cancelRound`/`settleRound` transactions from a wallet he
-   controls directly, without any code holding the key. This is the lowest
-   engineering effort and matches "no live Arc transaction without an
-   explicit, reviewed action" already in effect for this task.
+- The resolver private key is stored only as an AES-256-GCM envelope in the
+  Railway environment variable `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED`,
+  in the existing `v1.<iv>.<ct>.<tag>` format, encrypted under the existing
+  `ENCRYPTION_KEY`.
+- `backend/src/config.js` validates the variable against the envelope shape.
+  A plaintext private key is structurally rejected, so it cannot be
+  configured by mistake.
+- `backend/src/services/resolverSignerService.js` decrypts the envelope only
+  into an in-memory `ethers.Wallet`. It never logs, returns, or persists the
+  key material. When the variable is absent it warns once per process and
+  reports the signer as unconfigured.
+- `backend/scripts/encrypt-resolver-key.js` builds the envelope locally. It
+  accepts the key from a Foundry keystore via `cast`, from a keystore file, or
+  from a hidden prompt, and it verifies that the derived address equals the
+  deployed resolver before encrypting, aborting on mismatch. The key never
+  reaches argv, shell history, disk, or logs.
 
-**Manual resolver signing is now intentionally established for this hackathon run.**
-The deployed resolver was imported into a local Foundry keystore as account
-`extrema-resolver`, the derived address was verified against the deployed
-pool resolver, and the resolver was funded with 20 Arc Testnet USDC for gas.
-The private key was not added to the repository or env files. This establishes
-the previously listed manual-signing option for controlled live
-`lockRound`/`cancelRound` operations; it does not add an automated
-production signer service to the repo. The
-refund/cancellation code added in this pass is ready to be exercised once a
-legitimate cancellation transaction lands on-chain, but nothing in this repo
-should attempt to produce that transaction on its own.
+### Startup verification
+
+`roundAutomationService.verifyResolverConfiguration()` runs once when the
+backend process starts. It decrypts the envelope, derives the address, reads
+live `pool.resolver()` from a reference pool, and compares them.
+
+Railway startup proof, 2026-09-06:
+
+```
+[round-automation] daily scheduler active
+[round-automation] resolver signer verified {"resolver":"0x1EDC4594195fFb134315c3258DE974563Ed9762A"}
+```
+
+This preflight is informational and fire-and-forget. It does not gate the
+automation, so a transient RPC failure at boot cannot stall the lifecycle.
+Correctness is guarded separately and unconditionally: `executeResolverAction()`
+re-reads live `pool.resolver()` immediately before every cancel or settle and
+refuses to sign on `resolver_signer_mismatch`.
+
+### Automation status
+
+- `cancelRound` and `settleRound` are implemented in the lifecycle engine and
+  execute from the resolver signer.
+- Before acting, the engine re-reads the round and no-ops if it has reached a
+  terminal state or is no longer eligible.
+- `sendOnceWithReconciliation()` never resends. On an unknown send outcome it
+  re-reads the round to determine whether the transition actually landed.
+- Settlement evidence is built from Binance mark-price klines and raises
+  `resolver_data_incomplete` rather than settling on partial source data.
+- **No `cancelRound` or `settleRound` transaction has been broadcast yet.**
+  The earliest eligible moment is `2026-09-07T00:00:00Z`. See the section
+  below.
+
+### Refunds remain user-initiated
+
+Cancellation is automated. Refunds are not, and this is deliberate.
+
+`pool.refund(tokenId)` pays the **current NFT owner**. The backend must not
+spend on an owner's behalf without their fresh authorization, and for an
+externally held ticket it has no key to do so at all. The refund therefore
+stays behind the existing `REFUND_TICKET` step-up flow: the current owner
+initiates it, the server derives `executionMode` from on-chain ownership, and
+either the backend wallet signs after a passkey step-up or the connected
+wallet sends a tightly-bound transaction request that the server then verifies
+independently.
+
+No private key, envelope value, or `ENCRYPTION_KEY` value appears in this
+repository, in `.env.example`, or in this document.
 
 ## Daily Round #1 — expected outcome, not yet executed
 
@@ -169,7 +195,21 @@ should attempt to produce that transaction on its own.
   `0xac32dde62e060f5fadbb5384ee6fcc528c2828d9637b9e7fb700639d20529219`
   (block `60638205`). Both receipts succeeded and both rounds now read
   `LOCKED` onchain.
-- No `cancelRound` or `refund` transaction has been sent yet. Doing so
-  requires the resolver signing path above to exist first (for
-  `cancelRound`, which is `onlyResolver`), plus an explicit decision to
-  proceed with a live transaction.
+- No `cancelRound` or `refund` transaction has been sent yet. The resolver
+  signing path that previously blocked `cancelRound` now exists and is
+  verified, so the remaining blocker is only calendar time: the automation
+  becomes eligible to act once `observationEndAt` passes.
+- Expected sequence once eligible: the lifecycle engine cancels both rounds,
+  each round moves to `CANCELLED` with its `escrowRemaining` preserved, and
+  the two ticket owners then claim their refunds through the user-initiated
+  flow. ETH Daily Low Ticket #1 is backend-owned and takes the
+  `BACKEND_WALLET` path; ETH Daily High Ticket #1 was transferred to
+  `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321` and takes the
+  `EXTERNAL_OWNER` path.
+- ETH Weekly High Round #1 has 3 entries, meets `MIN_ENTRIES`, and is
+  therefore expected to **settle** rather than cancel, after
+  `2026-09-14T00:00:00Z`.
+- Record the resulting transaction hashes in
+  `EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md` sections 7, 8, and 11. Nothing in
+  those sections may be marked complete before the transactions actually
+  land.
