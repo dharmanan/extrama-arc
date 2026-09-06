@@ -416,7 +416,7 @@ export default function TicketsPage() {
         </div>
 
         <div className="ex-ticket__actions">
-          <Link href={"/rounds/" + ticket.slug}>{locale === "tr" ? "Turu aç" : "View round"} →</Link>
+          <Link href={"/results/" + ticket.slug + "/" + ticket.roundId}>{locale === "tr" ? "Turu aç" : "View round"} →</Link>
           <a href={ticket.explorerUrl} target="_blank" rel="noreferrer">{locale === "tr" ? "NFT'yi doğrula" : "Verify NFT"} →</a>
           {options.showTransfer && (
             <button type="button" onClick={() => openTransfer(ticket)} disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}>

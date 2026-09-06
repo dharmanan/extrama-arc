@@ -517,7 +517,7 @@ export default function PoolDetailPage() {
               >
                 {t.verifyOnArc}
               </a>
-              <Link href={`/rounds/${pool.slug}`} className="ex-btn ex-btn--ghost">
+              <Link href={`/results/${pool.slug}/${round.roundId}`} className="ex-btn ex-btn--ghost">
                 {t.viewRound}
               </Link>
             </div>

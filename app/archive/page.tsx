@@ -8,13 +8,18 @@ import { backendApi, type ArchiveRound } from "../lib/backend-api";
 import { humanRoundStatus } from "../lib/display";
 import { useLocale } from "../i18n";
 
-function formatUtcDate(value: string, locale: "en" | "tr") {
+function utcDateKey(value: string) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function formatUtcDateKey(value: string, locale: "en" | "tr") {
+  const [year, month, day] = value.split("-").map(Number);
   return new Intl.DateTimeFormat(locale === "tr" ? "tr-TR" : "en-US", {
     timeZone: "UTC",
     year: "numeric",
     month: "short",
     day: "numeric",
-  }).format(new Date(value));
+  }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 function formatUtcDateTime(value: string, locale: "en" | "tr") {
@@ -66,6 +71,7 @@ export default function ArchivePage() {
   const [blockNumber, setBlockNumber] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selectedDateKey, setSelectedDateKey] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -75,6 +81,11 @@ export default function ArchivePage() {
         if (cancelled) return;
         setRounds(result.rounds);
         setBlockNumber(result.chain.blockNumber);
+        const dates = Array.from(new Set(result.rounds.map((round) => utcDateKey(round.entryCloseAt)))).sort((a, b) => b.localeCompare(a));
+        const requested = typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("date")
+          : null;
+        setSelectedDateKey(requested && dates.includes(requested) ? requested : (dates[0] ?? ""));
         setError("");
       })
       .catch((cause: unknown) => {
@@ -90,16 +101,32 @@ export default function ArchivePage() {
     };
   }, []);
 
-  const groups = useMemo(() => {
-    const map = new Map<string, ArchiveRound[]>();
-    for (const round of rounds) {
-      const key = formatUtcDate(round.entryCloseAt, locale);
-      const existing = map.get(key) ?? [];
-      existing.push(round);
-      map.set(key, existing);
+  const availableDates = useMemo(
+    () => Array.from(new Set(rounds.map((round) => utcDateKey(round.entryCloseAt)))).sort((a, b) => b.localeCompare(a)),
+    [rounds],
+  );
+
+  const selectedRounds = useMemo(
+    () => rounds.filter((round) => utcDateKey(round.entryCloseAt) === selectedDateKey),
+    [rounds, selectedDateKey],
+  );
+
+  useEffect(() => {
+    function onPopState() {
+      const requested = new URLSearchParams(window.location.search).get("date");
+      setSelectedDateKey(requested && availableDates.includes(requested) ? requested : (availableDates[0] ?? ""));
     }
-    return Array.from(map.entries());
-  }, [rounds, locale]);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [availableDates]);
+
+  function selectDate(next: string) {
+    setSelectedDateKey(next);
+    const url = new URL(window.location.href);
+    if (next === availableDates[0]) url.searchParams.delete("date");
+    else url.searchParams.set("date", next);
+    window.history.pushState({}, "", url);
+  }
 
   const settledCount = rounds.filter((round) => round.contractStatus === "SETTLED").length;
   const cancelledCount = rounds.filter((round) => round.contractStatus === "CANCELLED").length;
@@ -143,7 +170,7 @@ export default function ArchivePage() {
           </section>
         )}
 
-        {!loading && !error && groups.length === 0 && (
+        {!loading && !error && availableDates.length === 0 && (
           <section className="ex-archive__state">
             <p className="ex-eyebrow">{locale === "tr" ? "HENÜZ KAYIT YOK" : "NO RECORDS YET"}</p>
             <h2 className="ex-display ex-display--md">{locale === "tr" ? "Arşiv sessiz." : "The archive is quiet."}</h2>
@@ -151,17 +178,37 @@ export default function ArchivePage() {
           </section>
         )}
 
-        {!loading && !error && groups.map(([date, items]) => (
-          <section className="ex-archive__group" key={date}>
+        {!loading && !error && availableDates.length > 0 && (
+          <>
+            <section className="ex-archive__query" aria-label={locale === "tr" ? "Arşiv tarihi" : "Archive date"}>
+              <label>
+                <span>{locale === "tr" ? "TARİH" : "DATE"}</span>
+                <select value={selectedDateKey} onChange={(event) => selectDate(event.target.value)}>
+                  {availableDates.map((dateKey, index) => (
+                    <option value={dateKey} key={dateKey}>
+                      {index === 0 ? (locale === "tr" ? "En güncel · " : "Latest · ") : ""}
+                      {formatUtcDateKey(dateKey, locale)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="ex-num">
+                {selectedRounds.length} {locale === "tr" ? "tur gösteriliyor" : selectedRounds.length === 1 ? "round shown" : "rounds shown"}
+                {" · "}
+                {availableDates.length} {locale === "tr" ? "arşiv günü" : availableDates.length === 1 ? "archive day" : "archive days"}
+              </p>
+            </section>
+
+            <section className="ex-archive__group" key={selectedDateKey}>
             <header className="ex-archive__date">
-              <h2 className="ex-display">{date}</h2>
+              <h2 className="ex-display">{formatUtcDateKey(selectedDateKey, locale)}</h2>
               <span className="ex-num">
-                {items.length} {locale === "tr" ? "tur" : items.length === 1 ? "round" : "rounds"}
+                {selectedRounds.length} {locale === "tr" ? "tur" : selectedRounds.length === 1 ? "round" : "rounds"}
               </span>
             </header>
 
             <div className="ex-archive__ledger">
-              {items.map((round) => {
+              {selectedRounds.map((round) => {
                 const asset = assetConfigs[round.asset];
                 const settled = round.contractStatus === "SETTLED";
                 const cancelled = round.contractStatus === "CANCELLED";
@@ -226,8 +273,9 @@ export default function ArchivePage() {
                 );
               })}
             </div>
-          </section>
-        ))}
+            </section>
+          </>
+        )}
       </div>
     </main>
   );

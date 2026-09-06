@@ -1311,3 +1311,22 @@ img{max-width:100%}
 @media(max-width:900px){.ex-archive__head,.ex-tickets__head{grid-template-columns:minmax(0,1fr);align-items:start}.ex-ticket-notice{grid-template-columns:minmax(0,1fr)}.ex-ticket-notice a{justify-self:start}}
 @media(max-width:700px){.ex-archive-row{grid-template-columns:repeat(2,minmax(0,1fr))}.ex-archive-row__stats,.ex-archive-row__winners,.ex-archive-row__actions{grid-column:1 / -1}.ex-archive-row__actions{justify-items:start;text-align:left}.ex-ticket__head{align-items:flex-start}.ex-ticket__identity{align-items:flex-start}.ex-ticket__status{text-align:right}.ex-ticket__body{grid-template-columns:minmax(0,1fr)}.ex-ticket__meta{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:520px){.ex-archive-row{grid-template-columns:minmax(0,1fr)}.ex-archive-row__stats,.ex-archive-row__winners,.ex-archive-row__actions{grid-column:auto}.ex-archive-row__stats{grid-template-columns:repeat(2,minmax(0,1fr))}.ex-archive-row__stats>div:last-child{grid-column:1 / -1}.ex-archive-row__winners li{grid-template-columns:24px minmax(64px,1fr) auto}.ex-archive-row__winners li small{grid-column:2 / -1}.ex-ticket-group__head{align-items:start;flex-direction:column}.ex-ticket-group__head>p{text-align:left}.ex-ticket__head{display:grid}.ex-ticket__status{text-align:left}.ex-ticket__meta{grid-template-columns:minmax(0,1fr)}}
+
+.ex-archive__query{
+  display:flex;align-items:end;justify-content:space-between;gap:20px;
+  padding-block:16px;border-bottom:1px solid var(--line-strong)
+}
+.ex-archive__query label{display:flex;align-items:baseline;gap:14px}
+.ex-archive__query label>span{font-size:.72rem;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.ex-archive__query select{
+  appearance:none;border:0;border-bottom:1px solid var(--line-strong);border-radius:0;
+  background:transparent;color:var(--ink);padding:4px 24px 4px 0;
+  font-family:var(--serif);font-size:1.25rem;line-height:1;cursor:pointer
+}
+.ex-archive__query select:focus{outline:0;border-bottom-color:var(--ember)}
+.ex-archive__query p{margin:0;font-size:.78rem;color:var(--muted)}
+.ex-archive__query + .ex-archive__group{padding-top:clamp(24px,3vw,40px)}
+.ex-archive__query + .ex-archive__group .ex-archive-row{padding-block:clamp(14px,1.7vw,20px)}
+@media(max-width:700px){
+  .ex-archive__query{align-items:flex-start;flex-direction:column;gap:10px}
+}
