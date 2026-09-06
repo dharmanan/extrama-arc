@@ -100,12 +100,45 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ethers v6 surfaces a JSON-RPC error in more than one place. A rate limit can
+// arrive as error.info.error, or, when ethers cannot coalesce a batched
+// response, as error.error with an outer code of UNKNOWN_ERROR. Production has
+// produced both, so every shape is checked rather than just the nested one.
 function isRateLimitError(error) {
-  return (
-    error?.info?.error?.code === -32005 ||
-    String(error?.info?.error?.message || '').toLowerCase().includes('rate limit') ||
-    String(error?.shortMessage || error?.message || '').toLowerCase().includes('rate limit')
+  if (!error) return false;
+
+  const codes = [error?.error?.code, error?.info?.error?.code];
+  if (codes.includes(-32005)) return true;
+
+  const messages = [
+    error?.error?.message,
+    error?.info?.error?.message,
+    error?.shortMessage,
+    error?.message,
+  ];
+
+  return messages.some((message) =>
+    String(message || '').toLowerCase().includes('rate limit'),
   );
+}
+
+// Transient transport failures that a read may safely be repeated through.
+// Deterministic contract behaviour is deliberately excluded: a real revert
+// carries revert data, so only an empty CALL_EXCEPTION is treated as transport
+// noise. Reads only; this is never applied to a broadcast.
+function isTransientRpcError(error) {
+  if (!error) return false;
+  if (isRateLimitError(error)) return true;
+
+  if (['NETWORK_ERROR', 'SERVER_ERROR', 'TIMEOUT', 'UNKNOWN_ERROR'].includes(error.code)) {
+    return true;
+  }
+
+  if (error.code === 'CALL_EXCEPTION' && (error.data === null || error.data === undefined)) {
+    return true;
+  }
+
+  return false;
 }
 
 async function rpcRead(operation, attempts = 6) {
@@ -116,7 +149,7 @@ async function rpcRead(operation, attempts = 6) {
       return await operation();
     } catch (error) {
       lastError = error;
-      if (!isRateLimitError(error) || attempt === attempts - 1) {
+      if (!isTransientRpcError(error) || attempt === attempts - 1) {
         throw error;
       }
 
@@ -271,10 +304,10 @@ async function readStandardRounds() {
   const factoryAddress = ethers.getAddress(config.EXTREMA_FACTORY_ADDRESS);
 
   const [network, blockNumber, latestBlock, factoryCode] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlockNumber(),
-    provider.getBlock('latest'),
-    provider.getCode(factoryAddress),
+    rpcRead(() => provider.getNetwork()),
+    rpcRead(() => provider.getBlockNumber()),
+    rpcRead(() => provider.getBlock('latest')),
+    rpcRead(() => provider.getCode(factoryAddress)),
   ]);
 
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
@@ -468,8 +501,8 @@ async function readOwnedTicketsViaMulticall(address) {
   const owner = ethers.getAddress(address);
   const provider = getProvider();
   const [network, blockNumber, multicallAvailable] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlockNumber(),
+    rpcRead(() => provider.getNetwork()),
+    rpcRead(() => provider.getBlockNumber()),
     hasMulticall3(provider),
   ]);
 
@@ -599,8 +632,8 @@ async function readOwnedTicketsLegacy(address) {
   const owner = ethers.getAddress(address);
   const provider = getProvider();
   const [network, blockNumber] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlockNumber(),
+    rpcRead(() => provider.getNetwork()),
+    rpcRead(() => provider.getBlockNumber()),
   ]);
 
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
@@ -750,7 +783,7 @@ async function readRefundAuthorizationState({
   }
 
   const provider = getProvider();
-  const network = await provider.getNetwork();
+  const network = await rpcRead(() => provider.getNetwork());
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
     throw new Error('arc_chain_id_mismatch');
   }
@@ -849,7 +882,7 @@ async function readClaimAuthorizationState({
   }
 
   const provider = getProvider();
-  const network = await provider.getNetwork();
+  const network = await rpcRead(() => provider.getNetwork());
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
     throw new Error('arc_chain_id_mismatch');
   }
@@ -934,7 +967,7 @@ async function readRoundResult({ slug, roundId }) {
   if (!topology) throw new Error('round_result_not_supported');
 
   const provider = getProvider();
-  const network = await provider.getNetwork();
+  const network = await rpcRead(() => provider.getNetwork());
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
     throw new Error('arc_chain_id_mismatch');
   }
@@ -1049,8 +1082,8 @@ async function readRoundArchive({ days = 90 } = {}) {
 
   const provider = getProvider();
   const [network, latestBlock] = await Promise.all([
-    provider.getNetwork(),
-    provider.getBlock('latest'),
+    rpcRead(() => provider.getNetwork()),
+    rpcRead(() => provider.getBlock('latest')),
   ]);
 
   if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
