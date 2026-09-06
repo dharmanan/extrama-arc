@@ -24,7 +24,7 @@ function formatHeaderUsdc(value: string, locale: "en" | "tr") {
   }).format(numeric);
 }
 
-export function ProductHeader() {
+export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "overlay" }) {
   const { wallet } = useDemoState();
   const { locale, setLocale } = useLocale();
   const t = useCopy();
@@ -51,40 +51,58 @@ export function ProductHeader() {
     };
   }, [wallet.status, wallet.address]);
 
+  const connected = wallet.status === "ready" && Boolean(wallet.address);
+
   return (
-    <header className="wf-header">
-      <Link href="/" className="wf-brand">EXTREMA</Link>
-      <nav>
-        <Link href="/pools">{t.pools}</Link>
-        <Link href="/leaderboard">{t.leaderboard}</Link>
-        <Link href="/archive">{t.archive}</Link>
-        <Link href="/how-it-works">{t.howItWorks}</Link>
-        <Link href="/tickets">{t.myTickets}</Link>
-      </nav>
-      <div className="wf-row" style={{ justifyContent: "flex-end", alignItems: "center", gap: 8 }}>
-        <div className="wf-row" aria-label="Language" style={{ gap: 4 }}>
-          <button
-            className="wf-filter"
-            data-active={locale === "en"}
-            type="button"
-            onClick={() => setLocale("en")}
-          >
-            EN
-          </button>
-          <button
-            className="wf-filter"
-            data-active={locale === "tr"}
-            type="button"
-            onClick={() => setLocale("tr")}
-          >
-            TR
-          </button>
+    <header className={`ex-header${variant === "overlay" ? " ex-header--overlay" : ""}`}>
+      <div className="ex-header__inner">
+        <Link href="/" className="ex-brand">EXTREMA</Link>
+
+        <nav className="ex-nav">
+          <Link href="/pools">{t.pools}</Link>
+          <Link href="/leaderboard">{t.leaderboard}</Link>
+          <Link href="/archive">{t.archive}</Link>
+          <Link href="/how-it-works">{t.howItWorks}</Link>
+          <Link href="/tickets">{t.myTickets}</Link>
+        </nav>
+
+        <div className="ex-header__aside">
+          <div className="ex-lang" aria-label="Language">
+            <button
+              data-active={locale === "en"}
+              type="button"
+              onClick={() => setLocale("en")}
+            >
+              EN
+            </button>
+            <button
+              data-active={locale === "tr"}
+              type="button"
+              onClick={() => setLocale("tr")}
+            >
+              TR
+            </button>
+          </div>
+
+          <Link href="/wallet" className="ex-wallet">
+            {connected && wallet.address ? (
+              <>
+                <span className="ex-wallet__dot" aria-hidden="true" />
+                <span className="ex-num">{shortAddress(wallet.address)}</span>
+                {onchainUsdc !== null && (
+                  <span className="ex-num ex-wallet__balance">
+                    · {formatHeaderUsdc(onchainUsdc, locale)} USDC
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="ex-wallet__long">{t.createConnectWallet}</span>
+                <span className="ex-wallet__short">{t.walletShort}</span>
+              </>
+            )}
+          </Link>
         </div>
-        <Link href="/wallet" className="wf-action">
-          {wallet.status === "ready" && wallet.address
-            ? `${shortAddress(wallet.address)}${onchainUsdc !== null ? ` · ${formatHeaderUsdc(onchainUsdc, locale)} USDC` : ""}`
-            : t.createConnectWallet}
-        </Link>
       </div>
     </header>
   );
@@ -196,11 +214,12 @@ export function RoundCountdown({
 }
 
 function poolStatusLabel(pool: LivePool, locale: "en" | "tr") {
-  if (pool.round.canEnter) {
-    return locale === "tr" ? "Tahminler açık" : "Predictions open";
+  if (pool.round.contractStatus === "ENTRY_OPEN" && !pool.round.canEnter) {
+    return locale === "tr"
+      ? "Tahminler kapandı · kilit bekleniyor"
+      : "Predictions closed · awaiting lock";
   }
-
-  return locale === "tr" ? "Tahminler kapalı" : "Predictions closed";
+  return humanRoundStatus(pool.round.contractStatus, locale);
 }
 
 export function PoolSummary({ pool }: { pool: LivePool }) {
@@ -236,9 +255,7 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       </dl>
 
       <p><b>{poolStatusLabel(pool, locale)}</b></p>
-      {pool.round.canEnter && (
-        <p>{t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
-      )}
+      <p>{t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
 
       <Link href={`/pools/${pool.slug}`} className="wf-action">
         {pool.round.canEnter ? t.makePrediction : t.viewPool}
