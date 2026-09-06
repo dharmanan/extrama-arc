@@ -92,6 +92,12 @@ async function ensureCurrentDailyRoundsInternal() {
     };
   }
 
+  // Fail with a named error if the topology export ever regresses again,
+  // instead of a bare "cannot read properties of undefined" every 60s.
+  if (!Array.isArray(arcService.ARC_POOL_TOPOLOGY)) {
+    throw new Error('arc_pool_topology_unavailable');
+  }
+
   const dailyPools = arcService.ARC_POOL_TOPOLOGY.filter(
     (item) => item.cadence === 'DAILY',
   );
