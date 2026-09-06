@@ -240,7 +240,7 @@ function PoolCell({
   const open = pool.round.canEnter;
 
   return (
-    <Link className="ex-cell" data-open={open} href={`/pools/${pool.slug}`}>
+    <Link className="ex-cell" data-direction={direction} data-open={open} href={`/pools/${pool.slug}`}>
       <span className="ex-cell__dir">
         <DirectionMark direction={direction} />
         {directionLabel(direction, t)}
