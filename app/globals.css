@@ -305,24 +305,59 @@ img{max-width:100%}
    right side of the canvas — not decorative microcopy. */
 .ex-hero__aside{
   grid-column:2;
-  align-self:start;
+  align-self:stretch;
   justify-self:end;
-  text-align:right;
-  display:grid;
-  gap:14px;
-  max-width:22ch;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:clamp(32px,6vh,72px);
   padding-top:clamp(4px,1.2vw,18px);
 }
+
+/* Reference A's right-hand block: uppercase, widely tracked, one word per
+   line, right-aligned — the counterweight to the serif headline. */
 .ex-hero__aside-line{
-  font-family:var(--serif);
-  font-size:clamp(1.3rem,2.15vw,2.1rem);
-  line-height:1.14;
-  color:var(--on-dark-2);
   margin:0;
+  text-align:right;
+  font-family:var(--sans);
+  font-size:clamp(.86rem,1.28vw,1.32rem);
+  font-weight:500;
+  letter-spacing:.26em;
+  line-height:1.72;
+  text-transform:uppercase;
+  color:var(--on-dark-3);
 }
 .ex-hero__aside-line span{display:block;white-space:nowrap}
-.ex-hero__aside-line span + span{color:var(--on-dark)}
-.ex-hero__aside .ex-rule{margin-left:auto;width:clamp(56px,7vw,110px);background:var(--line-dark-strong)}
+.ex-hero__aside-line span[data-strong="true"]{color:var(--on-dark)}
+
+/* Vertical rule + verb list, as in the reference. */
+.ex-hero__verbs{display:flex;align-items:stretch;gap:clamp(16px,1.6vw,26px)}
+.ex-hero__verbs::before{
+  content:"";
+  width:1px;
+  flex:none;
+  background:linear-gradient(180deg,
+    rgba(246,243,236,.10) 0%,
+    rgba(246,243,236,.55) 22%,
+    rgba(246,243,236,.55) 78%,
+    rgba(246,243,236,.10) 100%);
+}
+.ex-hero__verbs ul{
+  list-style:none;
+  margin:0;
+  padding:clamp(2px,.6vw,8px) 0;
+  display:grid;
+  gap:clamp(11px,1.5vh,18px);
+  text-align:left;
+}
+.ex-hero__verbs li{
+  font-size:clamp(.68rem,.8vw,.82rem);
+  font-weight:600;
+  letter-spacing:.24em;
+  text-transform:uppercase;
+  color:var(--on-dark-2);
+}
 
 .ex-hero__actions{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
 
@@ -370,8 +405,16 @@ img{max-width:100%}
 @media(max-width:1020px){
   .ex-hero__body{grid-template-columns:minmax(0,1fr);align-content:end;gap:clamp(24px,5vw,40px)}
   .ex-hero__lead{grid-column:1}
-  .ex-hero__aside{grid-column:1;justify-self:start;text-align:left;max-width:30ch}
-  .ex-hero__aside .ex-rule{margin-left:0}
+  .ex-hero__aside{
+    grid-column:1;
+    align-self:auto;
+    justify-self:start;
+    flex-direction:row;
+    align-items:flex-end;
+    justify-content:flex-start;
+    gap:clamp(24px,5vw,48px);
+  }
+  .ex-hero__aside-line{text-align:left}
   .ex-band{grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
   .ex-band__meta{grid-column:1 / -1;justify-self:start;text-align:left;padding-top:6px;border-top:1px solid var(--line-dark)}
 }
@@ -383,6 +426,8 @@ img{max-width:100%}
   .ex-hero__scrim--bottom{background:linear-gradient(0deg,rgba(9,11,10,.96) 0%,rgba(9,11,10,.62) 22%,rgba(9,11,10,0) 46%)}
   .ex-hero{min-height:min(100vh,860px)}
   .ex-band{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
+  .ex-hero__verbs{display:none}
+  .ex-hero__aside-line{font-size:.8rem;letter-spacing:.22em;line-height:1.9}
 }
 
 /* --------------------------------------------------------------------------

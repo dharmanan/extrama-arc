@@ -160,11 +160,25 @@ export default function HomeClient() {
           </div>
 
           <div className="ex-hero__aside">
-            <hr className="ex-rule ex-rule--dark" />
             <p className="ex-hero__aside-line">
-              <span>{t.home.asideLineOne}</span>
-              <span>{t.home.asideLineTwo}</span>
+              {[t.home.asideLineOne, t.home.asideLineTwo].flatMap((line) => {
+                const words = line.split(" ");
+                return words.map((word, index) => (
+                  <span key={`${line}-${word}`} data-strong={index === words.length - 1}>
+                    {word}
+                  </span>
+                ));
+              })}
             </p>
+
+            <div className="ex-hero__verbs">
+              <ul>
+                <li>{t.home.verbPredict}</li>
+                <li>{t.home.verbExplore}</li>
+                <li>{t.home.verbCompete}</li>
+                <li>{t.home.verbOwn}</li>
+              </ul>
+            </div>
           </div>
         </div>
 
