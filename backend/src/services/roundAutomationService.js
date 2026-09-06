@@ -79,6 +79,115 @@ function sameSchedule(round, schedule) {
   );
 }
 
+const SECONDS_PER_DAY = 86400n;
+const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
+const CADENCE_POOL_COUNT = 8;
+
+// Finds the next Sunday 00:00 UTC strictly after `now`. WEEKLY observation
+// always starts the following Monday (contracts/ARCHITECTURE.md section 10),
+// so this anchors the canonical weekly schedule the same way
+// currentDailySchedule anchors to the calendar day containing `now`. Pure
+// Date.UTC arithmetic, so month/year rollover is handled by the platform,
+// never hardcoded.
+function nextWeeklyEntryCloseAfter(now) {
+  const nowDate = new Date(Number(now) * 1000);
+  const year = nowDate.getUTCFullYear();
+  const month = nowDate.getUTCMonth();
+  const day = nowDate.getUTCDate();
+  const weekday = nowDate.getUTCDay(); // 0 = Sunday ... 6 = Saturday
+
+  const todayMidnight = BigInt(Math.floor(Date.UTC(year, month, day, 0, 0, 0) / 1000));
+  const daysUntilSunday = BigInt((7 - weekday) % 7);
+  let candidate = todayMidnight + daysUntilSunday * SECONDS_PER_DAY;
+  // Entry must still be open (now < entryCloseAt), so a Sunday that has
+  // already arrived (or is exactly now) cannot be this round's close.
+  if (candidate <= now) candidate += 7n * SECONDS_PER_DAY;
+  return candidate;
+}
+
+// Canonical WEEKLY schedule: observation Monday 00:00 UTC -> next Monday
+// 00:00 UTC, entry closes exactly 24h before observation start (Sunday
+// 00:00 UTC) -- the same offsets already enforced by
+// backend/src/scripts/create-next-round.js's validateCadence and by
+// contracts/ARCHITECTURE.md section 10. Entry windows tile with zero gap:
+// this round's entryOpenAt equals the previous weekly round's
+// entryCloseAt, so a new enterable round is always available the instant
+// the previous one closes.
+function currentWeeklySchedule(chainTimestamp) {
+  const { leadSeconds, durationSeconds } = CADENCE_RULES.WEEKLY;
+  const entryCloseAt = nextWeeklyEntryCloseAfter(chainTimestamp);
+  const observationStartAt = entryCloseAt + leadSeconds;
+  const observationEndAt = observationStartAt + durationSeconds;
+  const entryOpenAt = entryCloseAt - durationSeconds;
+  return { entryOpenAt, entryCloseAt, observationStartAt, observationEndAt };
+}
+
+function quarterStartUtc(year, quarterIndex) {
+  return BigInt(Math.floor(Date.UTC(year, quarterIndex * 3, 1, 0, 0, 0) / 1000));
+}
+
+// Canonical QUARTERLY schedule: observation first calendar day of the
+// quarter 00:00 UTC -> first calendar day of the next quarter 00:00 UTC,
+// entry closes exactly 24h before (contracts/ARCHITECTURE.md section 10).
+// Quarter length (89-92 days) is never hardcoded -- only the calendar
+// quarter boundary (month 0/3/6/9, day 1) is computed, so this is correct
+// across every quarter length and every year, leap or not. Entry windows
+// tile with zero gap, the same rule as WEEKLY.
+function currentQuarterlySchedule(chainTimestamp) {
+  const nowDate = new Date(Number(chainTimestamp) * 1000);
+  let year = nowDate.getUTCFullYear();
+  let quarterIndex = Math.floor(nowDate.getUTCMonth() / 3);
+
+  let observationStartAt = quarterStartUtc(year, quarterIndex);
+  let entryCloseAt = observationStartAt - CADENCE_RULES.QUARTERLY.leadSeconds;
+
+  // Entry must still be open (now < entryCloseAt). Advance quarter by
+  // quarter -- never more than one iteration in practice -- until the
+  // computed window actually contains `now`.
+  while (entryCloseAt <= chainTimestamp) {
+    quarterIndex += 1;
+    if (quarterIndex > 3) {
+      quarterIndex = 0;
+      year += 1;
+    }
+    observationStartAt = quarterStartUtc(year, quarterIndex);
+    entryCloseAt = observationStartAt - CADENCE_RULES.QUARTERLY.leadSeconds;
+  }
+
+  const prevYear = quarterIndex === 0 ? year - 1 : year;
+  const prevQuarterIndex = quarterIndex === 0 ? 3 : quarterIndex - 1;
+  const entryOpenAt = quarterStartUtc(prevYear, prevQuarterIndex) - CADENCE_RULES.QUARTERLY.leadSeconds;
+
+  const nextYear = quarterIndex === 3 ? year + 1 : year;
+  const nextQuarterIndex = quarterIndex === 3 ? 0 : quarterIndex + 1;
+  const observationEndAt = quarterStartUtc(nextYear, nextQuarterIndex);
+
+  return { entryOpenAt, entryCloseAt, observationStartAt, observationEndAt };
+}
+
+// WEEKLY/QUARTERLY idempotency intentionally does NOT compare entryOpenAt,
+// unlike sameSchedule() above which DAILY still uses unchanged. Round #1 on
+// all 24 pools (including every WEEKLY/QUARTERLY pool) was bootstrap-created
+// by script/CreateStandardRounds.s.sol with entryOpenAt set to the deploy
+// transaction's block.timestamp, not a calendar-aligned value, and
+// ExtremaPool.createRound (contracts/src/ExtremaPool.sol) only constrains
+// entryOpenAt < entryCloseAt <= observationStartAt < observationEndAt on
+// chain -- entryOpenAt carries no canonical meaning beyond ordering. DAILY
+// never hits this in practice because a new calendar day always makes its
+// old round irrelevant within hours. WEEKLY/QUARTERLY rounds stay "current"
+// for a week or a quarter, so matching on entryOpenAt here would make this
+// code treat the already-correct live Round #1 as missing and attempt a
+// duplicate create. The three fields that actually define the prediction
+// window are compared instead.
+function sameObservationWindow(round, schedule) {
+  return (
+    round &&
+    round.entryCloseAt === schedule.entryCloseAt &&
+    round.observationStartAt === schedule.observationStartAt &&
+    round.observationEndAt === schedule.observationEndAt
+  );
+}
+
 async function withAutomationLock(work) {
   const client = await db.getClient();
   try {
@@ -428,6 +537,223 @@ async function ensureCurrentDailyRoundsInternal() {
   };
 }
 
+// Generalized WEEKLY/QUARTERLY round creation. DAILY keeps its own untouched
+// implementation above and is never routed through this function, so daily
+// behavior cannot regress. Every pool is handled independently: an
+// unreadable pool, a schedule-ahead pool, or a failed broadcast is recorded
+// as a structured failure and never blocks the other seven.
+async function ensureCurrentCadenceRoundsInternal(cadenceName, cadenceEnumValue, scheduleFn) {
+  const provider = getAutomationProvider();
+  const now = await readChainNow(provider);
+  const schedule = scheduleFn(now);
+
+  // Defensive only: the schedule functions above always return a window
+  // containing `now` by construction (they search forward from `now`). If
+  // that invariant is ever violated, fail loudly instead of silently
+  // writing an incorrect schedule onchain.
+  if (now < schedule.entryOpenAt || now >= schedule.entryCloseAt) {
+    throw new Error(`${cadenceName.toLowerCase()}_schedule_computation_invalid`);
+  }
+
+  const pools = requireTopology().filter((item) => item.cadence === cadenceName);
+  if (pools.length !== CADENCE_POOL_COUNT) {
+    throw new Error(`${cadenceName.toLowerCase()}_pool_count_mismatch`);
+  }
+
+  const owners = new Set();
+  const states = [];
+  const failures = [];
+
+  for (const topology of pools) {
+    const pool = new ethers.Contract(topology.poolAddress, POOL_ABI, provider);
+    const context = { provider, address: topology.poolAddress };
+
+    // Isolate per pool: an unreadable pool is skipped rather than aborting
+    // the other seven. It is never written to, because it never reaches
+    // states[].
+    try {
+      const [owner, cadenceOnchain, nextRoundId] = await Promise.all([
+        safeRead(() => pool.owner(), context),
+        safeRead(() => pool.CADENCE(), context),
+        safeRead(() => pool.nextRoundId(), context),
+      ]);
+
+      if (Number(cadenceOnchain) !== cadenceEnumValue) {
+        throw new Error(`${cadenceName.toLowerCase()}_cadence_mismatch`);
+      }
+
+      const normalizedOwner = ethers.getAddress(owner);
+      owners.add(normalizedOwner);
+
+      const latestRoundId = nextRoundId - 1n;
+      const latestRound =
+        latestRoundId >= 1n
+          ? await safeRead(() => pool.getRound(latestRoundId), context)
+          : null;
+
+      states.push({
+        topology,
+        pool,
+        owner: normalizedOwner,
+        nextRoundId,
+        latestRoundId,
+        latestRound,
+      });
+    } catch (error) {
+      failures.push({
+        slug: slugOf(topology),
+        poolAddress: topology.poolAddress,
+        cadence: cadenceName,
+        operation: 'read_pool_state',
+        reason: error.shortMessage || error.message,
+      });
+    }
+  }
+
+  if (states.length === 0) {
+    return {
+      skipped: true,
+      reason: `${cadenceName.toLowerCase()}_pool_state_unreadable`,
+      failures,
+    };
+  }
+  // A mismatched owner across the 8 pools of one cadence indicates a data
+  // integrity problem, not a per-pool transient issue. Per the "do not
+  // repair blindly" rule, no write is attempted for any pool in that case.
+  if (owners.size !== 1) {
+    return {
+      skipped: true,
+      reason: `${cadenceName.toLowerCase()}_pool_owner_mismatch`,
+      failures,
+    };
+  }
+  const [ownerAddress] = Array.from(owners);
+
+  const missing = states.filter(
+    (state) => !sameObservationWindow(state.latestRound, schedule),
+  );
+
+  if (missing.length === 0) {
+    return {
+      skipped: true,
+      reason: `${cadenceName.toLowerCase()}_rounds_already_current`,
+      roundCount: states.length,
+      failures,
+    };
+  }
+
+  let signer;
+  try {
+    signer = await getPoolOwnerSigner(provider, ownerAddress);
+  } catch (error) {
+    return { skipped: true, reason: error.message, failures };
+  }
+
+  const results = [];
+
+  for (const state of states) {
+    const slug = slugOf(state.topology);
+
+    try {
+      // Re-read immediately before deciding to write so a prior partial
+      // run, or another instance that lost the advisory-lock race, is safe.
+      const context = { provider, address: state.topology.poolAddress };
+      const nextRoundId = await safeRead(() => state.pool.nextRoundId(), context);
+      const latestRoundId = nextRoundId - 1n;
+      const latestRound =
+        latestRoundId >= 1n
+          ? await safeRead(() => state.pool.getRound(latestRoundId), context)
+          : null;
+
+      if (sameObservationWindow(latestRound, schedule)) {
+        results.push({ slug, roundId: Number(latestRoundId), status: 'already-current' });
+        continue;
+      }
+
+      if (latestRound && latestRound.entryCloseAt > schedule.entryCloseAt) {
+        failures.push({
+          slug,
+          poolAddress: state.topology.poolAddress,
+          cadence: cadenceName,
+          operation: 'createRound',
+          reason: 'round_schedule_ahead',
+        });
+        continue;
+      }
+
+      const hasLanded = async () => {
+        const check = await safeRead(() => state.pool.getRound(nextRoundId), context);
+        return sameObservationWindow(check, schedule) && Number(check.status) === STATUS_ENTRY_OPEN;
+      };
+
+      // Single attempt. A send is never retried; an uncertain outcome is
+      // resolved by re-reading state, exactly like cancel/settle above.
+      const sendResult = await sendOnceWithReconciliation({
+        label: `${cadenceName.toLowerCase()}_create`,
+        send: () =>
+          state.pool
+            .connect(signer)
+            .createRound(
+              schedule.entryOpenAt,
+              schedule.entryCloseAt,
+              schedule.observationStartAt,
+              schedule.observationEndAt,
+            ),
+        hasLanded,
+      });
+
+      const created = await safeRead(() => state.pool.getRound(nextRoundId), context);
+      if (!sameObservationWindow(created, schedule) || Number(created.status) !== STATUS_ENTRY_OPEN) {
+        throw new Error('create_round_postcondition_failed');
+      }
+
+      results.push({
+        slug,
+        roundId: Number(nextRoundId),
+        status: 'created',
+        entryOpenAt: new Date(Number(schedule.entryOpenAt) * 1000).toISOString(),
+        entryCloseAt: new Date(Number(schedule.entryCloseAt) * 1000).toISOString(),
+        observationStartAt: new Date(Number(schedule.observationStartAt) * 1000).toISOString(),
+        observationEndAt: new Date(Number(schedule.observationEndAt) * 1000).toISOString(),
+        txHash: sendResult.txHash,
+        reconciled: sendResult.reconciled,
+      });
+    } catch (error) {
+      // The next scheduled run re-reads state fresh and reconciles: if the
+      // round now exists, this pool falls into "already-current" instead.
+      // Only a genuine, still-unresolved failure is reported here.
+      failures.push({
+        slug,
+        poolAddress: state.topology.poolAddress,
+        cadence: cadenceName,
+        operation: 'createRound',
+        reason: error.message,
+      });
+    }
+  }
+
+  if (results.some((result) => result.status === 'created')) {
+    await arcService.refreshStandardRoundsCache();
+  }
+
+  return {
+    skipped: false,
+    entryCloseAt: new Date(Number(schedule.entryCloseAt) * 1000).toISOString(),
+    observationStartAt: new Date(Number(schedule.observationStartAt) * 1000).toISOString(),
+    observationEndAt: new Date(Number(schedule.observationEndAt) * 1000).toISOString(),
+    results,
+    failures,
+  };
+}
+
+async function ensureCurrentWeeklyRoundsInternal() {
+  return ensureCurrentCadenceRoundsInternal('WEEKLY', CADENCE_ENUM.WEEKLY, currentWeeklySchedule);
+}
+
+async function ensureCurrentQuarterlyRoundsInternal() {
+  return ensureCurrentCadenceRoundsInternal('QUARTERLY', CADENCE_ENUM.QUARTERLY, currentQuarterlySchedule);
+}
+
 // Locking is permissionless on ExtremaPool, so this needs no privileged role.
 // It reuses the already-provisioned owner wallet purely as a funded sender.
 async function lockDueRoundsInternal(provider, now, dueLock) {
@@ -735,8 +1061,25 @@ function resolverSignature(pending) {
     .join('|');
 }
 
+// Weekly/Quarterly creation failures must never prevent Daily creation or
+// the lock/cancel/settle scan for old rounds from running in the same tick
+// -- creation and lifecycle transition scanning are separate concerns, and
+// a defensive throw in one new cadence must not take down the other.
+async function ensureCadenceRoundsSafely(ensureFn) {
+  try {
+    return await ensureFn();
+  } catch (error) {
+    return { skipped: true, reason: error.message, failures: [] };
+  }
+}
+
 async function runLifecycleInternal() {
-  const created = await ensureCurrentDailyRoundsInternal();
+  // Daily is untouched and unwrapped, preserving its exact existing
+  // behavior and risk profile.
+  const daily = await ensureCurrentDailyRoundsInternal();
+  const weekly = await ensureCadenceRoundsSafely(ensureCurrentWeeklyRoundsInternal);
+  const quarterly = await ensureCadenceRoundsSafely(ensureCurrentQuarterlyRoundsInternal);
+  const created = { daily, weekly, quarterly };
 
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
@@ -855,8 +1198,26 @@ function runAndLog() {
     .then((result) => {
       if (result?.skipped) return;
 
-      if (result.created && !result.created.skipped) {
-        console.log('[round-automation] daily rounds ensured', JSON.stringify(result.created));
+      if (result.created?.daily && !result.created.daily.skipped) {
+        console.log('[round-automation] daily rounds ensured', JSON.stringify(result.created.daily));
+      }
+      if (result.created?.weekly && !result.created.weekly.skipped) {
+        console.log('[round-automation] weekly rounds ensured', JSON.stringify(result.created.weekly));
+      }
+      if (result.created?.weekly?.failures?.length) {
+        console.error(
+          '[round-automation] weekly round creation failures',
+          JSON.stringify(result.created.weekly.failures),
+        );
+      }
+      if (result.created?.quarterly && !result.created.quarterly.skipped) {
+        console.log('[round-automation] quarterly rounds ensured', JSON.stringify(result.created.quarterly));
+      }
+      if (result.created?.quarterly?.failures?.length) {
+        console.error(
+          '[round-automation] quarterly round creation failures',
+          JSON.stringify(result.created.quarterly.failures),
+        );
       }
 
       if (result.lock?.locked?.length) {
@@ -959,6 +1320,8 @@ function stopRoundAutomation() {
 
 module.exports = {
   currentDailySchedule,
+  currentWeeklySchedule,
+  currentQuarterlySchedule,
   ensureCurrentDailyRounds,
   executeResolverAction,
   verifyResolverConfiguration,
