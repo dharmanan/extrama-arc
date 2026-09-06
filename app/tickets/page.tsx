@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { AssetMark, ProductHeader } from "../product-components";
+import { useLocale } from "../i18n";
 import {
   backendApi,
   isAuthSessionError,
@@ -31,8 +32,8 @@ function titleCase(value: string) {
   return value.charAt(0) + value.slice(1).toLowerCase();
 }
 
-function formatPrediction(value: string) {
-  return new Intl.NumberFormat(undefined, {
+function formatPrediction(value: string, locale: "en" | "tr") {
+  return new Intl.NumberFormat(locale === "tr" ? "tr-TR" : "en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
@@ -40,13 +41,13 @@ function formatPrediction(value: string) {
   }).format(Number(value));
 }
 
-function ticketState(ticket: OwnedTicket) {
-  if (ticket.isClaimed) return "Reward claimed";
-  if (ticket.isRefunded) return "Refunded";
+function ticketState(ticket: OwnedTicket, locale: "en" | "tr") {
+  if (ticket.isClaimed) return locale === "tr" ? "Ödül alındı" : "Reward claimed";
+  if (ticket.isRefunded) return locale === "tr" ? "İade alındı" : "Refunded";
   if (ticket.roundStatus === "SETTLED" && ticket.placement > 0) {
-    return `Winner · #${ticket.placement}`;
+    return (locale === "tr" ? "Kazanan · #" : "Winner · #") + ticket.placement;
   }
-  return humanRoundStatus(ticket.roundStatus);
+  return humanRoundStatus(ticket.roundStatus, locale);
 }
 
 function ticketKey(ticket: OwnedTicket) {
@@ -69,6 +70,7 @@ function isClaimEligible(ticket: OwnedTicket) {
 const ARC_TESTNET_CHAIN_ID = 5042002;
 
 export default function TicketsPage() {
+  const { locale } = useLocale();
   const { address: ownerAddress, isConnected } = useAccount();
   const [state, setState] = useState<OwnedTicketsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -378,158 +380,108 @@ export default function TicketsPage() {
     const claimEligible = isClaimEligible(ticket);
 
     return (
-      <article className="wf-card" key={key}>
-        <div className="wf-row">
-          <AssetMark asset={ticket.asset} />
-          <span>{ticketState(ticket)}</span>
+      <article className="ex-ticket" key={key} data-direction={ticket.direction}>
+        <header className="ex-ticket__head">
+          <div className="ex-ticket__identity">
+            <AssetMark asset={ticket.asset} />
+            <div>
+              <h3>{ticket.asset} · {titleCase(ticket.cadence)} {titleCase(ticket.direction)}</h3>
+              <p className="ex-num">Ticket #{ticket.tokenId} · Round #{ticket.roundId} · Entry #{ticket.entrySequence}</p>
+            </div>
+          </div>
+          <span className="ex-ticket__status">{ticketState(ticket, locale)}</span>
+        </header>
+
+        <div className="ex-ticket__body">
+          <div className="ex-ticket__prediction">
+            <span>{locale === "tr" ? "TAHMİN" : "PREDICTION"}</span>
+            <strong className="ex-num">{formatPrediction(ticket.predictionPrice, locale)}</strong>
+            <small>1 USDC {locale === "tr" ? "katılım" : "entry"}</small>
+          </div>
+
+          <dl className="ex-ticket__meta">
+            <div><dt>{locale === "tr" ? "DURUM" : "STATE"}</dt><dd>{ticketState(ticket, locale)}</dd></div>
+            <div><dt>{locale === "tr" ? "SAHİP" : "OWNER"}</dt><dd className="ex-num">{ticket.owner.slice(0, 6)}…{ticket.owner.slice(-4)}</dd></div>
+            <div>
+              <dt>{locale === "tr" ? "HAK" : "CLAIM RIGHT"}</dt>
+              <dd className="ex-num">
+                {Number(ticket.claimableUsdc) > 0 && !ticket.isClaimed
+                  ? ticket.claimableUsdc + " USDC"
+                  : refundEligible
+                    ? "1 USDC"
+                    : "—"}
+              </dd>
+            </div>
+          </dl>
         </div>
 
-        <h3>
-          {ticket.asset} · {titleCase(ticket.cadence)} {titleCase(ticket.direction)}
-        </h3>
-
-        <strong>{formatPrediction(ticket.predictionPrice)}</strong>
-        <p>
-          Ticket #{ticket.tokenId} · Round #{ticket.roundId} · Entry #{ticket.entrySequence}
-        </p>
-        <p>Stake: 1 USDC</p>
-
-        {Number(ticket.claimableUsdc) > 0 && !ticket.isClaimed && (
-          <p><b>{ticket.claimableUsdc} USDC claimable</b></p>
-        )}
-
-        <div className="wf-row">
-          <Link className="wf-action" href={`/rounds/${ticket.slug}`}>
-            View round
-          </Link>
-          <a
-            className="wf-action"
-            href={ticket.explorerUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Verify NFT
-          </a>
+        <div className="ex-ticket__actions">
+          <Link href={"/rounds/" + ticket.slug}>{locale === "tr" ? "Turu aç" : "View round"} →</Link>
+          <a href={ticket.explorerUrl} target="_blank" rel="noreferrer">{locale === "tr" ? "NFT'yi doğrula" : "Verify NFT"} →</a>
           {options.showTransfer && (
-            <button
-              className="wf-action"
-              type="button"
-              onClick={() => openTransfer(ticket)}
-              disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}
-            >
-              Transfer NFT
+            <button type="button" onClick={() => openTransfer(ticket)} disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}>
+              {locale === "tr" ? "NFT'yi aktar" : "Transfer NFT"} →
             </button>
           )}
           {refundEligible && (
-            <button
-              className="wf-action"
-              type="button"
-              onClick={() => openRefund(ticket)}
-              disabled={Boolean(transferBusy) || Boolean(refundBusy)}
-            >
-              Claim refund
+            <button type="button" onClick={() => openRefund(ticket)} disabled={Boolean(transferBusy) || Boolean(refundBusy)}>
+              {locale === "tr" ? "İadeyi al" : "Claim refund"} →
             </button>
           )}
           {claimEligible && (
-            <button
-              className="wf-action"
-              type="button"
-              onClick={() => openClaim(ticket)}
-              disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}
-            >
-              Claim reward
+            <button type="button" onClick={() => openClaim(ticket)} disabled={Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy)}>
+              {locale === "tr" ? "Ödülü al" : "Claim reward"} →
             </button>
           )}
         </div>
 
         {transferOpen && (
-          <div className="wf-section">
-            <label className="wf-field">
-              Recipient wallet address
-              <input
-                value={transferAddress}
-                onChange={(event) => setTransferAddress(event.target.value)}
-                placeholder="0x..."
-                autoComplete="off"
-                spellCheck={false}
-              />
+          <div className="ex-ticket__drawer">
+            <p className="ex-eyebrow">{locale === "tr" ? "NFT AKTARIMI" : "NFT TRANSFER"}</p>
+            <label className="ex-ticket__field">
+              {locale === "tr" ? "Alıcı cüzdan adresi" : "Recipient wallet address"}
+              <input value={transferAddress} onChange={(event) => setTransferAddress(event.target.value)} placeholder="0x..." autoComplete="off" spellCheck={false} />
             </label>
-            <p>
-              Transferring this NFT also transfers any future claim or refund right.
-            </p>
-            <div className="wf-row">
-              <button
-                className="wf-action"
-                type="button"
-                onClick={() => void handleTransfer(ticket)}
-                disabled={Boolean(transferBusy)}
-              >
-                {transferBusy === key ? "Confirming transfer..." : "Confirm transfer"}
+            <p>{locale === "tr" ? "NFT aktarımı gelecekteki ödül veya iade hakkını da yeni sahibine geçirir." : "Transferring this NFT also transfers any future claim or refund right."}</p>
+            <div className="ex-ticket__drawer-actions">
+              <button type="button" onClick={() => void handleTransfer(ticket)} disabled={Boolean(transferBusy)}>
+                {transferBusy === key ? "Confirming transfer..." : locale === "tr" ? "Aktarımı onayla" : "Confirm transfer"}
               </button>
-              <button
-                className="wf-action"
-                type="button"
-                onClick={cancelTransfer}
-                disabled={Boolean(transferBusy)}
-              >
-                Cancel
-              </button>
+              <button type="button" onClick={cancelTransfer} disabled={Boolean(transferBusy)}>{locale === "tr" ? "Vazgeç" : "Cancel"}</button>
             </div>
           </div>
         )}
 
         {claimOpen && (
-          <div className="wf-section">
+          <div className="ex-ticket__drawer">
+            <p className="ex-eyebrow">{locale === "tr" ? "ÖDÜL TALEBİ" : "REWARD CLAIM"}</p>
             <p>
-              This ticket is a winning NFT. The current owner (<code>{ticket.owner}</code>) can
-              claim <b>{ticket.claimableUsdc} USDC</b> once. This requires a fresh passkey confirmation
-              {!options.showTransfer ? " and a transaction from your connected wallet" : ""}.
+              {locale === "tr" ? "Bu bilet kazanan NFT'dir. Güncel sahibi " : "This ticket is a winning NFT. The current owner "}
+              (<code>{ticket.owner}</code>)
+              {locale === "tr" ? " " + ticket.claimableUsdc + " USDC ödülü bir kez alabilir." : " can claim " + ticket.claimableUsdc + " USDC once."}
             </p>
-            <div className="wf-row">
-              <button
-                className="wf-action"
-                type="button"
-                onClick={() => void handleClaim(ticket)}
-                disabled={Boolean(claimBusy)}
-              >
-                {claimBusy === key ? claimStatusText || "Confirming reward..." : "Confirm reward"}
+            <div className="ex-ticket__drawer-actions">
+              <button type="button" onClick={() => void handleClaim(ticket)} disabled={Boolean(claimBusy)}>
+                {claimBusy === key ? claimStatusText || "Confirming reward..." : locale === "tr" ? "Ödülü onayla" : "Confirm reward"}
               </button>
-              <button
-                className="wf-action"
-                type="button"
-                onClick={cancelClaim}
-                disabled={Boolean(claimBusy)}
-              >
-                Cancel
-              </button>
+              <button type="button" onClick={cancelClaim} disabled={Boolean(claimBusy)}>{locale === "tr" ? "Vazgeç" : "Cancel"}</button>
             </div>
           </div>
         )}
 
         {refundOpen && (
-          <div className="wf-section">
+          <div className="ex-ticket__drawer">
+            <p className="ex-eyebrow">{locale === "tr" ? "İADE" : "REFUND"}</p>
             <p>
-              This round was cancelled. The current NFT owner (<code>{ticket.owner}</code>) can
-              claim a 1 USDC refund once. This requires a fresh passkey confirmation
-              {!options.showTransfer ? " and a transaction from your connected wallet" : ""}.
+              {locale === "tr" ? "Bu tur iptal edildi. Güncel NFT sahibi " : "This round was cancelled. The current NFT owner "}
+              (<code>{ticket.owner}</code>)
+              {locale === "tr" ? " 1 USDC iadeyi bir kez alabilir." : " can claim a 1 USDC refund once."}
             </p>
-            <div className="wf-row">
-              <button
-                className="wf-action"
-                type="button"
-                onClick={() => void handleRefund(ticket)}
-                disabled={Boolean(refundBusy)}
-              >
-                {refundBusy === key ? refundStatusText || "Confirming refund..." : "Confirm refund"}
+            <div className="ex-ticket__drawer-actions">
+              <button type="button" onClick={() => void handleRefund(ticket)} disabled={Boolean(refundBusy)}>
+                {refundBusy === key ? refundStatusText || "Confirming refund..." : locale === "tr" ? "İadeyi onayla" : "Confirm refund"}
               </button>
-              <button
-                className="wf-action"
-                type="button"
-                onClick={cancelRefund}
-                disabled={Boolean(refundBusy)}
-              >
-                Cancel
-              </button>
+              <button type="button" onClick={cancelRefund} disabled={Boolean(refundBusy)}>{locale === "tr" ? "Vazgeç" : "Cancel"}</button>
             </div>
           </div>
         )}
@@ -538,139 +490,117 @@ export default function TicketsPage() {
   }
 
   return (
-    <main className="wf-page">
+    <main className="ex-tickets">
       <ProductHeader />
-      <section className="wf-main">
-        <h1>My NFT Tickets</h1>
-        <p>These are the prediction tickets currently owned by your EXTREMA wallet on Arc Testnet.</p>
+      <div className="ex-shell">
+        <section className="ex-tickets__head">
+          <div>
+            <p className="ex-eyebrow">{locale === "tr" ? "SAHİPLİK" : "OWNERSHIP"}</p>
+            <h1 className="ex-display ex-display--lg">{locale === "tr" ? "NFT biletlerin." : "Your NFT tickets."}</h1>
+            <p className="ex-lede">
+              {locale === "tr"
+                ? "Tahmin, ödül ve iade hakkı bileti takip eder. Burada yalnızca şu anda sahip olduğun gerçek Arc Testnet biletleri görünür."
+                : "Prediction, reward, and refund rights follow the ticket. Only NFTs you currently own on Arc Testnet appear here."}
+            </p>
+          </div>
+
+          <dl className="ex-tickets__summary">
+            <div><dt>{locale === "tr" ? "EXTREMA CÜZDANI" : "EXTREMA WALLET"}</dt><dd className="ex-num">{state?.backendWallet.ticketCount ?? "—"}</dd></div>
+            <div><dt>{locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET"}</dt><dd className="ex-num">{state?.ownerWallet?.ticketCount ?? 0}</dd></div>
+            <div><dt>Arc Testnet</dt><dd className="ex-num">{state?.backendWallet.chain.blockNumber ?? "—"}</dd></div>
+          </dl>
+        </section>
 
         {transferSuccess && (
-          <section className="wf-panel wf-section">
-            <h2>NFT transferred</h2>
-            <p>
-              The ticket and its future claim or refund right now belong to{" "}
-              <code>{transferSuccess.destinationAddress}</code>.
-            </p>
-            <a
-              className="wf-action"
-              href={transferSuccess.explorerUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Verify transaction
-            </a>
+          <section className="ex-ticket-notice">
+            <div><p className="ex-eyebrow">{locale === "tr" ? "AKTARIM TAMAMLANDI" : "TRANSFER COMPLETE"}</p><h2 className="ex-display ex-display--md">{locale === "tr" ? "NFT aktarıldı." : "NFT transferred."}</h2></div>
+            <p>{locale === "tr" ? "Bilet ve gelecekteki hakları artık " : "The ticket and its future rights now belong to "}<code>{transferSuccess.destinationAddress}</code>.</p>
+            <a href={transferSuccess.explorerUrl} target="_blank" rel="noreferrer">{locale === "tr" ? "İşlemi doğrula" : "Verify transaction"} →</a>
           </section>
         )}
 
         {claimSuccess && (
-          <section className="wf-panel wf-section">
-            <h2>Reward claimed</h2>
-            <p>
-              {(Number(claimSuccess.amountRaw) / 1_000_000).toLocaleString(undefined, {
-                maximumFractionDigits: 6,
-              })} USDC has been sent to the ticket&apos;s current owner.
-            </p>
-            <a
-              className="wf-action"
-              href={claimSuccess.explorerUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Verify transaction
-            </a>
+          <section className="ex-ticket-notice">
+            <div>
+              <p className="ex-eyebrow">{locale === "tr" ? "ÖDÜL ALINDI" : "REWARD CLAIMED"}</p>
+              <h2 className="ex-display ex-display--md">
+                {(Number(claimSuccess.amountRaw) / 1_000_000).toLocaleString(locale === "tr" ? "tr-TR" : "en-US", { maximumFractionDigits: 6 })} USDC
+              </h2>
+            </div>
+            <p>{locale === "tr" ? "Ödül biletin güncel sahibine gönderildi." : "The reward was sent to the ticket's current owner."}</p>
+            <a href={claimSuccess.explorerUrl} target="_blank" rel="noreferrer">{locale === "tr" ? "İşlemi doğrula" : "Verify transaction"} →</a>
           </section>
         )}
 
         {refundSuccess && (
-          <section className="wf-panel wf-section">
-            <h2>Refund claimed</h2>
-            <p>1 USDC has been refunded to the ticket&apos;s current owner.</p>
-            <a
-              className="wf-action"
-              href={refundSuccess.explorerUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Verify transaction
-            </a>
+          <section className="ex-ticket-notice">
+            <div><p className="ex-eyebrow">{locale === "tr" ? "İADE ALINDI" : "REFUND CLAIMED"}</p><h2 className="ex-display ex-display--md">1 USDC</h2></div>
+            <p>{locale === "tr" ? "İade biletin güncel sahibine gönderildi." : "The refund was sent to the ticket's current owner."}</p>
+            <a href={refundSuccess.explorerUrl} target="_blank" rel="noreferrer">{locale === "tr" ? "İşlemi doğrula" : "Verify transaction"} →</a>
           </section>
         )}
 
-        {loading && <p>Loading your onchain tickets…</p>}
+        {loading && (
+          <section className="ex-tickets__state">
+            <p className="ex-eyebrow">{locale === "tr" ? "ZİNCİR OKUNUYOR" : "READING CHAIN"}</p>
+            <p>{locale === "tr" ? "Biletlerin yükleniyor…" : "Loading your onchain tickets…"}</p>
+          </section>
+        )}
 
         {!loading && authRequired && (
-          <section className="wf-panel wf-section">
-            <h2>Session expired</h2>
-            <p>Authenticate with your passkey to load your onchain tickets.</p>
+          <section className="ex-tickets__state">
+            <div>
+              <p className="ex-eyebrow">{locale === "tr" ? "OTURUM" : "SESSION"}</p>
+              <h2 className="ex-display ex-display--md">{locale === "tr" ? "Oturum süresi doldu." : "Session expired."}</h2>
+              <p>{locale === "tr" ? "Zincir üstü biletlerini yüklemek için passkey ile doğrula." : "Authenticate with your passkey to load your onchain tickets."}</p>
+            </div>
             {isConnected && ownerAddress ? (
-              <button
-                className="wf-action"
-                type="button"
-                onClick={handleAuthenticate}
-                disabled={Boolean(authBusy)}
-              >
-                {authBusy || "Authenticate with passkey"}
+              <button className="ex-btn ex-btn--ink" type="button" onClick={handleAuthenticate} disabled={Boolean(authBusy)}>
+                {authBusy || (locale === "tr" ? "Passkey ile doğrula" : "Authenticate with passkey")}
               </button>
             ) : (
-              <Link className="wf-action" href="/wallet">Connect owner wallet</Link>
+              <Link className="ex-btn ex-btn--ghost" href="/wallet">{locale === "tr" ? "Sahip cüzdanını bağla" : "Connect owner wallet"}</Link>
             )}
           </section>
         )}
 
         {!loading && !authRequired && error && (
-          <section className="wf-panel wf-section">
-            <h2>Action unavailable</h2>
-            <p>{error}</p>
-            {state === null && (
-              <button className="wf-action" type="button" onClick={() => void loadTickets()}>
-                Try again
-              </button>
-            )}
+          <section className="ex-tickets__state" data-tone="error">
+            <div><p className="ex-eyebrow">{locale === "tr" ? "İŞLEM KULLANILAMIYOR" : "ACTION UNAVAILABLE"}</p><p>{error}</p></div>
+            {state === null && <button className="ex-btn ex-btn--ghost" type="button" onClick={() => void loadTickets()}>{locale === "tr" ? "Tekrar dene" : "Try again"}</button>}
           </section>
         )}
 
-        {!loading &&
-          state &&
-          state.backendWallet.ticketCount === 0 &&
-          (!state.ownerWallet || state.ownerWallet.ticketCount === 0) && (
-          <section className="wf-panel wf-section">
-            <h2>No tickets yet</h2>
-            <p>Your wallet does not currently own an EXTREMA prediction ticket.</p>
-            <Link className="wf-action" href="/pools">Browse pools</Link>
+        {!loading && state && state.backendWallet.ticketCount === 0 && (!state.ownerWallet || state.ownerWallet.ticketCount === 0) && (
+          <section className="ex-tickets__empty">
+            <p className="ex-eyebrow">{locale === "tr" ? "BİLET YOK" : "NO TICKETS"}</p>
+            <h2 className="ex-display ex-display--md">{locale === "tr" ? "Henüz sahip olduğun bir tahmin bileti yok." : "No prediction tickets yet."}</h2>
+            <p>{locale === "tr" ? "Bir havuza katıldığında NFT bilet burada görünür." : "Your NFT appears here after you enter a pool."}</p>
+            <Link href="/pools">{locale === "tr" ? "Havuzlara git" : "Browse pools"} →</Link>
           </section>
         )}
 
         {!loading && state && state.backendWallet.ticketCount > 0 && (
-          <>
-            <p>
-              <b>{state.backendWallet.ticketCount}</b> onchain{" "}
-              {state.backendWallet.ticketCount === 1 ? "ticket" : "tickets"} · Arc Testnet block{" "}
-              {state.backendWallet.chain.blockNumber}
-            </p>
-            <div className="wf-grid-3 wf-section">
-              {state.backendWallet.tickets.map((ticket) =>
-                renderTicketCard(ticket, { showTransfer: true }),
-              )}
-            </div>
-          </>
+          <section className="ex-ticket-group">
+            <header className="ex-ticket-group__head">
+              <div><p className="ex-eyebrow">{locale === "tr" ? "YÖNETİLEN CÜZDAN" : "MANAGED WALLET"}</p><h2 className="ex-display ex-display--md">{state.backendWallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.backendWallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
+              <p className="ex-num">Arc Testnet · {state.backendWallet.chain.blockNumber}</p>
+            </header>
+            <div className="ex-ticket-list">{state.backendWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true }))}</div>
+          </section>
         )}
 
         {!loading && state?.ownerWallet && state.ownerWallet.ticketCount > 0 && (
-          <>
-            <h2>Tickets held by your connected wallet</h2>
-            <p>
-              These tickets are owned directly by <code>{state.ownerWallet.wallet.address}</code>,
-              not your EXTREMA-managed wallet. Reward claims and refunds for these tickets are
-              sent from your connected wallet, not the backend.
-            </p>
-            <div className="wf-grid-3 wf-section">
-              {state.ownerWallet.tickets.map((ticket) =>
-                renderTicketCard(ticket, { showTransfer: false }),
-              )}
-            </div>
-          </>
+          <section className="ex-ticket-group">
+            <header className="ex-ticket-group__head">
+              <div><p className="ex-eyebrow">{locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET"}</p><h2 className="ex-display ex-display--md">{locale === "tr" ? "Doğrudan sahip olduğun biletler." : "Tickets held directly."}</h2></div>
+              <p className="ex-num">{state.ownerWallet.wallet.address}</p>
+            </header>
+            <p className="ex-ticket-group__note">{locale === "tr" ? "Bu biletler EXTREMA yönetimli cüzdanında değil, bağlı cüzdanında tutulur. Ödül ve iade işlemleri bağlı cüzdandan gönderilir." : "These NFTs are held by your connected wallet, not the EXTREMA-managed wallet. Reward claims and refunds are sent from the connected wallet."}</p>
+            <div className="ex-ticket-list">{state.ownerWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: false }))}</div>
+          </section>
         )}
-      </section>
+      </div>
     </main>
   );
 }
