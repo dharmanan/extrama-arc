@@ -6,6 +6,7 @@ const { getLiveMarkPrices } = require('./binanceResolverService');
 
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
+const ARCHIVE_RETENTION_SECONDS = 90 * 24 * 60 * 60;
 
 const USDC_ABI = [
   'function balanceOf(address account) view returns (uint256)',
@@ -1040,6 +1041,130 @@ async function readRoundResult({ slug, roundId }) {
   };
 }
 
+
+async function readRoundArchive({ days = 90 } = {}) {
+  if (!Number.isInteger(days) || days <= 0 || days > 90) {
+    throw new Error('archive_days_invalid');
+  }
+
+  const provider = getProvider();
+  const [network, latestBlock] = await Promise.all([
+    provider.getNetwork(),
+    provider.getBlock('latest'),
+  ]);
+
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+  if (!latestBlock) throw new Error('arc_latest_block_unavailable');
+
+  const now = Number(latestBlock.timestamp);
+  const cutoff = now - Math.min(days * 24 * 60 * 60, ARCHIVE_RETENTION_SECONDS);
+  const rounds = [];
+
+  await mapWithConcurrency(ARC_POOL_TOPOLOGY, 4, async (topology) => {
+    const poolAddress = ethers.getAddress(topology.poolAddress);
+    const ticketAddress = ethers.getAddress(topology.ticketAddress);
+    const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+    const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, provider);
+
+    const nextRoundId = await rpcRead(() => pool.nextRoundId());
+    if (nextRoundId <= 1n) return;
+
+    for (let roundId = nextRoundId - 1n; roundId >= 1n; roundId -= 1n) {
+      const round = await rpcRead(() => pool.getRound(roundId));
+      const entryCloseAt = Number(round.entryCloseAt);
+
+      if (entryCloseAt === 0) continue;
+      if (entryCloseAt > now) continue;
+      if (entryCloseAt < cutoff) break;
+
+      const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+      if (!contractStatus) throw new Error('extrema_round_status_invalid');
+
+      const totalStake = BigInt(round.totalStake);
+      const rewardRawByRank = [
+        (totalStake * 5400n) / 10000n,
+        (totalStake * 2250n) / 10000n,
+        (totalStake * 1350n) / 10000n,
+      ];
+
+      const winnerIds = Array.from(round.winnerTicketIds, (id) => BigInt(id));
+      const winners = [];
+
+      if (contractStatus === 'SETTLED') {
+        for (let index = 0; index < winnerIds.length; index += 1) {
+          const tokenId = winnerIds[index];
+          if (tokenId === 0n) continue;
+
+          const [entry, currentOwner, claimed] = await Promise.all([
+            rpcRead(() => pool.entries(tokenId)),
+            rpcRead(() => ticket.ownerOf(tokenId)),
+            rpcRead(() => pool.claimed(tokenId)),
+          ]);
+
+          winners.push({
+            rank: index + 1,
+            tokenId: tokenId.toString(),
+            currentOwner: ethers.getAddress(currentOwner),
+            predictionPriceCents: entry.predictionPriceCents.toString(),
+            predictionPrice: (Number(entry.predictionPriceCents) / 100).toFixed(2),
+            rewardRaw: rewardRawByRank[index].toString(),
+            rewardUsdc: ethers.formatUnits(rewardRawByRank[index], 6),
+            claimed: Boolean(claimed),
+          });
+        }
+      }
+
+      rounds.push({
+        slug: slugify(topology.asset, topology.cadence, topology.direction),
+        poolAddress,
+        ticketAddress,
+        asset: topology.asset,
+        direction: topology.direction,
+        cadence: topology.cadence,
+        roundId: Number(roundId),
+        contractStatus,
+        entryCloseAt: toIso(round.entryCloseAt),
+        observationEndAt: toIso(round.observationEndAt),
+        resolvedPriceCents: round.resolvedPriceCents.toString(),
+        resolvedPrice:
+          BigInt(round.resolvedPriceCents) > 0n
+            ? (Number(round.resolvedPriceCents) / 100).toFixed(2)
+            : null,
+        entryCount: Number(round.entryCount),
+        totalStakeRaw: round.totalStake.toString(),
+        totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
+        winners,
+      });
+
+      if (roundId === 1n) break;
+    }
+  });
+
+  rounds.sort((left, right) => {
+    const closeDiff =
+      new Date(right.entryCloseAt).getTime() - new Date(left.entryCloseAt).getTime();
+    if (closeDiff !== 0) return closeDiff;
+    if (left.asset !== right.asset) return left.asset.localeCompare(right.asset);
+    if (left.cadence !== right.cadence) return left.cadence.localeCompare(right.cadence);
+    return left.direction.localeCompare(right.direction);
+  });
+
+  return {
+    chain: {
+      id: Number(network.chainId),
+      name: 'Arc Testnet',
+      blockNumber: latestBlock.number,
+      timestamp: now,
+      timestampIso: toIso(now),
+      explorerUrl: 'https://testnet.arcscan.app',
+    },
+    retentionDays: days,
+    rounds,
+  };
+}
+
 const STANDARD_ROUNDS_CACHE_TTL_MS = 15_000;
 let standardRoundsCache = null;
 let standardRoundsCacheAt = 0;
@@ -1093,6 +1218,7 @@ module.exports = {
   readClaimAuthorizationState,
   readRefundAuthorizationState,
   readRoundResult,
+  readRoundArchive,
   readStandardRounds,
   getStandardRoundsState,
   refreshStandardRoundsCache,
