@@ -141,6 +141,15 @@ function isTransientRpcError(error) {
   return false;
 }
 
+// Jitter (0.5x-1.5x of the exponential base) keeps concurrent callers'
+// retries from resonating: without it, several reads that failed on the
+// same burst retry on the same fixed schedule and can re-collide with the
+// RPC's transient degradation on every subsequent attempt too.
+function backoffWithJitter(attempt) {
+  const base = 250 * (2 ** attempt);
+  return base * (0.5 + Math.random());
+}
+
 async function rpcRead(operation, attempts = 6) {
   let lastError;
 
@@ -153,7 +162,7 @@ async function rpcRead(operation, attempts = 6) {
         throw error;
       }
 
-      await sleep(250 * (2 ** attempt));
+      await sleep(backoffWithJitter(attempt));
     }
   }
 
@@ -338,103 +347,84 @@ async function readStandardRounds() {
   const chainTimestamp = BigInt(latestBlock.timestamp);
   const liveMarks = await getLiveMarkPrices();
 
-  const pools = await mapWithConcurrency(
-    ARC_POOL_TOPOLOGY,
-    3,
-    async (topology) => {
-      const poolAddress = ethers.getAddress(topology.poolAddress);
-      const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+  // Multicall3 collapses what was up to ~72 individual eth_calls (24 pools x
+  // nextRoundId/getRound/nextTicketId, plus entries() where applicable) into
+  // 2-3 calls, directly cutting exposure to the public RPC's transient empty
+  // CALL_EXCEPTION behaviour. If Multicall3 itself is unavailable or its own
+  // call fails even after rpcRead's retries, fall back to the individual
+  // per-pool path -- same fallback shape as readOwnedTicketsViaMulticall /
+  // readOwnedTicketsLegacy above.
+  let poolsByAddress;
+  let failures;
+  try {
+    ({ poolsByAddress, failures } = await readStandardRoundPoolsViaMulticall(
+      provider,
+      chainTimestamp,
+      liveMarks,
+    ));
+  } catch (error) {
+    console.warn(
+      '[arc-round-cache] multicall pool read failed, falling back to individual reads',
+      error.message,
+    );
+    ({ poolsByAddress, failures } = await readStandardRoundPoolsIndividually(
+      provider,
+      chainTimestamp,
+      liveMarks,
+    ));
+  }
 
-      const nextRoundId = await rpcRead(() => pool.nextRoundId());
-      if (nextRoundId <= 1n) {
-        throw new Error('extrema_standard_round_missing');
-      }
-
-      const roundId = nextRoundId - 1n;
-      const [round, nextTicketId] = await Promise.all([
-        rpcRead(() => pool.getRound(roundId)),
-        rpcRead(() => pool.nextTicketId()),
-      ]);
-      const contractStatus = CONTRACT_STATUSES[Number(round.status)];
-      if (!contractStatus) {
-        throw new Error('extrema_round_status_invalid');
-      }
-
-      const canEnter =
-        contractStatus === 'ENTRY_OPEN' &&
-        chainTimestamp >= round.entryOpenAt &&
-        chainTimestamp < round.entryCloseAt;
-
-      let lastPredictionPriceCents = null;
-      let lastPredictionTicketId = null;
-      let lastPredictionEntrySequence = null;
-
-      if (nextTicketId > 1n) {
-        const candidateTicketId = nextTicketId - 1n;
-        const candidateEntry = await rpcRead(() => pool.entries(candidateTicketId));
-        if (BigInt(candidateEntry.roundId) === roundId) {
-          lastPredictionPriceCents = candidateEntry.predictionPriceCents.toString();
-          lastPredictionTicketId = candidateTicketId.toString();
-          lastPredictionEntrySequence = Number(candidateEntry.entrySequence);
-        }
-      }
-
-      const liveMark = liveMarks.prices[SOURCE_SYMBOLS[topology.asset]];
-      const liveMarkAvailable = Boolean(liveMark && !liveMark.unavailable);
-
-      return {
-        slug: slugify(topology.asset, topology.cadence, topology.direction),
-        poolAddress,
-        ticketAddress: ethers.getAddress(topology.ticketAddress),
-        asset: topology.asset,
-        direction: topology.direction,
-        cadence: topology.cadence,
-        source: 'Binance USDⓈ-M Futures Mark Price',
-        sourceSymbol: SOURCE_SYMBOLS[topology.asset],
-        market: liveMarkAvailable
-          ? {
-              available: true,
-              markPrice: liveMark.markPrice,
-              sourceTimeIso: liveMark.sourceTimeIso,
-              refreshedAtIso: liveMarks.refreshedAtIso,
-              refreshIntervalSeconds: 60,
-              source: liveMark.source || 'Binance USDⓈ-M Futures Mark Price',
-              isSettlementSource: Boolean(liveMark.isSettlementSource),
-            }
-          : {
-              available: false,
-              markPrice: null,
-              sourceTimeIso: null,
-              refreshedAtIso: liveMarks.refreshedAtIso,
-              refreshIntervalSeconds: 60,
-              source: null,
-              isSettlementSource: false,
-            },
-        round: {
-          roundId: Number(roundId),
-          contractStatus,
-          canEnter,
-          entryOpenAt: toIso(round.entryOpenAt),
-          entryCloseAt: toIso(round.entryCloseAt),
-          observationStartAt: toIso(round.observationStartAt),
-          observationEndAt: toIso(round.observationEndAt),
-          entryCount: Number(round.entryCount),
-          totalStakeRaw: round.totalStake.toString(),
-          totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
-          escrowRemainingRaw: round.escrowRemaining.toString(),
-          escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
-          resolvedPriceCents: round.resolvedPriceCents.toString(),
-          lastPredictionPriceCents,
-          lastPredictionPrice:
-            lastPredictionPriceCents === null
-              ? null
-              : (Number(lastPredictionPriceCents) / 100).toFixed(2),
-          lastPredictionTicketId,
-          lastPredictionEntrySequence,
-        },
-      };
-    },
+  // Any pool the fresh read could not establish -- transient RPC noise or a
+  // genuine per-pool anomaly, either way already isolated by the two
+  // functions above -- falls back to its own most recently published
+  // snapshot instead of either discarding the pools that DID refresh
+  // successfully, or publishing broken/fabricated state for it. A pool with
+  // neither a fresh read nor any previous snapshot (cold start, or every
+  // pool failing at once) leaves the whole refresh unresolved, matching the
+  // pre-existing cold-start contract: never publish a topology-incomplete or
+  // synthetic snapshot.
+  const degradedPools = [];
+  const previousByAddress = new Map(
+    (standardRoundsCache?.pools || []).map((pool) => [pool.poolAddress.toLowerCase(), pool]),
   );
+
+  const pools = ARC_POOL_TOPOLOGY.map((topology) => {
+    const key = topology.poolAddress.toLowerCase();
+    const fresh = poolsByAddress.get(key);
+    if (fresh) return fresh;
+
+    const failure = failures.find(
+      (item) => item.topology.poolAddress.toLowerCase() === key,
+    );
+    const previous = previousByAddress.get(key);
+
+    if (previous) {
+      degradedPools.push({
+        slug: previous.slug,
+        poolAddress: previous.poolAddress,
+        reason: failure?.reason || 'unknown',
+      });
+      return { ...previous, stale: true };
+    }
+
+    throw new Error(
+      `extrema_standard_round_unavailable_${topology.poolAddress}:${failure?.reason || 'unknown'}`,
+    );
+  });
+
+  if (failures.length > 0) {
+    console.warn(
+      '[arc-round-cache] per-pool read failures this refresh',
+      JSON.stringify(
+        failures.map((item) => ({
+          slug: slugify(item.topology.asset, item.topology.cadence, item.topology.direction),
+          poolAddress: item.topology.poolAddress,
+          operation: item.operation,
+          reason: item.reason,
+        })),
+      ),
+    );
+  }
 
   return {
     chain: {
@@ -450,6 +440,7 @@ async function readStandardRounds() {
       poolCount: pools.length,
     },
     pools,
+    degradedPools,
   };
 }
 
@@ -491,6 +482,292 @@ async function readMulticall3InChunks(provider, calls, chunkSize = 100) {
     results.push(...await readMulticall3(provider, calls.slice(index, index + chunkSize)));
   }
   return results;
+}
+
+// mapWithConcurrency's per-pool fallback path for readStandardRounds() below.
+// Lower concurrency and a larger retry budget than the shared rpcRead
+// default (6), because this is the specific path that produced a
+// production nextTicketId() failure that exhausted 6 attempts: it runs in
+// the background (never blocks a request, the stale cache keeps serving),
+// so trading latency for a larger retry budget here is a clean win.
+const STANDARD_ROUNDS_READ_CONCURRENCY = 2;
+const STANDARD_ROUNDS_READ_ATTEMPTS = 8;
+
+function decodeMulticallResult(iface, fnName, result) {
+  if (!result?.success) return null;
+  try {
+    return iface.decodeFunctionResult(fnName, result.returnData);
+  } catch {
+    return null;
+  }
+}
+
+// Builds one standard-round pool entry. Shared by both the multicall path
+// and the individual-read fallback path below so the published shape is
+// identical regardless of which one produced it.
+function buildStandardRoundPoolEntry(topology, roundId, round, contractStatus, lastPrediction, chainTimestamp, liveMarks) {
+  const canEnter =
+    contractStatus === 'ENTRY_OPEN' &&
+    chainTimestamp >= round.entryOpenAt &&
+    chainTimestamp < round.entryCloseAt;
+
+  const liveMark = liveMarks.prices[SOURCE_SYMBOLS[topology.asset]];
+  const liveMarkAvailable = Boolean(liveMark && !liveMark.unavailable);
+
+  return {
+    slug: slugify(topology.asset, topology.cadence, topology.direction),
+    poolAddress: ethers.getAddress(topology.poolAddress),
+    ticketAddress: ethers.getAddress(topology.ticketAddress),
+    asset: topology.asset,
+    direction: topology.direction,
+    cadence: topology.cadence,
+    source: 'Binance USDⓈ-M Futures Mark Price',
+    sourceSymbol: SOURCE_SYMBOLS[topology.asset],
+    market: liveMarkAvailable
+      ? {
+          available: true,
+          markPrice: liveMark.markPrice,
+          sourceTimeIso: liveMark.sourceTimeIso,
+          refreshedAtIso: liveMarks.refreshedAtIso,
+          refreshIntervalSeconds: 60,
+          source: liveMark.source || 'Binance USDⓈ-M Futures Mark Price',
+          isSettlementSource: Boolean(liveMark.isSettlementSource),
+        }
+      : {
+          available: false,
+          markPrice: null,
+          sourceTimeIso: null,
+          refreshedAtIso: liveMarks.refreshedAtIso,
+          refreshIntervalSeconds: 60,
+          source: null,
+          isSettlementSource: false,
+        },
+    round: {
+      roundId: Number(roundId),
+      contractStatus,
+      canEnter,
+      entryOpenAt: toIso(round.entryOpenAt),
+      entryCloseAt: toIso(round.entryCloseAt),
+      observationStartAt: toIso(round.observationStartAt),
+      observationEndAt: toIso(round.observationEndAt),
+      entryCount: Number(round.entryCount),
+      totalStakeRaw: round.totalStake.toString(),
+      totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
+      escrowRemainingRaw: round.escrowRemaining.toString(),
+      escrowRemainingUsdc: ethers.formatUnits(round.escrowRemaining, 6),
+      resolvedPriceCents: round.resolvedPriceCents.toString(),
+      lastPredictionPriceCents: lastPrediction?.predictionPriceCents ?? null,
+      lastPredictionPrice:
+        lastPrediction?.predictionPriceCents == null
+          ? null
+          : (Number(lastPrediction.predictionPriceCents) / 100).toFixed(2),
+      lastPredictionTicketId: lastPrediction?.ticketId ?? null,
+      lastPredictionEntrySequence: lastPrediction?.entrySequence ?? null,
+    },
+  };
+}
+
+// Multicall3 path: nextRoundId() for all 24 pools in one call, then
+// getRound()+nextTicketId() for every pool that has a round in one more
+// call, then entries() only for the (usually small) subset that needs a
+// last-prediction display. allowFailure:true on every sub-call means one
+// pool's bad read never fails the batch -- it is recorded in `failures` and
+// the caller decides how to fill the gap (see readStandardRounds above).
+async function readStandardRoundPoolsViaMulticall(provider, chainTimestamp, liveMarks) {
+  if (!(await hasMulticall3(provider))) {
+    throw new Error('arc_multicall3_not_found');
+  }
+
+  const failures = [];
+  const poolsByAddress = new Map();
+
+  const nextRoundResults = await readMulticall3InChunks(
+    provider,
+    ARC_POOL_TOPOLOGY.map((topology) => ({
+      target: topology.poolAddress,
+      allowFailure: true,
+      callData: POOL_INTERFACE.encodeFunctionData('nextRoundId'),
+    })),
+  );
+
+  const phase2Targets = [];
+  ARC_POOL_TOPOLOGY.forEach((topology, index) => {
+    const decoded = decodeMulticallResult(POOL_INTERFACE, 'nextRoundId', nextRoundResults[index]);
+    if (!decoded) {
+      failures.push({ topology, operation: 'nextRoundId', reason: 'arc_multicall3_call_failed' });
+      return;
+    }
+    const nextRoundId = decoded[0];
+    if (nextRoundId <= 1n) {
+      failures.push({ topology, operation: 'nextRoundId', reason: 'extrema_standard_round_missing' });
+      return;
+    }
+    phase2Targets.push({ topology, roundId: nextRoundId - 1n });
+  });
+
+  if (phase2Targets.length === 0) {
+    return { poolsByAddress, failures };
+  }
+
+  const phase2Calls = phase2Targets.flatMap(({ topology, roundId }) => [
+    {
+      target: topology.poolAddress,
+      allowFailure: true,
+      callData: POOL_INTERFACE.encodeFunctionData('getRound', [roundId]),
+    },
+    {
+      target: topology.poolAddress,
+      allowFailure: true,
+      callData: POOL_INTERFACE.encodeFunctionData('nextTicketId'),
+    },
+  ]);
+  const phase2Results = await readMulticall3InChunks(provider, phase2Calls);
+
+  const phase3Targets = [];
+  const resolvedByPool = [];
+  phase2Targets.forEach(({ topology, roundId }, index) => {
+    const roundResult = phase2Results[index * 2];
+    const ticketResult = phase2Results[index * 2 + 1];
+    const round = decodeMulticallResult(POOL_INTERFACE, 'getRound', roundResult)?.[0];
+    const nextTicketId = decodeMulticallResult(POOL_INTERFACE, 'nextTicketId', ticketResult)?.[0];
+
+    if (!round || nextTicketId === undefined) {
+      failures.push({
+        topology,
+        operation: 'getRound_or_nextTicketId',
+        reason: 'arc_multicall3_call_failed',
+      });
+      return;
+    }
+
+    const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+    if (!contractStatus) {
+      failures.push({ topology, operation: 'getRound', reason: 'extrema_round_status_invalid' });
+      return;
+    }
+
+    resolvedByPool.push({ topology, roundId, round, contractStatus, nextTicketId });
+    if (nextTicketId > 1n) {
+      phase3Targets.push({ topology, roundId, candidateTicketId: nextTicketId - 1n });
+    }
+  });
+
+  const entriesByPoolAddress = new Map();
+  if (phase3Targets.length > 0) {
+    const phase3Results = await readMulticall3InChunks(
+      provider,
+      phase3Targets.map(({ topology, candidateTicketId }) => ({
+        target: topology.poolAddress,
+        allowFailure: true,
+        callData: POOL_INTERFACE.encodeFunctionData('entries', [candidateTicketId]),
+      })),
+    );
+    // A failed or unresolved entries() read is not treated as a pool
+    // failure: the last-predicted-price display is best-effort and simply
+    // stays null, exactly like the pre-existing individual-read behaviour
+    // when nextTicketId <= 1.
+    phase3Targets.forEach(({ topology, roundId, candidateTicketId }, index) => {
+      const decoded = decodeMulticallResult(POOL_INTERFACE, 'entries', phase3Results[index]);
+      if (!decoded) return;
+      const candidateEntry = decoded[0];
+      if (BigInt(candidateEntry.roundId) === roundId) {
+        entriesByPoolAddress.set(topology.poolAddress.toLowerCase(), {
+          predictionPriceCents: candidateEntry.predictionPriceCents.toString(),
+          ticketId: candidateTicketId.toString(),
+          entrySequence: Number(candidateEntry.entrySequence),
+        });
+      }
+    });
+  }
+
+  for (const { topology, roundId, round, contractStatus } of resolvedByPool) {
+    const lastPrediction = entriesByPoolAddress.get(topology.poolAddress.toLowerCase()) || null;
+    poolsByAddress.set(
+      topology.poolAddress.toLowerCase(),
+      buildStandardRoundPoolEntry(
+        topology,
+        roundId,
+        round,
+        contractStatus,
+        lastPrediction,
+        chainTimestamp,
+        liveMarks,
+      ),
+    );
+  }
+
+  return { poolsByAddress, failures };
+}
+
+// Individual per-pool fallback, used only when Multicall3 is unavailable or
+// its own call fails. Every pool's read is isolated in its own try/catch so
+// one pool exhausting its retries can never discard the other 23 -- this is
+// the exact production failure mode this hardening pass fixes: previously
+// mapWithConcurrency's Promise.all let a single worker's exception reject
+// the entire batch even though the other pools had already read cleanly.
+async function readStandardRoundPoolsIndividually(provider, chainTimestamp, liveMarks) {
+  const poolsByAddress = new Map();
+  const failures = [];
+
+  await mapWithConcurrency(ARC_POOL_TOPOLOGY, STANDARD_ROUNDS_READ_CONCURRENCY, async (topology) => {
+    try {
+      const pool = new ethers.Contract(topology.poolAddress, POOL_ABI, provider);
+
+      const nextRoundId = await rpcRead(() => pool.nextRoundId(), STANDARD_ROUNDS_READ_ATTEMPTS);
+      if (nextRoundId <= 1n) {
+        failures.push({ topology, operation: 'nextRoundId', reason: 'extrema_standard_round_missing' });
+        return;
+      }
+
+      const roundId = nextRoundId - 1n;
+      const [round, nextTicketId] = await Promise.all([
+        rpcRead(() => pool.getRound(roundId), STANDARD_ROUNDS_READ_ATTEMPTS),
+        rpcRead(() => pool.nextTicketId(), STANDARD_ROUNDS_READ_ATTEMPTS),
+      ]);
+      const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+      if (!contractStatus) {
+        failures.push({ topology, operation: 'getRound', reason: 'extrema_round_status_invalid' });
+        return;
+      }
+
+      let lastPrediction = null;
+      if (nextTicketId > 1n) {
+        const candidateTicketId = nextTicketId - 1n;
+        const candidateEntry = await rpcRead(
+          () => pool.entries(candidateTicketId),
+          STANDARD_ROUNDS_READ_ATTEMPTS,
+        );
+        if (BigInt(candidateEntry.roundId) === roundId) {
+          lastPrediction = {
+            predictionPriceCents: candidateEntry.predictionPriceCents.toString(),
+            ticketId: candidateTicketId.toString(),
+            entrySequence: Number(candidateEntry.entrySequence),
+          };
+        }
+      }
+
+      poolsByAddress.set(
+        topology.poolAddress.toLowerCase(),
+        buildStandardRoundPoolEntry(
+          topology,
+          roundId,
+          round,
+          contractStatus,
+          lastPrediction,
+          chainTimestamp,
+          liveMarks,
+        ),
+      );
+    } catch (error) {
+      failures.push({
+        topology,
+        operation: 'read_pool_state',
+        reason: error.shortMessage || error.message,
+      });
+    }
+  });
+
+  return { poolsByAddress, failures };
 }
 
 async function readOwnedTicketsViaMulticall(address) {
@@ -1210,6 +1487,14 @@ async function refreshStandardRoundsCache() {
     .then((state) => {
       standardRoundsCache = state;
       standardRoundsCacheAt = Date.now();
+      // Only logged when something actually degraded this cycle -- a
+      // healthy refresh (the steady-state case) produces no line here.
+      if (state.degradedPools?.length) {
+        console.warn(
+          '[arc-round-cache] published with stale pools this cycle',
+          JSON.stringify(state.degradedPools),
+        );
+      }
       return state;
     })
     .finally(() => {
