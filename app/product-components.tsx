@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { assetConfigs } from "./lib/data";
 import type { Asset } from "./lib/domain";
-import { shortAddress, useDemoState } from "./demo-state";
+import { shortAddress, useWalletSession } from "./wallet-session";
 import { backendApi, type LivePool } from "./lib/backend-api";
 import { useCopy, useLocale } from "./i18n";
 import {
@@ -25,7 +25,7 @@ function formatHeaderUsdc(value: string, locale: "en" | "tr") {
 }
 
 export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "overlay" }) {
-  const { wallet } = useDemoState();
+  const { status, address } = useWalletSession();
   const { locale, setLocale } = useLocale();
   const t = useCopy();
   const [onchainUsdc, setOnchainUsdc] = useState<string | null>(null);
@@ -33,7 +33,7 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
   useEffect(() => {
     let cancelled = false;
 
-    if (wallet.status !== "ready" || !wallet.address) {
+    if (status !== "ready" || !address) {
       setOnchainUsdc(null);
       return;
     }
@@ -49,9 +49,9 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
     return () => {
       cancelled = true;
     };
-  }, [wallet.status, wallet.address]);
+  }, [status, address]);
 
-  const connected = wallet.status === "ready" && Boolean(wallet.address);
+  const connected = status === "ready" && Boolean(address);
 
   return (
     <header className={`ex-header${variant === "overlay" ? " ex-header--overlay" : ""}`}>
@@ -85,10 +85,10 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
           </div>
 
           <Link href="/wallet" className="ex-wallet">
-            {connected && wallet.address ? (
+            {connected && address ? (
               <>
                 <span className="ex-wallet__dot" aria-hidden="true" />
-                <span className="ex-num">{shortAddress(wallet.address)}</span>
+                <span className="ex-num">{shortAddress(address)}</span>
                 {onchainUsdc !== null && (
                   <span className="ex-num ex-wallet__balance">
                     · {formatHeaderUsdc(onchainUsdc, locale)} USDC

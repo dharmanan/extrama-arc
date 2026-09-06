@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ProductHeader } from "../product-components";
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { arcTestnet } from "../lib/web3";
-import { shortAddress, useDemoState } from "../demo-state";
+import { shortAddress, useWalletSession } from "../wallet-session";
 import { backendApi, isAuthSessionError } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
 
@@ -13,11 +13,11 @@ type Step = "owner" | "choice" | "create" | "recovery" | "ready";
 
 export default function WalletPage() {
   const {
-    wallet,
-    createWallet,
+    address: walletAddress,
+    status: walletStatus,
+    setWalletReady,
     lockWallet,
-    resetDemo,
-  } = useDemoState();
+  } = useWalletSession();
 
   const { address: connectedAddress, isConnected, chain } = useAccount();
   const { connectors, connectAsync } = useConnect();
@@ -26,7 +26,7 @@ export default function WalletPage() {
   const { switchChainAsync } = useSwitchChain();
 
   const [ownerAddress, setOwnerAddress] = useState<string | null>(null);
-  const [step, setStep] = useState<Step>(wallet.status === "ready" ? "ready" : "owner");
+  const [step, setStep] = useState<Step>(walletStatus === "ready" ? "ready" : "owner");
   const [deviceName, setDeviceName] = useState("My Device");
   const [privateKey, setPrivateKey] = useState("");
   const [recoveryConfirmed, setRecoveryConfirmed] = useState(false);
@@ -65,9 +65,9 @@ export default function WalletPage() {
   }
 
   async function copyExtremaAddress() {
-    if (!wallet.address) return;
+    if (!walletAddress) return;
     try {
-      await navigator.clipboard.writeText(wallet.address);
+      await navigator.clipboard.writeText(walletAddress);
       setCopiedAddress(true);
       window.setTimeout(() => setCopiedAddress(false), 1500);
     } catch {
@@ -96,10 +96,10 @@ export default function WalletPage() {
   }
 
   useEffect(() => {
-    if (step === "ready" && wallet.status === "ready" && wallet.address) {
+    if (step === "ready" && walletStatus === "ready" && walletAddress) {
       void refreshChainState();
     }
-  }, [step, wallet.status, wallet.address]);
+  }, [step, walletStatus, walletAddress]);
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -131,7 +131,7 @@ export default function WalletPage() {
         throw new Error("Backend did not return an EXTREMA wallet.");
       }
 
-      createWallet(result.wallet.address);
+      setWalletReady(result.wallet.address);
 
       if (result.created && result.privateKey) {
         setPrivateKey(result.privateKey);
@@ -167,7 +167,7 @@ export default function WalletPage() {
         throw new Error("No EXTREMA wallet exists for this owner wallet.");
       }
 
-      createWallet(result.wallet.address);
+      setWalletReady(result.wallet.address);
       setSessionNeedsAuth(false);
       await refreshChainState();
     } catch (cause) {
@@ -194,7 +194,7 @@ export default function WalletPage() {
         throw new Error("No EXTREMA wallet exists for this owner wallet.");
       }
 
-      createWallet(result.wallet.address);
+      setWalletReady(result.wallet.address);
       setSessionNeedsAuth(false);
       setStep("ready");
     } catch (cause) {
@@ -219,17 +219,7 @@ export default function WalletPage() {
     setStep("owner");
   }
 
-  function handleReset() {
-    resetDemo();
-    setOwnerAddress(null);
-    setPrivateKey("");
-    setRecoveryConfirmed(false);
-    setWalletNotice("");
-    setError("");
-    setStep("owner");
-  }
-
-  if (step === "recovery" && wallet.address && privateKey) {
+  if (step === "recovery" && walletAddress && privateKey) {
     return (
       <main className="wf-page">
         <ProductHeader />
@@ -243,7 +233,7 @@ export default function WalletPage() {
 
           <section className="wf-panel wf-section">
             <p><b>EXTREMA wallet address</b></p>
-            <p className="wf-code">{wallet.address}</p>
+            <p className="wf-code">{walletAddress}</p>
 
             <p><b>Private key</b></p>
             <p className="wf-code">{privateKey}</p>
@@ -280,7 +270,7 @@ export default function WalletPage() {
     );
   }
 
-  if (step === "ready" && wallet.status === "ready" && wallet.address) {
+  if (step === "ready" && walletStatus === "ready" && walletAddress) {
     return (
       <main className="wf-page">
         <ProductHeader />
@@ -294,9 +284,9 @@ export default function WalletPage() {
               {ownerAddress && (
                 <p><b>Owner wallet:</b> {shortAddress(ownerAddress)}</p>
               )}
-              <p><b>EXTREMA wallet:</b> {shortAddress(wallet.address)}</p>
+              <p><b>EXTREMA wallet:</b> {shortAddress(walletAddress)}</p>
               <div className="wf-row" style={{ justifyContent: "flex-start", alignItems: "center" }}>
-                <p className="wf-code" style={{ margin: 0, flex: 1 }}>{wallet.address}</p>
+                <p className="wf-code" style={{ margin: 0, flex: 1 }}>{walletAddress}</p>
                 <button className="wf-action" type="button" onClick={copyExtremaAddress}>
                   {copiedAddress ? "Copied" : "Copy address"}
                 </button>
@@ -366,9 +356,6 @@ export default function WalletPage() {
               </p>
               <button className="wf-action" type="button" onClick={handleLock}>
                 Disconnect session
-              </button>
-              <button className="wf-action" type="button" onClick={handleReset}>
-                Reset local demo state
               </button>
             </section>
           </div>

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./wireframe.css";
-import { DemoStateProvider } from "./demo-state";
+import { WalletSessionProvider } from "./wallet-session";
 import Web3Provider from "./providers/Web3Provider";
 import { LocaleProvider } from "./i18n";
 
@@ -16,7 +16,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body>
         <Web3Provider>
-          <LocaleProvider><DemoStateProvider>{children}</DemoStateProvider></LocaleProvider>
+          <LocaleProvider><WalletSessionProvider>{children}</WalletSessionProvider></LocaleProvider>
         </Web3Provider>
       </body>
     </html>
