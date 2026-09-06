@@ -543,9 +543,18 @@ async function resolveExtremaWindow(input) {
     low: extrema.low,
   };
 
+  // The hash is computed over this exact string, captured once here and
+  // never rederived. A caller that needs to durably persist evidence and
+  // later re-verify its hash must persist and reuse THIS string -- not
+  // JSON.stringify a value that has round-tripped through PostgreSQL
+  // JSONB, which does not guarantee key ordering is preserved.
+  const canonicalEvidenceJson = JSON.stringify(evidence);
+  const evidenceSha256 = sha256Hex(canonicalEvidenceJson);
+
   return {
     ...evidence,
-    evidenceSha256: sha256Hex(JSON.stringify(evidence)),
+    evidenceSha256,
+    canonicalEvidenceJson,
   };
 }
 

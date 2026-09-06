@@ -13,6 +13,7 @@ const roundRoutes = require('./routes/rounds');
 const actionRoutes = require('./routes/actions');
 const arcService = require('./services/arcService');
 const roundAutomationService = require('./services/roundAutomationService');
+const settlementEvidenceService = require('./services/settlementEvidenceService');
 
 const app = express();
 
@@ -119,6 +120,34 @@ const server = app.listen(config.PORT, () => {
   console.log(`[extrema-backend] listening on :${config.PORT}`);
   arcService.warmStandardRoundsCache();
   roundAutomationService.startRoundAutomation();
+
+  // PHASE A readiness check only: confirms Railway PostgreSQL actually
+  // exposes the settlement_evidence relation and its critical columns
+  // after migrate.js has run. Read-only, never creates or alters schema.
+  // Deliberately non-blocking and non-fatal -- this table is not yet
+  // load-bearing for any live path (settlement still runs entirely
+  // in-memory, see roundAutomationService), so a failure here must not
+  // affect auth/wallet/entry/claim/refund or any other already-proven
+  // functionality. It exists purely to surface schema drift loudly in
+  // logs before Phase B ever makes this table load-bearing.
+  settlementEvidenceService
+    .verifySettlementEvidenceStorage()
+    .then((result) => {
+      if (!result.primaryKeyMatches) {
+        console.warn(
+          '[settlement-evidence] storage verified, but primary key is unexpected',
+          JSON.stringify({ primaryKeyColumns: result.primaryKeyColumns }),
+        );
+        return;
+      }
+      console.log('[settlement-evidence] storage verified');
+    })
+    .catch((error) => {
+      console.error(
+        '[settlement-evidence] storage check failed',
+        JSON.stringify({ reason: error.message, detail: error.detail }),
+      );
+    });
 });
 
 async function shutdown(signal) {

@@ -112,6 +112,69 @@ export type ArchiveResponse = {
   rounds: ArchiveRound[];
 };
 
+export type RoundVerificationIntegrity = {
+  evidenceHashValid: boolean;
+  poolIdentityMatches: boolean;
+  observationWindowMatches: boolean;
+  resolvedPriceMatchesOnchain: boolean;
+};
+
+export type RoundVerificationSelected = {
+  exact: string;
+  resolvedPriceCents: string;
+  candleOpenTime: number;
+  candleOpenIso: string;
+};
+
+export type RoundVerification =
+  | { status: "PENDING" }
+  | { status: "NOT_APPLICABLE"; reason: string }
+  | { status: "EVIDENCE_MISSING"; reason: string }
+  | { status: "EVIDENCE_INTEGRITY_FAILED"; reason: string }
+  | {
+      status: "VERIFIED" | "INTEGRITY_MISMATCH";
+      source: string;
+      endpoint: string;
+      symbol: string;
+      cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+      direction: "HIGH" | "LOW";
+      interval: string;
+      observationWindow: { startInclusive: string; endExclusive: string };
+      candleCount: number;
+      sourceDataSha256: string;
+      rounding: string;
+      selected: RoundVerificationSelected;
+      evidenceSha256: string;
+      createdAt: string;
+      settlementTxHash: string | null;
+      integrity: RoundVerificationIntegrity;
+    };
+
+export type RoundVerificationResponse = {
+  chain: {
+    id: number;
+    name: string;
+    explorerUrl: string;
+  };
+  pool: {
+    slug: string;
+    poolAddress: string;
+    asset: Asset;
+    direction: "HIGH" | "LOW";
+    cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+    sourceSymbol: string;
+  };
+  round: {
+    roundId: number;
+    contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
+    observationStartAt: string;
+    observationEndAt: string;
+    resolvedPriceCents: string;
+    resolvedPrice: string | null;
+  };
+  verification: RoundVerification;
+};
+
 export type OwnedTicket = {
   tokenId: string;
   roundId: number;
@@ -532,6 +595,11 @@ export const backendApi = {
     },
     archive(days = 90) {
       return request<ArchiveResponse>(`/rounds/archive?days=${days}`);
+    },
+    verification(slug: string, roundId: number) {
+      return request<RoundVerificationResponse>(
+        `/rounds/${encodeURIComponent(slug)}/${roundId}/verification`,
+      );
     },
   },
   actions: {

@@ -77,3 +77,29 @@ CREATE INDEX IF NOT EXISTS action_authorizations_user_idx
 CREATE INDEX IF NOT EXISTS action_authorizations_token_idx
   ON action_authorizations(authorization_token_hash)
   WHERE authorization_token_hash IS NOT NULL;
+
+-- Durable settlement evidence, written before settleRound is broadcast.
+-- canonical_evidence_json is TEXT, not JSONB, deliberately: PostgreSQL JSONB
+-- does not guarantee key ordering is preserved on storage/reload, and
+-- evidence_sha256 must always be reproducible from the exact string that
+-- was originally hashed. Re-verification hashes this TEXT column directly,
+-- never a JSON.stringify of a reloaded JSONB value.
+CREATE TABLE IF NOT EXISTS settlement_evidence (
+  pool_address VARCHAR(42) NOT NULL,
+  round_id BIGINT NOT NULL,
+  slug VARCHAR(64) NOT NULL,
+  asset VARCHAR(16) NOT NULL,
+  direction VARCHAR(8) NOT NULL,
+  cadence VARCHAR(16) NOT NULL,
+  symbol VARCHAR(16) NOT NULL,
+  interval VARCHAR(8) NOT NULL,
+  observation_start_at TIMESTAMPTZ NOT NULL,
+  observation_end_at TIMESTAMPTZ NOT NULL,
+  resolved_price_cents TEXT NOT NULL,
+  evidence_sha256 CHAR(64) NOT NULL,
+  source_data_sha256 CHAR(64) NOT NULL,
+  canonical_evidence_json TEXT NOT NULL,
+  settlement_tx_hash VARCHAR(66),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (pool_address, round_id)
+);

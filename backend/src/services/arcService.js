@@ -3,6 +3,7 @@
 const { ethers } = require('ethers');
 const config = require('../config');
 const { getLiveMarkPrices } = require('./binanceResolverService');
+const settlementEvidenceService = require('./settlementEvidenceService');
 
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
@@ -1354,6 +1355,188 @@ async function readRoundResult({ slug, roundId }) {
   };
 }
 
+// Read-only public settlement proof. Compares durably persisted settlement
+// evidence against the live onchain round. Never fabricates or re-derives
+// evidence: a SETTLED round with no persisted evidence is reported as
+// EVIDENCE_MISSING, not VERIFIED.
+//
+// PHASE A note: the live resolver settlement path (executeResolverAction in
+// roundAutomationService.js) does not yet write to settlement_evidence --
+// that gating is deferred to Phase B until PostgreSQL schema readiness is
+// proven in production (see settlementEvidenceService.verifySettlementEvidenceStorage
+// and its startup check in server.js). Until Phase B ships, every SETTLED
+// round is expected to report EVIDENCE_MISSING here, which is correct and
+// truthful, not a bug.
+async function readRoundVerification({ slug, roundId }) {
+  if (
+    typeof slug !== 'string' ||
+    !Number.isInteger(roundId) ||
+    roundId <= 0
+  ) {
+    throw new Error('round_verification_request_invalid');
+  }
+
+  const topology = ARC_POOL_TOPOLOGY.find(
+    (item) => slugify(item.asset, item.cadence, item.direction) === slug,
+  );
+  if (!topology) throw new Error('round_verification_not_supported');
+
+  const provider = getProvider();
+  const network = await rpcRead(() => provider.getNetwork());
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
+    throw new Error('arc_chain_id_mismatch');
+  }
+
+  const poolAddress = ethers.getAddress(topology.poolAddress);
+  const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
+
+  let round;
+  try {
+    round = await rpcRead(() => pool.getRound(roundId));
+  } catch {
+    throw new Error('round_verification_not_found');
+  }
+
+  if (Number(round.entryOpenAt) === 0) {
+    throw new Error('round_verification_not_found');
+  }
+
+  const contractStatus = CONTRACT_STATUSES[Number(round.status)];
+  if (!contractStatus) throw new Error('extrema_round_status_invalid');
+
+  const chain = {
+    id: Number(network.chainId),
+    name: 'Arc Testnet',
+    explorerUrl: 'https://testnet.arcscan.app',
+  };
+
+  const poolInfo = {
+    slug,
+    poolAddress,
+    asset: topology.asset,
+    direction: topology.direction,
+    cadence: topology.cadence,
+    sourceSymbol: SOURCE_SYMBOLS[topology.asset],
+  };
+
+  const resolvedPriceCentsOnchain = BigInt(round.resolvedPriceCents);
+  const roundInfo = {
+    roundId,
+    contractStatus,
+    observationStartAt: toIso(round.observationStartAt),
+    observationEndAt: toIso(round.observationEndAt),
+    resolvedPriceCents: resolvedPriceCentsOnchain.toString(),
+    resolvedPrice:
+      resolvedPriceCentsOnchain > 0n
+        ? (Number(resolvedPriceCentsOnchain) / 100).toFixed(2)
+        : null,
+  };
+
+  if (contractStatus === 'ENTRY_OPEN' || contractStatus === 'LOCKED') {
+    return { chain, pool: poolInfo, round: roundInfo, verification: { status: 'PENDING' } };
+  }
+
+  if (contractStatus === 'CANCELLED') {
+    return {
+      chain,
+      pool: poolInfo,
+      round: roundInfo,
+      verification: { status: 'NOT_APPLICABLE', reason: 'round_cancelled' },
+    };
+  }
+
+  // contractStatus === 'SETTLED' from here.
+  let evidence;
+  try {
+    evidence = await settlementEvidenceService.getSettlementEvidence({ poolAddress, roundId });
+  } catch (error) {
+    return {
+      chain,
+      pool: poolInfo,
+      round: roundInfo,
+      verification: { status: 'EVIDENCE_INTEGRITY_FAILED', reason: error.message },
+    };
+  }
+
+  if (!evidence) {
+    return {
+      chain,
+      pool: poolInfo,
+      round: roundInfo,
+      verification: { status: 'EVIDENCE_MISSING', reason: 'settlement_evidence_missing' },
+    };
+  }
+
+  let parsedEvidence;
+  try {
+    parsedEvidence = JSON.parse(evidence.canonicalEvidenceJson);
+  } catch {
+    return {
+      chain,
+      pool: poolInfo,
+      round: roundInfo,
+      verification: {
+        status: 'EVIDENCE_INTEGRITY_FAILED',
+        reason: 'canonical_evidence_json_unparseable',
+      },
+    };
+  }
+
+  const selected = topology.direction === 'HIGH' ? parsedEvidence.high : parsedEvidence.low;
+
+  const poolIdentityMatches =
+    evidence.poolAddress.toLowerCase() === poolAddress.toLowerCase() &&
+    evidence.slug === slug &&
+    evidence.asset === topology.asset &&
+    evidence.direction === topology.direction &&
+    evidence.cadence === topology.cadence;
+
+  const observationWindowMatches =
+    evidence.observationStartAt === roundInfo.observationStartAt &&
+    evidence.observationEndAt === roundInfo.observationEndAt;
+
+  const resolvedPriceMatchesOnchain = evidence.resolvedPriceCents === roundInfo.resolvedPriceCents;
+
+  // getSettlementEvidence() already recomputed the hash from the persisted
+  // canonical TEXT and required it to match before returning here.
+  const integrity = {
+    evidenceHashValid: true,
+    poolIdentityMatches,
+    observationWindowMatches,
+    resolvedPriceMatchesOnchain,
+  };
+
+  const allValid =
+    integrity.evidenceHashValid &&
+    integrity.poolIdentityMatches &&
+    integrity.observationWindowMatches &&
+    integrity.resolvedPriceMatchesOnchain;
+
+  return {
+    chain,
+    pool: poolInfo,
+    round: roundInfo,
+    verification: {
+      status: allValid ? 'VERIFIED' : 'INTEGRITY_MISMATCH',
+      source: parsedEvidence.source,
+      endpoint: parsedEvidence.endpoint,
+      symbol: parsedEvidence.symbol,
+      cadence: parsedEvidence.cadence,
+      direction: topology.direction,
+      interval: parsedEvidence.interval,
+      observationWindow: parsedEvidence.observationWindow,
+      candleCount: parsedEvidence.candleCount,
+      sourceDataSha256: parsedEvidence.sourceDataSha256,
+      rounding: parsedEvidence.rounding,
+      selected,
+      evidenceSha256: evidence.evidenceSha256,
+      createdAt: evidence.createdAt,
+      settlementTxHash: evidence.settlementTxHash,
+      integrity,
+    },
+  };
+}
+
 
 async function readRoundArchive({ days = 90 } = {}) {
   if (!Number.isInteger(days) || days <= 0 || days > 90) {
@@ -1541,6 +1724,7 @@ module.exports = {
   readClaimAuthorizationState,
   readRefundAuthorizationState,
   readRoundResult,
+  readRoundVerification,
   readRoundArchive,
   readStandardRounds,
   getStandardRoundsState,

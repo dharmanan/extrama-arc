@@ -191,6 +191,11 @@ export default async function LiveResultPage({
           >
             View pool on ArcScan
           </a>
+          {settled && (
+            <Link className="wf-action" href={`/verify/${slug}/${roundId}`}>
+              Verify settlement
+            </Link>
+          )}
           <Link className="wf-action" href="/tickets">
             View my tickets
           </Link>
