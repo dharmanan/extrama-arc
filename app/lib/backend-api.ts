@@ -72,6 +72,7 @@ export type ArchiveWinner = {
   rank: number;
   tokenId: string;
   currentOwner: string;
+  originalEntrant: string;
   predictionPriceCents: string;
   predictionPrice: string;
   rewardRaw: string;

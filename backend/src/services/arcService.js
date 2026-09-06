@@ -1420,6 +1420,7 @@ async function readRoundArchive({ days = 90 } = {}) {
             rank: index + 1,
             tokenId: tokenId.toString(),
             currentOwner: ethers.getAddress(currentOwner),
+            originalEntrant: ethers.getAddress(entry.originalEntrant),
             predictionPriceCents: entry.predictionPriceCents.toString(),
             predictionPrice: (Number(entry.predictionPriceCents) / 100).toFixed(2),
             rewardRaw: rewardRawByRank[index].toString(),
