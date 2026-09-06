@@ -194,12 +194,52 @@ export function RoundCountdown({
   );
 }
 
+function formatLeadTime(ms: number, locale: "en" | "tr") {
+  const totalMinutes = Math.max(0, Math.round(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(locale === "tr" ? `${days}g` : `${days}d`);
+  if (hours > 0) parts.push(locale === "tr" ? `${hours}sa` : `${hours}h`);
+  if (minutes > 0) parts.push(locale === "tr" ? `${minutes}dk` : `${minutes}m`);
+
+  return parts.join(" ") || (locale === "tr" ? "0dk" : "0m");
+}
+
 function poolStatusLabel(pool: LivePool, locale: "en" | "tr") {
-  if (pool.round.contractStatus === "ENTRY_OPEN" && !pool.round.canEnter) {
-    return locale === "tr"
-      ? "Tahminler kapandı · kilit bekleniyor"
-      : "Predictions closed · awaiting lock";
+  const now = Date.now();
+  const closeAt = new Date(pool.round.entryCloseAt).getTime();
+  const observationStart = new Date(pool.round.observationStartAt).getTime();
+  const observationEnd = new Date(pool.round.observationEndAt).getTime();
+
+  if (pool.round.contractStatus === "SETTLED" || pool.round.contractStatus === "CANCELLED") {
+    return humanRoundStatus(pool.round.contractStatus, locale);
   }
+
+  if (now >= observationEnd) {
+    return locale === "tr"
+      ? "Gözlem tamamlandı · sonuç bekleniyor"
+      : "Observation complete · awaiting settlement";
+  }
+
+  if (now >= observationStart) {
+    return locale === "tr" ? "Gözlem canlı" : "Observation live";
+  }
+
+  if (now >= closeAt) {
+    if (pool.round.contractStatus === "ENTRY_OPEN") {
+      return locale === "tr"
+        ? "Tahminler kapandı · kilit bekleniyor"
+        : "Predictions closed · awaiting lock";
+    }
+
+    return locale === "tr"
+      ? "Tahminler kapandı · gözlem bekleniyor"
+      : "Predictions closed · observation pending";
+  }
+
   return humanRoundStatus(pool.round.contractStatus, locale);
 }
 
@@ -236,7 +276,14 @@ export function PoolSummary({ pool }: { pool: LivePool }) {
       </dl>
 
       <p><b>{poolStatusLabel(pool, locale)}</b></p>
-      <p>{t.closes} {formatLocalDateTime(pool.round.entryCloseAt, locale)}</p>
+      <div className="wf-cutoff">
+        <p><b>{t.predictionCutoff}</b> · {formatLeadTime(
+          new Date(pool.round.observationStartAt).getTime() -
+            new Date(pool.round.entryCloseAt).getTime(),
+          locale,
+        )} {t.beforeObservation}</p>
+        <small>{formatLocalDateTime(pool.round.entryCloseAt, locale)}</small>
+      </div>
 
       <Link href={`/pools/${pool.slug}`} className="wf-action">
         {pool.round.canEnter ? t.makePrediction : t.viewPool}
