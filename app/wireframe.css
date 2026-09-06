@@ -41,3 +41,9 @@
 .wf-cutoff small{color:#666}
 .wf-cutoff-rule{margin-top:6px;color:#444;font-size:13px}
 .wf-cutoff-rule strong{color:#111}
+
+.wf-table-wrap{overflow-x:auto}
+.archive-winners{display:grid;gap:4px;min-width:210px}
+.archive-winners div{display:flex;gap:8px;align-items:center;white-space:nowrap}
+.archive-winners small{color:#666}
+.archive-actions{display:flex;gap:8px;flex-wrap:wrap}
