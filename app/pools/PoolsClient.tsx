@@ -41,6 +41,30 @@ function formatOverviewCountdown(ms: number, locale: "en" | "tr") {
   return parts.join(" ");
 }
 
+function formatCutoffLead(ms: number, locale: "en" | "tr") {
+  const totalMinutes = Math.max(0, Math.round(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(locale === "tr" ? `${days}g` : `${days}d`);
+  if (hours > 0) parts.push(locale === "tr" ? `${hours}sa` : `${hours}h`);
+  if (minutes > 0) parts.push(locale === "tr" ? `${minutes}dk` : `${minutes}m`);
+  return parts.join(" ") || (locale === "tr" ? "0dk" : "0m");
+}
+
+function formatUtcCompact(value: string, locale: "en" | "tr") {
+  return new Intl.DateTimeFormat(locale === "tr" ? "tr-TR" : "en-US", {
+    timeZone: "UTC",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(value)) + " UTC";
+}
+
 function OverviewCountdown({ pools }: { pools: LivePool[] }) {
   const { locale } = useLocale();
   const t = useCopy();
@@ -77,6 +101,10 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
 
   if (!next) return null;
 
+  const cutoffLead =
+    new Date(next.pool.round.observationStartAt).getTime() -
+    new Date(next.pool.round.entryCloseAt).getTime();
+
   return (
     <div className="wf-next-event">
       <small>{t.nextPhase}</small>
@@ -84,6 +112,13 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
         <strong>{localizedCadence(next.pool.cadence, locale)} · {next.label}</strong>
         {" · "}
         <span>{formatOverviewCountdown(next.target - now, locale)}</span>
+      </div>
+      <div className="wf-cutoff-rule">
+        <strong>{t.predictionCutoff}</strong>
+        {" · "}
+        <span>{formatCutoffLead(cutoffLead, locale)} {t.beforeObservation}</span>
+        {" · "}
+        <span>{formatUtcCompact(next.pool.round.entryCloseAt, locale)}</span>
       </div>
     </div>
   );
