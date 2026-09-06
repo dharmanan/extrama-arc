@@ -8,9 +8,10 @@
 
 :root{
   /* Surfaces. Warm, paper like, never pure white */
-  --paper:#f4f1ea;
-  --paper-2:#eae5d9;
-  --paper-3:#e0dace;
+  --paper:#e7e3d8;
+  --paper-2:#ded9cc;
+  --paper-3:#d2ccbd;
+  --paper-bright:#f7f5ef;
 
   /* Night. Sampled from the mountain artwork, never pure black */
   --night:#0d0f0e;
@@ -131,7 +132,7 @@ img{max-width:100%}
 .ex-btn__arrow{transition:transform .18s ease}
 .ex-btn:hover .ex-btn__arrow{transform:translateX(3px)}
 
-.ex-btn--primary{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+.ex-btn--primary{background:var(--paper-bright);color:var(--ink);border-color:var(--paper-bright)}
 .ex-btn--primary:hover{background:#fff;border-color:#fff}
 
 .ex-btn--ink{background:var(--ink);color:var(--paper);border-color:var(--ink)}
@@ -252,7 +253,8 @@ img{max-width:100%}
 .ex-hero{
   position:relative;
   isolation:isolate;
-  min-height:min(94vh,940px);
+  min-height:100vh;
+  min-height:100svh;
   display:flex;
   flex-direction:column;
   background:var(--night);
@@ -424,7 +426,6 @@ img{max-width:100%}
   .ex-hero__media img{object-position:78% 46%}
   .ex-hero__scrim--side{background:linear-gradient(180deg,rgba(9,11,10,.62) 0%,rgba(9,11,10,.30) 40%,rgba(9,11,10,.86) 88%)}
   .ex-hero__scrim--bottom{background:linear-gradient(0deg,rgba(9,11,10,.96) 0%,rgba(9,11,10,.62) 22%,rgba(9,11,10,0) 46%)}
-  .ex-hero{min-height:min(100vh,860px)}
   .ex-band{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
   .ex-hero__verbs{display:none}
   .ex-hero__aside-line{font-size:.8rem;letter-spacing:.22em;line-height:1.9}
