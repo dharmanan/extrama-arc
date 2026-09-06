@@ -764,6 +764,51 @@ async function runLifecycleInternal() {
 
 // Read-only dry run: what the lifecycle would do right now, without signing
 // or sending anything. Used to verify preconditions before a live transaction.
+// Startup smoke check. Confirms the configured resolver key really is the
+// deployed resolver, so a bad envelope is caught within a minute of deploy
+// rather than at the first live cancel or settle. Read only: it derives an
+// address and reads pool.resolver(), and never broadcasts.
+async function verifyResolverConfiguration() {
+  if (!resolverSignerService.isResolverSigningConfigured()) {
+    return { configured: false, ok: false, reason: 'resolver_signing_not_configured' };
+  }
+
+  const topology = requireTopology();
+  const reference = topology[0];
+  const provider = getAutomationProvider();
+
+  let signerAddress;
+  try {
+    signerAddress = resolverSignerService.getResolverSigner(provider).address;
+  } catch (error) {
+    return { configured: true, ok: false, reason: error.message };
+  }
+
+  let onchainResolver;
+  try {
+    const pool = new ethers.Contract(reference.poolAddress, POOL_ABI, provider);
+    onchainResolver = ethers.getAddress(
+      await safeRead(() => pool.resolver(), {
+        provider,
+        address: reference.poolAddress,
+      }),
+    );
+  } catch (error) {
+    return { configured: true, ok: false, reason: `resolver_read_failed:${error.message}` };
+  }
+
+  const ok = onchainResolver.toLowerCase() === signerAddress.toLowerCase();
+
+  return {
+    configured: true,
+    ok,
+    reason: ok ? 'resolver_signer_verified' : 'resolver_signer_mismatch',
+    // Addresses are public. The key itself is never surfaced.
+    signerAddress,
+    onchainResolver,
+  };
+}
+
 async function previewLifecycle() {
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
@@ -873,6 +918,32 @@ function startRoundAutomation() {
   }
   if (timer) return;
 
+  // Verify resolver configuration once at boot so a bad envelope surfaces
+  // immediately instead of at the first live transition.
+  verifyResolverConfiguration()
+    .then((result) => {
+      if (!result.configured) {
+        resolverSignerService.warnIfUnconfigured();
+      } else if (result.ok) {
+        console.log(
+          '[round-automation] resolver signer verified',
+          JSON.stringify({ resolver: result.onchainResolver }),
+        );
+      } else {
+        console.error(
+          '[round-automation] resolver signer check failed',
+          JSON.stringify({
+            reason: result.reason,
+            signerAddress: result.signerAddress,
+            onchainResolver: result.onchainResolver,
+          }),
+        );
+      }
+    })
+    .catch((error) => {
+      console.error('[round-automation] resolver signer check errored', error.message);
+    });
+
   // Run once at boot, then keep the active lifecycle self-healing.
   runAndLog();
   timer = setInterval(runAndLog, 60_000);
@@ -890,6 +961,7 @@ module.exports = {
   currentDailySchedule,
   ensureCurrentDailyRounds,
   executeResolverAction,
+  verifyResolverConfiguration,
   previewLifecycle,
   runLifecycle,
   startRoundAutomation,
