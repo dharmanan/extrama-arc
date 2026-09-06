@@ -12,6 +12,7 @@ const walletRoutes = require('./routes/wallet');
 const roundRoutes = require('./routes/rounds');
 const actionRoutes = require('./routes/actions');
 const arcService = require('./services/arcService');
+const roundAutomationService = require('./services/roundAutomationService');
 
 const app = express();
 
@@ -117,10 +118,12 @@ app.use((error, req, res, next) => {
 const server = app.listen(config.PORT, () => {
   console.log(`[extrema-backend] listening on :${config.PORT}`);
   arcService.warmStandardRoundsCache();
+  roundAutomationService.startRoundAutomation();
 });
 
 async function shutdown(signal) {
   console.log(`[extrema-backend] ${signal}, shutting down`);
+  roundAutomationService.stopRoundAutomation();
   server.close(async () => {
     await db.close();
     process.exit(0);
