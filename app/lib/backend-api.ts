@@ -67,6 +67,50 @@ export type LiveRoundResponse = {
   pool: LivePool;
 };
 
+
+export type ArchiveWinner = {
+  rank: number;
+  tokenId: string;
+  currentOwner: string;
+  predictionPriceCents: string;
+  predictionPrice: string;
+  rewardRaw: string;
+  rewardUsdc: string;
+  claimed: boolean;
+};
+
+export type ArchiveRound = {
+  slug: string;
+  poolAddress: string;
+  ticketAddress: string;
+  asset: Asset;
+  direction: "HIGH" | "LOW";
+  cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+  roundId: number;
+  contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
+  entryCloseAt: string;
+  observationEndAt: string;
+  resolvedPriceCents: string;
+  resolvedPrice: string | null;
+  entryCount: number;
+  totalStakeRaw: string;
+  totalStakeUsdc: string;
+  winners: ArchiveWinner[];
+};
+
+export type ArchiveResponse = {
+  chain: {
+    id: number;
+    name: string;
+    blockNumber: number;
+    timestamp: number;
+    timestampIso: string;
+    explorerUrl: string;
+  };
+  retentionDays: number;
+  rounds: ArchiveRound[];
+};
+
 export type OwnedTicket = {
   tokenId: string;
   roundId: number;
@@ -484,6 +528,9 @@ export const backendApi = {
     },
     get(slug: string) {
       return request<LiveRoundResponse>(`/rounds/${encodeURIComponent(slug)}`);
+    },
+    archive(days = 90) {
+      return request<ArchiveResponse>(`/rounds/archive?days=${days}`);
     },
   },
   actions: {
