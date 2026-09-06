@@ -75,55 +75,71 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
     return () => window.clearInterval(timer);
   }, []);
 
-  const next = pools
-    .map((pool) => {
+  const openRounds = pools
+    .filter((pool) => {
       const openAt = new Date(pool.round.entryOpenAt).getTime();
       const closeAt = new Date(pool.round.entryCloseAt).getTime();
-      const observationStart = new Date(pool.round.observationStartAt).getTime();
-      const observationEnd = new Date(pool.round.observationEndAt).getTime();
-
-      if (now < openAt) {
-        return { pool, target: openAt, label: t.predictionsStartIn };
-      }
-      if (now < closeAt) {
-        return { pool, target: closeAt, label: t.predictionsCloseIn };
-      }
-      if (now < observationStart) {
-        return { pool, target: observationStart, label: t.observationStartsIn };
-      }
-      if (now < observationEnd) {
-        return { pool, target: observationEnd, label: t.observationEndsIn };
-      }
-      return null;
+      return now >= openAt && now < closeAt && pool.round.canEnter;
     })
-    .filter((item): item is NonNullable<typeof item> => item !== null)
-    .sort((a, b) => a.target - b.target)[0];
+    .sort(
+      (a, b) =>
+        new Date(a.round.entryCloseAt).getTime() -
+        new Date(b.round.entryCloseAt).getTime(),
+    );
 
-  if (!next) return null;
+  const nextRounds = pools
+    .filter((pool) => now < new Date(pool.round.entryOpenAt).getTime())
+    .sort(
+      (a, b) =>
+        new Date(a.round.entryOpenAt).getTime() -
+        new Date(b.round.entryOpenAt).getTime(),
+    );
 
-  const cutoffLead =
-    new Date(next.pool.round.observationStartAt).getTime() -
-    new Date(next.pool.round.entryCloseAt).getTime();
+  const active = openRounds[0];
+  const upcoming = nextRounds[0];
 
-  return (
-    <div className="wf-next-event">
-      <small>{t.nextPhase}</small>
-      <div>
-        <strong>{localizedCadence(next.pool.cadence, locale)} · {next.label}</strong>
-        {" · "}
-        <span>{formatOverviewCountdown(next.target - now, locale)}</span>
+  if (active) {
+    const target = new Date(active.round.entryCloseAt).getTime();
+
+    return (
+      <div className="wf-next-event">
+        <small>{t.predictionWindow}</small>
+        <div>
+          <strong>{localizedCadence(active.cadence, locale)} · {t.predictionsCloseIn}</strong>
+          {" · "}
+          <span>{formatOverviewCountdown(target - now, locale)}</span>
+        </div>
+        <div className="wf-cutoff-rule">
+          <strong>{t.closes}</strong>
+          {" · "}
+          <span>{formatUtcCompact(active.round.entryCloseAt, locale)}</span>
+        </div>
       </div>
-      <div className="wf-cutoff-rule">
-        <strong>{t.predictionCutoff}</strong>
-        {" · "}
-        <span>{formatCutoffLead(cutoffLead, locale)} {t.beforeObservation}</span>
-        {" · "}
-        <span>{formatUtcCompact(next.pool.round.entryCloseAt, locale)}</span>
+    );
+  }
+
+  if (upcoming) {
+    const target = new Date(upcoming.round.entryOpenAt).getTime();
+
+    return (
+      <div className="wf-next-event">
+        <small>{t.predictionWindow}</small>
+        <div>
+          <strong>{localizedCadence(upcoming.cadence, locale)} · {t.predictionsOpenIn}</strong>
+          {" · "}
+          <span>{formatOverviewCountdown(target - now, locale)}</span>
+        </div>
+        <div className="wf-cutoff-rule">
+          <strong>{t.opens}</strong>
+          {" · "}
+          <span>{formatUtcCompact(upcoming.round.entryOpenAt, locale)}</span>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  return null;
 }
-
 
 export default function PoolsClient() {
   const { locale } = useLocale();
