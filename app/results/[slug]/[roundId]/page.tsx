@@ -1,7 +1,6 @@
-import Link from "next/link";
-import { ProductHeader } from "../../../product-components";
+import { ResultClient, type LiveResult } from "./ResultClient";
 
-type LiveResult = {
+type ServerResult = {
   chain: {
     id: number;
     name: string;
@@ -54,7 +53,7 @@ function backendBaseUrl() {
   return process.env.BACKEND_API_URL || "http://127.0.0.1:3001/api";
 }
 
-async function loadResult(slug: string, roundId: number): Promise<LiveResult | null> {
+async function loadResult(slug: string, roundId: number): Promise<ServerResult | null> {
   const response = await fetch(
     `${backendBaseUrl()}/rounds/${encodeURIComponent(slug)}/${roundId}/result`,
     { cache: "no-store" },
@@ -65,21 +64,7 @@ async function loadResult(slug: string, roundId: number): Promise<LiveResult | n
     throw new Error(`round_result_http_${response.status}`);
   }
 
-  return response.json() as Promise<LiveResult>;
-}
-
-function formatUsd(value: string | number) {
-  const parsed = typeof value === "number" ? value : Number(value);
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(parsed);
-}
-
-function shortAddress(address: string) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+  return response.json() as Promise<ServerResult>;
 }
 
 export default async function LiveResultPage({
@@ -91,116 +76,14 @@ export default async function LiveResultPage({
   const roundId = Number(roundIdParam);
 
   if (!Number.isInteger(roundId) || roundId <= 0) {
-    return (
-      <main className="wf-page">
-        <ProductHeader />
-        <section className="wf-main">
-          <h1>Result not available</h1>
-          <Link href="/pools">Back to pools</Link>
-        </section>
-      </main>
-    );
+    return <ResultClient result={null} invalid />;
   }
 
   const result = await loadResult(slug, roundId);
 
   if (!result) {
-    return (
-      <main className="wf-page">
-        <ProductHeader />
-        <section className="wf-main">
-          <h1>Result not available</h1>
-          <p>No onchain round matches this pool and round ID.</p>
-          <Link href="/pools">Back to pools</Link>
-        </section>
-      </main>
-    );
+    return <ResultClient result={null} />;
   }
 
-  const settled = result.round.contractStatus === "SETTLED";
-
-  return (
-    <main className="wf-page">
-      <ProductHeader />
-      <section className="wf-main">
-        <p>
-          {result.pool.asset} · {result.pool.cadence} {result.pool.direction} · ROUND #{result.round.roundId}
-        </p>
-        <h1>{settled ? "Round Complete" : result.round.contractStatus}</h1>
-
-        <section className="wf-panel wf-section">
-          <small>Onchain round state</small>
-          {settled && result.round.resolvedPrice ? (
-            <h2>{formatUsd(result.round.resolvedPrice)}</h2>
-          ) : (
-            <h2>Settlement pending</h2>
-          )}
-          <p>
-            {result.pool.source} · {result.pool.sourceSymbol}
-          </p>
-          <p>
-            Entries: {result.round.entryCount} · Stake: {result.round.totalStakeUsdc} USDC
-          </p>
-          <p>
-            Observation: {result.round.observationStartAt} → {result.round.observationEndAt}
-          </p>
-        </section>
-
-        {settled ? (
-          <section className="wf-section">
-            <h2>Winners</h2>
-            <table className="wf-table">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Ticket</th>
-                  <th>Current owner</th>
-                  <th>Prediction</th>
-                  <th>Distance</th>
-                  <th>Claimable</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.winners.map((winner) => (
-                  <tr key={winner.tokenId}>
-                    <td>#{winner.rank}</td>
-                    <td>#{winner.tokenId}</td>
-                    <td title={winner.currentOwner}>{shortAddress(winner.currentOwner)}</td>
-                    <td>{formatUsd(winner.predictionPrice)}</td>
-                    <td>{formatUsd(winner.distance)}</td>
-                    <td>{winner.claimableUsdc} USDC</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        ) : (
-          <section className="wf-section">
-            <p>
-              Winners and rewards are intentionally unavailable until the contract reaches SETTLED.
-            </p>
-          </section>
-        )}
-
-        <div className="wf-row">
-          <a
-            className="wf-action"
-            href={`${result.chain.explorerUrl}/address/${result.pool.poolAddress}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            View pool on ArcScan
-          </a>
-          {settled && (
-            <Link className="wf-action" href={`/verify/${slug}/${roundId}`}>
-              Verify settlement
-            </Link>
-          )}
-          <Link className="wf-action" href="/tickets">
-            View my tickets
-          </Link>
-        </div>
-      </section>
-    </main>
-  );
+  return <ResultClient result={result as LiveResult} />;
 }

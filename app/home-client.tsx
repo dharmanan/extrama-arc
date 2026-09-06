@@ -76,7 +76,7 @@ function LiveMarketBand() {
         const price = prices[asset.symbol];
         return (
           <div className="ex-band__item" key={asset.symbol}>
-            <span className="ex-band__asset">
+            <span className={`ex-band__asset${asset.symbol === "ETH" ? " ex-band__asset--eth-light" : ""}`}>
               <img src={assetConfigs[asset.symbol].brandSrc} alt="" />
               <span className="ex-band__symbol">{asset.symbol}</span>
             </span>
