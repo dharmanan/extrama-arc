@@ -667,14 +667,17 @@ async function readStandardRoundPoolsViaMulticall(provider, chainTimestamp, live
     // stays null, exactly like the pre-existing individual-read behaviour
     // when nextTicketId <= 1.
     phase3Targets.forEach(({ topology, roundId, candidateTicketId }, index) => {
+      // entries() declares five separate flat output parameters, not one
+      // tuple output like getRound()/getTicketMetadata() do -- so the
+      // decoded Result itself carries the named fields directly
+      // (decoded.roundId, decoded.predictionPriceCents, ...), not decoded[0].
       const decoded = decodeMulticallResult(POOL_INTERFACE, 'entries', phase3Results[index]);
       if (!decoded) return;
-      const candidateEntry = decoded[0];
-      if (BigInt(candidateEntry.roundId) === roundId) {
+      if (BigInt(decoded.roundId) === roundId) {
         entriesByPoolAddress.set(topology.poolAddress.toLowerCase(), {
-          predictionPriceCents: candidateEntry.predictionPriceCents.toString(),
+          predictionPriceCents: decoded.predictionPriceCents.toString(),
           ticketId: candidateTicketId.toString(),
-          entrySequence: Number(candidateEntry.entrySequence),
+          entrySequence: Number(decoded.entrySequence),
         });
       }
     });
