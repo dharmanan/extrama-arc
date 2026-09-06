@@ -15,6 +15,21 @@ router.get('/', async (req, res, next) => {
 });
 
 
+router.get('/archive', async (req, res, next) => {
+  try {
+    const days = req.query.days === undefined ? 90 : Number(req.query.days);
+    if (!Number.isInteger(days) || days <= 0 || days > 90) {
+      return res.status(400).json({ error: 'archive_days_invalid' });
+    }
+
+    const archive = await arcService.readRoundArchive({ days });
+    res.json(archive);
+  } catch (error) {
+    next(error);
+  }
+});
+
+
 router.get('/:slug/:roundId/result', async (req, res, next) => {
   try {
     const roundId = Number(req.params.roundId);
