@@ -105,22 +105,19 @@ function formatCountdown(ms: number, locale: Locale) {
 function roundPhase(pool: LivePool, now: number) {
   const openAt = new Date(pool.round.entryOpenAt).getTime();
   const closeAt = new Date(pool.round.entryCloseAt).getTime();
-  const observationStart = new Date(pool.round.observationStartAt).getTime();
-  const observationEnd = new Date(pool.round.observationEndAt).getTime();
+  const marketEnd = new Date(pool.round.marketPeriodEndAt ?? pool.round.settlementEligibleAt).getTime();
 
   if (now < openAt) return { key: "PRE_OPEN" as const, target: openAt };
   if (now < closeAt) return { key: "ENTRY_OPEN" as const, target: closeAt };
-  if (now < observationStart) return { key: "PRE_OBSERVATION" as const, target: observationStart };
-  if (now < observationEnd) return { key: "OBSERVING" as const, target: observationEnd };
-  return { key: "ENDED" as const, target: null };
+  if (now < marketEnd) return { key: "MARKET_LIVE" as const, target: marketEnd };
+  return { key: "RESULT_PENDING" as const, target: null };
 }
 
 function phaseLabel(key: ReturnType<typeof roundPhase>["key"], t: Copy) {
   if (key === "PRE_OPEN") return t.predictionsStartIn;
   if (key === "ENTRY_OPEN") return t.predictionsCloseIn;
-  if (key === "PRE_OBSERVATION") return t.observationStartsIn;
-  if (key === "OBSERVING") return t.observationEndsIn;
-  return t.observationEnded;
+  if (key === "MARKET_LIVE") return t.marketPeriodEndsIn;
+  return t.resultPending;
 }
 
 /** The direction motif carried over from the homepage and the pool board. */
@@ -469,7 +466,9 @@ export default function PoolDetailPage() {
                 {directionLabel(pool.direction, t)}
               </span>
               <span className="ex-pool__window-range">
-                {formatWindowRange(pool.round.observationStartAt, pool.round.observationEndAt, locale)}
+                {pool.round.marketPeriodStartAt && pool.round.marketPeriodEndAt
+                  ? formatWindowRange(pool.round.marketPeriodStartAt, pool.round.marketPeriodEndAt, locale)
+                  : "Legacy V1"}
               </span>
               <span className="ex-pool__state" data-open={pool.round.canEnter}>
                 {humanRoundStatus(pool.round.contractStatus, locale)}
@@ -496,10 +495,12 @@ export default function PoolDetailPage() {
                 <dd className="ex-num">{formatLocalDateTime(pool.round.entryCloseAt, locale)}</dd>
               </div>
               <div>
-                <dt>{t.poolObservationWindow}</dt>
+                <dt>{t.poolMarketPeriod}</dt>
                 <dd className="ex-num">
-                  {formatLocalDateTime(pool.round.observationStartAt, locale)} {t.to}{" "}
-                  {formatLocalDateTime(pool.round.observationEndAt, locale)}
+                  {pool.round.marketPeriodStartAt && pool.round.marketPeriodEndAt
+                    ? <>{formatLocalDateTime(pool.round.marketPeriodStartAt, locale)} {t.to}{" "}
+                        {formatLocalDateTime(pool.round.marketPeriodEndAt, locale)}</>
+                    : "Legacy V1"}
                 </dd>
               </div>
               <div>
