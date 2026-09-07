@@ -4,6 +4,8 @@ const { ethers } = require('ethers');
 const config = require('../config');
 const { getLiveMarkPrices } = require('./binanceResolverService');
 const settlementEvidenceService = require('./settlementEvidenceService');
+const marketOutcomeService = require('./marketOutcomeService');
+const { isCanonicalV2Round } = require('./canonicalMarketSchedule');
 
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
@@ -1686,32 +1688,37 @@ async function readRoundArchive({ days = 90 } = {}) {
     rpcRead(() => provider.getNetwork()),
     rpcRead(() => provider.getBlock('latest')),
   ]);
-
-  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
-    throw new Error('arc_chain_id_mismatch');
-  }
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
   if (!latestBlock) throw new Error('arc_latest_block_unavailable');
 
   const now = Number(latestBlock.timestamp);
-  const cutoff = now - Math.min(days * 24 * 60 * 60, ARCHIVE_RETENTION_SECONDS);
-  const rounds = [];
+  const cutoffSeconds = now - Math.min(days * 24 * 60 * 60, ARCHIVE_RETENTION_SECONDS);
+  const cutoffIso = toIso(cutoffSeconds);
+  const outcomes = await marketOutcomeService.listMarketOutcomes({ since: cutoffIso });
+
+  // Canonical V2 onchain rounds are auxiliary contract state for a market
+  // outcome. The outcome itself exists independently of participation.
+  const roundByKey = new Map();
 
   await mapWithConcurrency(ARC_POOL_TOPOLOGY, 4, async (topology) => {
     const poolAddress = ethers.getAddress(topology.poolAddress);
     const ticketAddress = ethers.getAddress(topology.ticketAddress);
     const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
     const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, provider);
-
     const nextRoundId = await rpcRead(() => pool.nextRoundId());
     if (nextRoundId <= 1n) return;
 
     for (let roundId = nextRoundId - 1n; roundId >= 1n; roundId -= 1n) {
       const round = await rpcRead(() => pool.getRound(roundId));
-      const entryCloseAt = Number(round.entryCloseAt);
+      if (Number(round.entryOpenAt) === 0) continue;
+      if (!isCanonicalV2Round(topology.cadence, round)) {
+        if (roundId === 1n) break;
+        continue;
+      }
 
-      if (entryCloseAt === 0) continue;
-      if (entryCloseAt > now) continue;
-      if (entryCloseAt < cutoff) break;
+      const marketPeriodStartAt = toIso(round.entryOpenAt);
+      const marketPeriodEndAt = toIso(round.observationEndAt);
+      if (new Date(marketPeriodEndAt).getTime() < new Date(cutoffIso).getTime()) break;
 
       const contractStatus = CONTRACT_STATUSES[Number(round.status)];
       if (!contractStatus) throw new Error('extrema_round_status_invalid');
@@ -1722,21 +1729,18 @@ async function readRoundArchive({ days = 90 } = {}) {
         (totalStake * 2250n) / 10000n,
         (totalStake * 1350n) / 10000n,
       ];
-
-      const winnerIds = Array.from(round.winnerTicketIds, (id) => BigInt(id));
       const winners = [];
 
       if (contractStatus === 'SETTLED') {
+        const winnerIds = Array.from(round.winnerTicketIds, (id) => BigInt(id));
         for (let index = 0; index < winnerIds.length; index += 1) {
           const tokenId = winnerIds[index];
           if (tokenId === 0n) continue;
-
           const [entry, currentOwner, claimed] = await Promise.all([
             rpcRead(() => pool.entries(tokenId)),
             rpcRead(() => ticket.ownerOf(tokenId)),
             rpcRead(() => pool.claimed(tokenId)),
           ]);
-
           winners.push({
             rank: index + 1,
             tokenId: tokenId.toString(),
@@ -1751,22 +1755,20 @@ async function readRoundArchive({ days = 90 } = {}) {
         }
       }
 
-      rounds.push({
-        slug: slugify(topology.asset, topology.cadence, topology.direction),
-        poolAddress,
-        ticketAddress,
-        asset: topology.asset,
-        direction: topology.direction,
-        cadence: topology.cadence,
+      const key = [
+        topology.asset,
+        topology.cadence,
+        topology.direction,
+        marketPeriodStartAt,
+        marketPeriodEndAt,
+      ].join('|');
+
+      roundByKey.set(key, {
         roundId: Number(roundId),
         contractStatus,
+        entryOpenAt: toIso(round.entryOpenAt),
         entryCloseAt: toIso(round.entryCloseAt),
-        observationEndAt: toIso(round.observationEndAt),
-        resolvedPriceCents: round.resolvedPriceCents.toString(),
-        resolvedPrice:
-          BigInt(round.resolvedPriceCents) > 0n
-            ? (Number(round.resolvedPriceCents) / 100).toFixed(2)
-            : null,
+        settlementEligibleAt: toIso(round.observationEndAt),
         entryCount: Number(round.entryCount),
         totalStakeRaw: round.totalStake.toString(),
         totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
@@ -1777,12 +1779,58 @@ async function readRoundArchive({ days = 90 } = {}) {
     }
   });
 
+  const rounds = [];
+  for (const outcome of outcomes) {
+    for (const direction of ['HIGH', 'LOW']) {
+      const topology = ARC_POOL_TOPOLOGY.find(
+        (item) =>
+          item.asset === outcome.asset &&
+          item.cadence === outcome.cadence &&
+          item.direction === direction,
+      );
+      if (!topology) continue;
+
+      const key = [
+        outcome.asset,
+        outcome.cadence,
+        direction,
+        outcome.marketPeriodStartAt,
+        outcome.marketPeriodEndAt,
+      ].join('|');
+      const round = roundByKey.get(key) || null;
+      const side = direction === 'HIGH' ? outcome.high : outcome.low;
+
+      rounds.push({
+        slug: slugify(outcome.asset, outcome.cadence, direction),
+        poolAddress: ethers.getAddress(topology.poolAddress),
+        ticketAddress: ethers.getAddress(topology.ticketAddress),
+        asset: outcome.asset,
+        direction,
+        cadence: outcome.cadence,
+        marketPeriodStartAt: outcome.marketPeriodStartAt,
+        marketPeriodEndAt: outcome.marketPeriodEndAt,
+        marketResultCents: side.resolvedPriceCents,
+        marketResult: (Number(side.resolvedPriceCents) / 100).toFixed(2),
+        marketResultExact: side.exact,
+        evidenceSha256: outcome.evidenceSha256,
+        roundId: round?.roundId ?? null,
+        contractStatus: round?.contractStatus ?? 'NO_ROUND',
+        entryCloseAt: round?.entryCloseAt ?? null,
+        settlementEligibleAt: round?.settlementEligibleAt ?? outcome.marketPeriodEndAt,
+        entryCount: round?.entryCount ?? 0,
+        totalStakeRaw: round?.totalStakeRaw ?? '0',
+        totalStakeUsdc: round?.totalStakeUsdc ?? '0.0',
+        winners: round?.winners ?? [],
+      });
+    }
+  }
+
   rounds.sort((left, right) => {
-    const closeDiff =
-      new Date(right.entryCloseAt).getTime() - new Date(left.entryCloseAt).getTime();
-    if (closeDiff !== 0) return closeDiff;
-    if (left.asset !== right.asset) return left.asset.localeCompare(right.asset);
+    const periodDiff =
+      new Date(right.marketPeriodEndAt).getTime() - new Date(left.marketPeriodEndAt).getTime();
+    if (periodDiff !== 0) return periodDiff;
     if (left.cadence !== right.cadence) return left.cadence.localeCompare(right.cadence);
+    if (left.asset !== right.asset) return left.asset.localeCompare(right.asset);
     return left.direction.localeCompare(right.direction);
   });
 
