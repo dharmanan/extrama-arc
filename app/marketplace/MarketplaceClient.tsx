@@ -150,7 +150,9 @@ export default function MarketplaceClient() {
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [blockNumber, setBlockNumber] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  // Never surfaced to the user: only whether the read failed, never the
+  // underlying message. The fixed, human copy below covers every failure.
+  const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,10 +164,10 @@ export default function MarketplaceClient() {
         if (cancelled) return;
         setListings(state.listings);
         setBlockNumber(state.chain.blockNumber);
-        setError("");
-      } catch (err: unknown) {
+        setError(false);
+      } catch {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Unable to read Arc Testnet marketplace listings.");
+        setError(true);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -236,8 +238,8 @@ export default function MarketplaceClient() {
           </div>
 
           <div className="ex-rail__group">
-            <span className="ex-rail__label">{t.poolsHorizonFilter}</span>
-            <div className="ex-rail__set" aria-label="Cadence filter" role="group">
+            <span className="ex-rail__label">{t.marketplacePage.periodFilter}</span>
+            <div className="ex-rail__set" aria-label="Period filter" role="group">
               {cadenceFilters.map((item) => (
                 <button
                   className="ex-rail__btn"
@@ -259,13 +261,12 @@ export default function MarketplaceClient() {
           )}
         </div>
 
-        {loading && <p className="ex-pools__note">{t.readingRounds}</p>}
+        {loading && <p className="ex-pools__note">{t.marketplacePage.loading}</p>}
 
         {!loading && error && (
           <div className="ex-pools__error">
             <h2 className="ex-display ex-display--md">{t.marketplacePage.listingsUnavailable}</h2>
-            <p className="ex-lede">{error}</p>
-            <p className="ex-pools__note" style={{ marginTop: 0 }}>{t.noMockFallback}</p>
+            <p className="ex-lede">{t.marketplacePage.listingsUnavailableBody}</p>
           </div>
         )}
 
