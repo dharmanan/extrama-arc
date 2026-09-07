@@ -16,6 +16,9 @@ const schema = z.object({
   ALLOW_CODESPACE_ORIGINS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
   EXTREMA_FACTORY_ADDRESS: z.string().default("0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A"),
+  // Safety gate: disabled by default. Creation is enabled only after canonical
+  // V2 timing has passed validation and the deployment explicitly opts in.
+  EXTREMA_ENABLE_ROUND_CREATION: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   // AES-256-GCM envelope (v1.iv.ct.tag) of the resolver private key, produced
   // with the same ENCRYPTION_KEY used for wallet material. Optional: when it is
   // absent, resolver signing stays disabled and the rest of the lifecycle runs
