@@ -4,6 +4,11 @@ const { ethers } = require('ethers');
 const db = require('../db');
 const config = require('../config');
 const { decrypt } = require('../services/cryptoService');
+const {
+  currentDailySchedule,
+  currentWeeklySchedule,
+  currentQuarterlySchedule,
+} = require('../services/canonicalMarketSchedule');
 
 const ARC_CHAIN_ID = 5042002n;
 
@@ -16,105 +21,51 @@ const POOL_ABI = [
 ];
 
 function requireAddress(name, value) {
-  if (!ethers.isAddress(value || '')) {
-    throw new Error(`${name}_invalid`);
-  }
+  if (!ethers.isAddress(value || '')) throw new Error(`${name}_invalid`);
   return ethers.getAddress(value);
 }
 
-function requireUint(name, value) {
-  if (!/^[0-9]+$/.test(String(value || ''))) {
-    throw new Error(`${name}_invalid`);
-  }
-  return BigInt(value);
-}
-
-function validateCadence(cadence, entryCloseAt, observationStartAt, observationEndAt) {
-  if (cadence === 0) {
-    if (observationStartAt !== entryCloseAt + 4n * 60n * 60n) {
-      throw new Error('daily_lead_invalid');
-    }
-    if (observationEndAt !== observationStartAt + 24n * 60n * 60n) {
-      throw new Error('daily_duration_invalid');
-    }
-    return;
-  }
-
-  if (cadence === 1) {
-    if (observationStartAt !== entryCloseAt + 24n * 60n * 60n) {
-      throw new Error('weekly_lead_invalid');
-    }
-    if (observationEndAt !== observationStartAt + 7n * 24n * 60n * 60n) {
-      throw new Error('weekly_duration_invalid');
-    }
-    return;
-  }
-
-  if (cadence === 2) {
-    if (observationStartAt !== entryCloseAt + 24n * 60n * 60n) {
-      throw new Error('quarterly_lead_invalid');
-    }
-    const duration = observationEndAt - observationStartAt;
-    if (
-      duration < 89n * 24n * 60n * 60n ||
-      duration > 92n * 24n * 60n * 60n
-    ) {
-      throw new Error('quarterly_duration_invalid');
-    }
-    return;
-  }
-
+function scheduleForCadence(cadence, now) {
+  if (cadence === 0) return currentDailySchedule(now);
+  if (cadence === 1) return currentWeeklySchedule(now);
+  if (cadence === 2) return currentQuarterlySchedule(now);
   throw new Error('cadence_invalid');
 }
 
 async function main() {
+  if (!config.EXTREMA_ENABLE_ROUND_CREATION) {
+    throw new Error('round_creation_disabled');
+  }
   if (process.env.CONFIRM_CREATE_NEXT_ROUND !== 'YES') {
     throw new Error('set_CONFIRM_CREATE_NEXT_ROUND=YES_to_broadcast');
   }
 
   const poolAddress = requireAddress('POOL_ADDRESS', process.env.POOL_ADDRESS);
-  const entryCloseAt = requireUint('ENTRY_CLOSE_AT', process.env.ENTRY_CLOSE_AT);
-  const observationStartAt = requireUint(
-    'OBSERVATION_START_AT',
-    process.env.OBSERVATION_START_AT,
-  );
-  const observationEndAt = requireUint(
-    'OBSERVATION_END_AT',
-    process.env.OBSERVATION_END_AT,
-  );
-
   const provider = new ethers.JsonRpcProvider(
     config.ARC_TESTNET_RPC_URL,
     { chainId: Number(ARC_CHAIN_ID), name: 'Arc Testnet' },
     { staticNetwork: true },
   );
 
-  const network = await provider.getNetwork();
-  if (network.chainId !== ARC_CHAIN_ID) {
-    throw new Error('arc_chain_id_mismatch');
-  }
-
-  const latest = await provider.getBlock('latest');
+  const [network, latest] = await Promise.all([
+    provider.getNetwork(),
+    provider.getBlock('latest'),
+  ]);
+  if (network.chainId !== ARC_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
   if (!latest) throw new Error('latest_block_unavailable');
 
   const now = BigInt(latest.timestamp);
-  if (now >= entryCloseAt) throw new Error('entry_close_not_in_future');
-  if (!(entryCloseAt <= observationStartAt && observationStartAt < observationEndAt)) {
-    throw new Error('round_timestamps_invalid');
-  }
-
   const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
   const [owner, cadenceRaw, nextRoundId] = await Promise.all([
     pool.owner(),
     pool.CADENCE(),
     pool.nextRoundId(),
   ]);
-
   const cadence = Number(cadenceRaw);
-  validateCadence(cadence, entryCloseAt, observationStartAt, observationEndAt);
+  const schedule = scheduleForCadence(cadence, now);
 
-  if (nextRoundId !== 2n) {
-    throw new Error(`unexpected_next_round_id_${nextRoundId.toString()}`);
+  if (now < schedule.entryOpenAt || now >= schedule.entryCloseAt) {
+    throw new Error('canonical_prediction_window_not_open');
   }
 
   const ownerAddress = ethers.getAddress(owner);
@@ -125,20 +76,12 @@ async function main() {
       LIMIT 1`,
     [ownerAddress],
   );
+  if (!rows.length) throw new Error('pool_owner_wallet_not_found_in_backend');
 
-  if (!rows.length) {
-    throw new Error('pool_owner_wallet_not_found_in_backend');
-  }
-
-  const privateKey = decrypt(rows[0].private_key_encrypted);
-  const signer = new ethers.Wallet(privateKey, provider);
-
+  const signer = new ethers.Wallet(decrypt(rows[0].private_key_encrypted), provider);
   if (signer.address.toLowerCase() !== ownerAddress.toLowerCase()) {
     throw new Error('pool_owner_signer_mismatch');
   }
-
-  const entryOpenAt = now;
-  const writablePool = pool.connect(signer);
 
   console.log(JSON.stringify({
     broadcast: true,
@@ -147,40 +90,37 @@ async function main() {
     owner: ownerAddress,
     roundId: Number(nextRoundId),
     cadence,
-    entryOpenAt: entryOpenAt.toString(),
-    entryCloseAt: entryCloseAt.toString(),
-    observationStartAt: observationStartAt.toString(),
-    observationEndAt: observationEndAt.toString(),
+    marketPeriodStartAt: new Date(Number(schedule.marketPeriodStartAt) * 1000).toISOString(),
+    marketPeriodEndAt: new Date(Number(schedule.marketPeriodEndAt) * 1000).toISOString(),
+    entryOpenAt: new Date(Number(schedule.entryOpenAt) * 1000).toISOString(),
+    entryCloseAt: new Date(Number(schedule.entryCloseAt) * 1000).toISOString(),
+    settlementEligibleAt: new Date(Number(schedule.observationEndAt) * 1000).toISOString(),
   }, null, 2));
 
+  const writablePool = pool.connect(signer);
   const tx = await writablePool.createRound(
-    entryOpenAt,
-    entryCloseAt,
-    observationStartAt,
-    observationEndAt,
+    schedule.entryOpenAt,
+    schedule.entryCloseAt,
+    schedule.observationStartAt,
+    schedule.observationEndAt,
   );
   const receipt = await tx.wait();
+  if (!receipt || receipt.status !== 1) throw new Error('create_round_transaction_failed');
 
-  if (!receipt || receipt.status !== 1) {
-    throw new Error('create_round_transaction_failed');
-  }
-
-  const createdRoundId = nextRoundId;
-  const round = await pool.getRound(createdRoundId);
-
+  const round = await pool.getRound(nextRoundId);
   if (
-    round.entryOpenAt !== entryOpenAt ||
-    round.entryCloseAt !== entryCloseAt ||
-    round.observationStartAt !== observationStartAt ||
-    round.observationEndAt !== observationEndAt ||
+    round.entryOpenAt !== schedule.entryOpenAt ||
+    round.entryCloseAt !== schedule.entryCloseAt ||
+    round.observationStartAt !== schedule.observationStartAt ||
+    round.observationEndAt !== schedule.observationEndAt ||
     Number(round.status) !== 0 ||
     Number(round.entryCount) !== 0
   ) {
     throw new Error('create_round_postcondition_failed');
   }
 
-  console.log(`CREATE_NEXT_ROUND=PASS`);
-  console.log(`ROUND_ID=${createdRoundId.toString()}`);
+  console.log('CREATE_NEXT_ROUND=PASS');
+  console.log(`ROUND_ID=${nextRoundId.toString()}`);
   console.log(`TX_HASH=${tx.hash}`);
   console.log(`EXPLORER=https://testnet.arcscan.app/tx/${tx.hash}`);
 }
