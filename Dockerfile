@@ -8,6 +8,7 @@ COPY backend/package.json ./package.json
 RUN npm install --omit=dev && npm cache clean --force
 
 COPY backend/src ./src
+COPY backend/scripts ./scripts
 
 EXPOSE 8080
 
