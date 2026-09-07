@@ -302,9 +302,14 @@ function marketReferenceForAsset(references, asset) {
   const value = references?.[asset] || references?.[SOURCE_SYMBOLS[asset]];
   if (!value || value.available === false) return null;
   try {
-    const cents = parseBigInt(value.markPriceCents, 'seed_market_reference_invalid');
+    const rawCents = typeof value === 'object' ? value.markPriceCents : value;
+    const cents = parseBigInt(rawCents, 'seed_market_reference_invalid');
     if (cents <= 0n) return null;
-    return { ...value, markPriceCents: cents };
+    return {
+      ...(typeof value === 'object' ? value : {}),
+      available: true,
+      markPriceCents: cents,
+    };
   } catch {
     return null;
   }
@@ -326,19 +331,72 @@ function buildPredictionCents(markCents, wallets, seed, poolKey) {
 
     if (candidate <= 0n) candidate = markCents + step;
 
+    // Bounded deterministic collision resolution. The fallback scans away
+    // from the requested side and then above the mark, so even a tiny fixture
+    // mark (or a future price-slot collision) always receives a unique
+    // positive cent value without runtime randomness.
     let attempts = 0;
-    while (used.has(candidate.toString()) && attempts < wallets.length * 4) {
-      candidate += side < 0n ? -1n : 1n;
-      if (candidate <= 0n) candidate = markCents + BigInt(attempts + 1);
+    while (used.has(candidate.toString()) || candidate <= 0n) {
       attempts += 1;
+      if (attempts > wallets.length * 16) return;
+      const delta = BigInt(attempts);
+      candidate = side < 0n
+        ? markCents - magnitude - delta
+        : markCents + magnitude + delta;
+      if (candidate <= 0n) candidate = markCents + magnitude + delta;
     }
-    if (used.has(candidate.toString())) return;
 
     used.add(candidate.toString());
     predictions.set(addressKey(wallet), candidate.toString());
   });
 
   return predictions;
+}
+
+function generateDeterministicPredictions({ markPriceCents, wallets, seed, poolKey }) {
+  const normalizedWallets = assertSeedWalletSet(wallets);
+  const markCents = parseBigInt(markPriceCents, 'seed_market_reference_invalid');
+  if (markCents <= 0n) throw new Error('seed_market_reference_invalid');
+  return Object.fromEntries(buildPredictionCents(markCents, normalizedWallets, String(seed), String(poolKey)));
+}
+
+/**
+ * Select the next deterministic cent slot when an originally planned price
+ * was taken after planning. The bounded scan is stable for the same mark,
+ * wallet, pool/round key, seed and taken-slot set; it never calls a runtime
+ * random source.
+ */
+function resolveDeterministicPredictionSlot({
+  markPriceCents,
+  wallet,
+  seed,
+  poolKey,
+  blockedPriceCents = [],
+} = {}) {
+  const normalizedWallet = normalizeAddress(wallet, 'seed_wallet_address_invalid');
+  if (!normalizeApprovedWallets().some((address) => addressKey(address) === addressKey(normalizedWallet))) {
+    throw new Error('seed_wallet_allowlist_mismatch');
+  }
+  const predictions = generateDeterministicPredictions({
+    markPriceCents,
+    wallets: normalizeApprovedWallets(),
+    seed,
+    poolKey,
+  });
+  const initial = parseBigInt(predictions[addressKey(normalizedWallet)], 'seed_prediction_invalid');
+  const mark = parseBigInt(markPriceCents, 'seed_market_reference_invalid');
+  const blocked = new Set(blockedPriceCents.map((value) => String(value)));
+  if (!blocked.has(initial.toString())) return initial.toString();
+
+  const direction = initial < mark ? -1n : 1n;
+  for (let attempt = 1; attempt <= 256; attempt += 1) {
+    const delta = BigInt(attempt);
+    let candidate = direction < 0n ? initial - delta : initial + delta;
+    if (candidate <= 0n) candidate = mark + delta;
+    if (!blocked.has(candidate.toString())) return candidate.toString();
+  }
+
+  throw new Error('seed_prediction_collision_unresolved');
 }
 
 function participationKey(wallet, poolAddress, roundId) {
@@ -534,9 +592,12 @@ async function createSeedBotDryRunPlan({
 
       const entry = {
         wallet,
+        plannerVersion: String(seed),
         pool: pool.slug,
         poolAddress: pool.poolAddress,
         roundId: round?.roundId ?? null,
+        entryOpenAt: round ? new Date(Number(round.entryOpenAt) * 1000).toISOString() : null,
+        entryCloseAt: round ? new Date(Number(round.entryCloseAt) * 1000).toISOString() : null,
         asset: pool.asset,
         direction: pool.direction,
         predictionPriceCents,
@@ -604,6 +665,8 @@ module.exports = {
   loadApprovedSeedWallets,
   resolveCanonicalDailyPools,
   readLatestMarketReferences,
+  generateDeterministicPredictions,
+  resolveDeterministicPredictionSlot,
   participationKey,
   createSeedBotDryRunPlan,
 };
