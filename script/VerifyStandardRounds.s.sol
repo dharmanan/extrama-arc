@@ -10,6 +10,7 @@ interface IVerifyRoundVm {
 
 contract VerifyStandardRounds {
     struct RoundTimes {
+        uint64 entryOpenAt;
         uint64 entryCloseAt;
         uint64 observationStartAt;
         uint64 observationEndAt;
@@ -48,8 +49,7 @@ contract VerifyStandardRounds {
             RoundTimes memory expected = _timesForCadence(pool.CADENCE(), plan);
 
             if (
-                round.entryOpenAt == 0
-                    || round.entryOpenAt >= expected.entryCloseAt
+                round.entryOpenAt != expected.entryOpenAt
                     || round.entryCloseAt != expected.entryCloseAt
                     || round.observationStartAt != expected.observationStartAt
                     || round.observationEndAt != expected.observationEndAt
@@ -65,16 +65,19 @@ contract VerifyStandardRounds {
 
     function _loadPlan() internal returns (StandardPlan memory plan) {
         plan.daily = RoundTimes({
+            entryOpenAt: _envUint64("EXTREMA_DAILY_ENTRY_OPEN_AT"),
             entryCloseAt: _envUint64("EXTREMA_DAILY_ENTRY_CLOSE_AT"),
             observationStartAt: _envUint64("EXTREMA_DAILY_OBSERVATION_START_AT"),
             observationEndAt: _envUint64("EXTREMA_DAILY_OBSERVATION_END_AT")
         });
         plan.weekly = RoundTimes({
+            entryOpenAt: _envUint64("EXTREMA_WEEKLY_ENTRY_OPEN_AT"),
             entryCloseAt: _envUint64("EXTREMA_WEEKLY_ENTRY_CLOSE_AT"),
             observationStartAt: _envUint64("EXTREMA_WEEKLY_OBSERVATION_START_AT"),
             observationEndAt: _envUint64("EXTREMA_WEEKLY_OBSERVATION_END_AT")
         });
         plan.quarterly = RoundTimes({
+            entryOpenAt: _envUint64("EXTREMA_QUARTERLY_ENTRY_OPEN_AT"),
             entryCloseAt: _envUint64("EXTREMA_QUARTERLY_ENTRY_CLOSE_AT"),
             observationStartAt: _envUint64("EXTREMA_QUARTERLY_OBSERVATION_START_AT"),
             observationEndAt: _envUint64("EXTREMA_QUARTERLY_OBSERVATION_END_AT")
