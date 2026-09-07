@@ -103,3 +103,33 @@ CREATE TABLE IF NOT EXISTS settlement_evidence (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (pool_address, round_id)
 );
+
+
+-- Canonical market outcome for a completed Binance market period.
+-- Independent from participation and from contract SETTLED/CANCELLED state.
+CREATE TABLE IF NOT EXISTS market_outcomes (
+  asset VARCHAR(8) NOT NULL,
+  cadence VARCHAR(16) NOT NULL,
+  symbol VARCHAR(16) NOT NULL,
+  interval VARCHAR(8) NOT NULL,
+  market_period_start_at TIMESTAMPTZ NOT NULL,
+  market_period_end_at TIMESTAMPTZ NOT NULL,
+  high_exact TEXT NOT NULL,
+  high_price_cents NUMERIC(20,0) NOT NULL,
+  high_candle_open_at TIMESTAMPTZ NOT NULL,
+  low_exact TEXT NOT NULL,
+  low_price_cents NUMERIC(20,0) NOT NULL,
+  low_candle_open_at TIMESTAMPTZ NOT NULL,
+  candle_count INTEGER NOT NULL,
+  source VARCHAR(128) NOT NULL,
+  endpoint TEXT NOT NULL,
+  source_data_sha256 CHAR(64) NOT NULL,
+  evidence_sha256 CHAR(64) NOT NULL,
+  canonical_evidence_json TEXT NOT NULL,
+  computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  published_at TIMESTAMPTZ,
+  PRIMARY KEY (asset, cadence, market_period_start_at, market_period_end_at)
+);
+
+CREATE INDEX IF NOT EXISTS market_outcomes_period_idx
+  ON market_outcomes (market_period_end_at DESC, cadence, asset);
