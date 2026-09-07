@@ -5,6 +5,7 @@ const db = require('../db');
 const config = require('../config');
 const { decrypt } = require('../services/cryptoService');
 const { ARC_POOL_TOPOLOGY } = require('../services/arcService');
+const { currentDailySchedule } = require('../services/canonicalMarketSchedule');
 
 const ARC_CHAIN_ID = 5042002n;
 
@@ -16,21 +17,10 @@ const POOL_ABI = [
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
 ];
 
-function utcDaySchedule(nowSeconds) {
-  const now = new Date(Number(nowSeconds) * 1000);
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const d = now.getUTCDate();
-
-  const entryOpenAt = BigInt(Math.floor(Date.UTC(y, m, d, 0, 0, 0) / 1000));
-  const entryCloseAt = BigInt(Math.floor(Date.UTC(y, m, d, 20, 0, 0) / 1000));
-  const observationStartAt = BigInt(Math.floor(Date.UTC(y, m, d + 1, 0, 0, 0) / 1000));
-  const observationEndAt = BigInt(Math.floor(Date.UTC(y, m, d + 2, 0, 0, 0) / 1000));
-
-  return { entryOpenAt, entryCloseAt, observationStartAt, observationEndAt };
-}
-
 async function main() {
+  if (!config.EXTREMA_ENABLE_ROUND_CREATION) {
+    throw new Error('round_creation_disabled');
+  }
   if (process.env.CONFIRM_CREATE_DAILY_ROUNDS !== 'YES') {
     throw new Error('set_CONFIRM_CREATE_DAILY_ROUNDS=YES_to_broadcast');
   }
@@ -50,7 +40,7 @@ async function main() {
   if (!latest) throw new Error('latest_block_unavailable');
 
   const now = BigInt(latest.timestamp);
-  const schedule = utcDaySchedule(now);
+  const schedule = currentDailySchedule(now);
 
   if (now < schedule.entryOpenAt || now >= schedule.entryCloseAt) {
     throw new Error('daily_prediction_window_not_open');
