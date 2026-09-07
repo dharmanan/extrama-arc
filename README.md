@@ -12,12 +12,11 @@ What is live:
 - Real Arc Testnet USDC, real 1 USDC prediction entry, real ticket minting and transfer
 - Passkey authentication and passkey step-up for critical signing
 - Backend on Railway, frontend on Vercel, PostgreSQL on Railway
-- Round lifecycle automation: scan, Daily round creation, permissionless locking, and resolver-authorized cancellation and settlement
+- Round lifecycle automation: scan, Daily/Weekly/Quarterly canonical V2 round creation, permissionless locking, and resolver-authorized cancellation and settlement
 - Binance mark-price settlement source with deterministic evidence hashing
 
 What is still open:
 
-- Weekly and Quarterly round creation are not yet automated
 - Demo state still exists on some routes and is being removed
 - Leaderboard and settlement verification pages are not yet backed by real data
 - Cancellation, settlement, winners, payouts, and claim are implemented but not yet proven by a live Arc transaction
@@ -52,7 +51,7 @@ What is still open:
 Runs inside the backend process on Railway. Coordinated across instances with PostgreSQL advisory locks so a duplicate instance cannot duplicate a transaction.
 
 - Scans every pool at every cadence and isolates per-pool read failures
-- Creates the current Daily round from the pool owner wallet. Weekly and Quarterly creation are not implemented yet
+- Creates the current canonical V2 Daily, Weekly, and Quarterly rounds from the pool owner wallet
 - Locks due rounds. `lockRound` is permissionless, so the owner wallet acts only as a funded sender
 - Cancels underfilled rounds and settles eligible rounds from the resolver signer
 - Re-reads live `pool.resolver()` before every resolver action and refuses to sign on mismatch

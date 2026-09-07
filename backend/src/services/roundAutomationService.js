@@ -14,6 +14,7 @@ const {
   currentWeeklySchedule,
   currentQuarterlySchedule,
   isCanonicalV2Round,
+  roundMatchesCanonicalSchedule,
   SECONDS_PER_DAY,
 } = require('./canonicalMarketSchedule');
 
@@ -53,23 +54,8 @@ let timer = null;
 const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
 const CADENCE_POOL_COUNT = 8;
 
-function sameSchedule(round, schedule) {
-  return (
-    round &&
-    round.entryOpenAt === schedule.entryOpenAt &&
-    round.entryCloseAt === schedule.entryCloseAt &&
-    round.observationStartAt === schedule.observationStartAt &&
-    round.observationEndAt === schedule.observationEndAt
-  );
-}
-
-function sameObservationWindow(round, schedule) {
-  return (
-    round &&
-    round.entryCloseAt === schedule.entryCloseAt &&
-    round.observationStartAt === schedule.observationStartAt &&
-    round.observationEndAt === schedule.observationEndAt
-  );
+function sameSchedule(cadence, round, schedule) {
+  return Boolean(round) && roundMatchesCanonicalSchedule(cadence, round, schedule);
 }
 
 async function withAutomationLock(work) {
@@ -367,7 +353,7 @@ async function ensureCurrentDailyRoundsInternal() {
   const [ownerAddress] = Array.from(owners);
 
   const missing = states.filter(
-    (state) => !sameSchedule(state.latestRound, schedule),
+    (state) => !sameSchedule('DAILY', state.latestRound, schedule),
   );
 
   if (missing.length === 0) {
@@ -393,22 +379,13 @@ async function ensureCurrentDailyRoundsInternal() {
         ? await safeRead(() => state.pool.getRound(latestRoundId), context)
         : null;
 
-    if (sameSchedule(latestRound, schedule)) {
+    if (sameSchedule('DAILY', latestRound, schedule)) {
       results.push({
         slug: `${state.topology.asset.toLowerCase()}-daily-${state.topology.direction.toLowerCase()}`,
         roundId: Number(latestRoundId),
         status: 'already-current',
       });
       continue;
-    }
-
-    if (
-      latestRound &&
-      latestRound.entryCloseAt > schedule.entryCloseAt
-    ) {
-      throw new Error(
-        `daily_round_schedule_ahead_${state.topology.poolAddress}`,
-      );
     }
 
     const writable = state.pool.connect(signer);
@@ -425,7 +402,7 @@ async function ensureCurrentDailyRoundsInternal() {
     }
 
     const created = await safeRead(() => state.pool.getRound(nextRoundId), context);
-    if (!sameSchedule(created, schedule) || Number(created.status) !== 0) {
+    if (!sameSchedule('DAILY', created, schedule) || Number(created.status) !== 0) {
       throw new Error(
         `daily_round_create_postcondition_failed_${state.topology.poolAddress}`,
       );
@@ -546,7 +523,7 @@ async function ensureCurrentCadenceRoundsInternal(cadenceName, cadenceEnumValue,
   const [ownerAddress] = Array.from(owners);
 
   const missing = states.filter(
-    (state) => !sameObservationWindow(state.latestRound, schedule),
+    (state) => !sameSchedule(cadenceName, state.latestRound, schedule),
   );
 
   if (missing.length === 0) {
@@ -581,25 +558,14 @@ async function ensureCurrentCadenceRoundsInternal(cadenceName, cadenceEnumValue,
           ? await safeRead(() => state.pool.getRound(latestRoundId), context)
           : null;
 
-      if (sameObservationWindow(latestRound, schedule)) {
+      if (sameSchedule(cadenceName, latestRound, schedule)) {
         results.push({ slug, roundId: Number(latestRoundId), status: 'already-current' });
-        continue;
-      }
-
-      if (latestRound && latestRound.entryCloseAt > schedule.entryCloseAt) {
-        failures.push({
-          slug,
-          poolAddress: state.topology.poolAddress,
-          cadence: cadenceName,
-          operation: 'createRound',
-          reason: 'round_schedule_ahead',
-        });
         continue;
       }
 
       const hasLanded = async () => {
         const check = await safeRead(() => state.pool.getRound(nextRoundId), context);
-        return sameObservationWindow(check, schedule) && Number(check.status) === STATUS_ENTRY_OPEN;
+        return sameSchedule(cadenceName, check, schedule) && Number(check.status) === STATUS_ENTRY_OPEN;
       };
 
       // Single attempt. A send is never retried; an uncertain outcome is
@@ -619,7 +585,7 @@ async function ensureCurrentCadenceRoundsInternal(cadenceName, cadenceEnumValue,
       });
 
       const created = await safeRead(() => state.pool.getRound(nextRoundId), context);
-      if (!sameObservationWindow(created, schedule) || Number(created.status) !== STATUS_ENTRY_OPEN) {
+      if (!sameSchedule(cadenceName, created, schedule) || Number(created.status) !== STATUS_ENTRY_OPEN) {
         throw new Error('create_round_postcondition_failed');
       }
 
@@ -827,12 +793,6 @@ async function executeResolverAction(provider, now, item, signer) {
   const round = await safeRead(() => item.pool.getRound(item.roundId), context);
   const status = Number(round.status);
 
-  // Legacy V1 rounds used a future pricing window. They remain immutable
-  // onchain history, but must never be auto-settled under the canonical V2
-  // market-period rules.
-  if (!isCanonicalV2Round(item.topology.cadence, round)) {
-    return { slug, roundId, action: 'noop', reason: 'legacy_v1_round' };
-  }
   const entryCount = Number(round.entryCount);
 
   // Another instance may have completed this already.
@@ -860,7 +820,30 @@ async function executeResolverAction(provider, now, item, signer) {
       throw new Error('cancel_postcondition_failed');
     }
 
-    return { slug, roundId, action: 'cancelled', entryCount, ...result };
+    return {
+      slug,
+      roundId,
+      action: 'cancelled',
+      entryCount,
+      scheduleVersion: isCanonicalV2Round(item.topology.cadence, round) ? 'V2' : 'V1',
+      ...result,
+    };
+  }
+
+  // Underfilled legacy rounds are safe to cancel once their immutable
+  // contract time gate has elapsed, because cancellation depends only on
+  // entryCount and returns each ticket's stake. Legacy rounds with 3+ entries
+  // are intentionally never auto-settled: they require explicit migration
+  // review because their old observation window is not the canonical market
+  // period.
+  if (!isCanonicalV2Round(item.topology.cadence, round)) {
+    return {
+      slug,
+      roundId,
+      action: 'noop',
+      reason: 'legacy_v1_settlement_blocked',
+      entryCount,
+    };
   }
 
   const marketPeriodStartAt =

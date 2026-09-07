@@ -5,7 +5,10 @@ const config = require('../config');
 const { getLiveMarkPrices } = require('./binanceResolverService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
-const { isCanonicalV2Round } = require('./canonicalMarketSchedule');
+const {
+  isCanonicalV2Round,
+  canEnterCanonicalRound,
+} = require('./canonicalMarketSchedule');
 
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
@@ -515,10 +518,12 @@ function decodeMulticallResult(iface, fnName, result) {
 // and the individual-read fallback path below so the published shape is
 // identical regardless of which one produced it.
 function buildStandardRoundPoolEntry(topology, roundId, round, contractStatus, lastPrediction, chainTimestamp, liveMarks) {
-  const canEnter =
-    contractStatus === 'ENTRY_OPEN' &&
-    chainTimestamp >= round.entryOpenAt &&
-    chainTimestamp < round.entryCloseAt;
+  const canonicalV2 = isCanonicalV2Round(topology.cadence, round);
+  const canEnter = canEnterCanonicalRound(
+    topology.cadence,
+    round,
+    chainTimestamp,
+  );
 
   const liveMark = liveMarks.prices[SOURCE_SYMBOLS[topology.asset]];
   const liveMarkAvailable = Boolean(liveMark && !liveMark.unavailable);
@@ -555,13 +560,13 @@ function buildStandardRoundPoolEntry(topology, roundId, round, contractStatus, l
       roundId: Number(roundId),
       contractStatus,
       canEnter,
-      scheduleVersion: isCanonicalV2Round(topology.cadence, round) ? 'V2' : 'V1',
+      scheduleVersion: canonicalV2 ? 'V2' : 'V1',
       entryOpenAt: toIso(round.entryOpenAt),
       entryCloseAt: toIso(round.entryCloseAt),
       observationStartAt: toIso(round.observationStartAt),
       observationEndAt: toIso(round.observationEndAt),
-      marketPeriodStartAt: isCanonicalV2Round(topology.cadence, round) ? toIso(round.entryOpenAt) : null,
-      marketPeriodEndAt: isCanonicalV2Round(topology.cadence, round) ? toIso(round.observationEndAt) : null,
+      marketPeriodStartAt: canonicalV2 ? toIso(round.entryOpenAt) : null,
+      marketPeriodEndAt: canonicalV2 ? toIso(round.observationEndAt) : null,
       settlementEligibleAt: toIso(round.observationEndAt),
       entryCount: Number(round.entryCount),
       totalStakeRaw: round.totalStake.toString(),

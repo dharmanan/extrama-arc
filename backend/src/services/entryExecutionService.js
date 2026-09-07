@@ -2,6 +2,7 @@
 
 const { ethers } = require('ethers');
 const arcService = require('./arcService');
+const { isCanonicalV2Round } = require('./canonicalMarketSchedule');
 const walletService = require('./walletService');
 
 const STAKE_AMOUNT = 1_000_000n;
@@ -98,7 +99,13 @@ async function executeEntry(userId, payload) {
 
   const chainTimestamp = BigInt(latestBlock.timestamp);
 
+  const topology = arcService.ARC_POOL_TOPOLOGY.find(
+    (item) => item.poolAddress.toLowerCase() === poolAddress.toLowerCase(),
+  );
+
   if (
+    !topology ||
+    !isCanonicalV2Round(topology.cadence, roundBefore) ||
     Number(roundBefore.status) !== 0 ||
     chainTimestamp < roundBefore.entryOpenAt ||
     chainTimestamp >= roundBefore.entryCloseAt

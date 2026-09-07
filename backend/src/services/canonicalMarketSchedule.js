@@ -122,6 +122,26 @@ function previousCompletedMarketPeriod(cadence, chainTimestamp) {
   };
 }
 
+function roundMatchesCanonicalSchedule(cadence, round, schedule) {
+  return (
+    isCanonicalV2Round(cadence, round) &&
+    BigInt(round.entryOpenAt) === BigInt(schedule.entryOpenAt) &&
+    BigInt(round.entryCloseAt) === BigInt(schedule.entryCloseAt) &&
+    BigInt(round.observationStartAt) === BigInt(schedule.observationStartAt) &&
+    BigInt(round.observationEndAt) === BigInt(schedule.observationEndAt)
+  );
+}
+
+function canEnterCanonicalRound(cadence, round, chainTimestamp) {
+  if (!isCanonicalV2Round(cadence, round)) return false;
+  const now = BigInt(chainTimestamp);
+  return (
+    Number(round.status) === 0 &&
+    now >= BigInt(round.entryOpenAt) &&
+    now < BigInt(round.entryCloseAt)
+  );
+}
+
 function isCanonicalV2Round(cadence, round) {
   if (!round) return false;
   const start = BigInt(round.entryOpenAt);
@@ -156,4 +176,6 @@ module.exports = {
   currentQuarterlySchedule,
   previousCompletedMarketPeriod,
   isCanonicalV2Round,
+  roundMatchesCanonicalSchedule,
+  canEnterCanonicalRound,
 };
