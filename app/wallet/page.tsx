@@ -50,6 +50,18 @@ export default function WalletPage() {
   }, [isConnected, connectedAddress, step]);
 
 
+  // Backend session hydration is asynchronous on a full page refresh.
+  // If the authenticated session already owns an EXTREMA wallet, promote the
+  // wallet page back to the ready surface as soon as WalletSessionProvider
+  // confirms it. Recovery is deliberately excluded because a freshly created
+  // wallet must still show its one-time private-key disclosure.
+  useEffect(() => {
+    if (walletStatus === "ready" && walletAddress && step !== "recovery") {
+      setStep("ready");
+    }
+  }, [walletStatus, walletAddress, step]);
+
+
   async function handleConnectInjected() {
     setError("");
     setBusy("Connecting wallet...");
