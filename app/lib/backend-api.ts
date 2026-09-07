@@ -216,6 +216,68 @@ export type RoundVerificationResponse = {
   verification: RoundVerification;
 };
 
+export type MarketplaceOnchainStatus = "ACTIVE" | "SOLD" | "CANCELLED" | "INVALIDATED";
+export type MarketplaceListingState =
+  | "ACTIVE"
+  | "ACTION_NEEDED"
+  | "EXPIRED"
+  | "SOLD"
+  | "CANCELLED"
+  | "INVALIDATED";
+export type MarketplaceUnbuyableReason = "approval_revoked" | "ownership_changed" | null;
+
+export type MarketplaceListing = {
+  listingId: string;
+  onchainStatus: MarketplaceOnchainStatus | null;
+  state: MarketplaceListingState | null;
+  unbuyableReason: MarketplaceUnbuyableReason;
+  isBuyable: boolean;
+  seller: string;
+  currentOwner: string | null;
+  isApproved: boolean;
+  askUsdcRaw: string;
+  askUsdc: string;
+  createdAt: string;
+  asset: Asset;
+  direction: "HIGH" | "LOW";
+  cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
+  slug: string;
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+  roundStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED" | null;
+  observationEndAt: string | null;
+  tradingCutoffAt: string | null;
+  predictionPriceCents: string | null;
+  predictionPrice: string | null;
+};
+
+export type MarketplaceListingsResponse = {
+  chain: {
+    id: number;
+    name: string;
+    blockNumber: number;
+    explorerUrl: string;
+  };
+  marketplace: {
+    address: string;
+    listingCount: number;
+  };
+  listings: MarketplaceListing[];
+  degradedListings: Array<{ listingId: string; reason: string }>;
+};
+
+export type MarketplaceListingResponse = {
+  chain: {
+    id: number;
+    name: string;
+    blockNumber: number;
+    explorerUrl: string;
+  };
+  listing: MarketplaceListing;
+};
+
 export type OwnedTicket = {
   tokenId: string;
   roundId: number;
@@ -645,6 +707,16 @@ export const backendApi = {
     verification(slug: string, roundId: number) {
       return request<RoundVerificationResponse>(
         `/rounds/${encodeURIComponent(slug)}/${roundId}/verification`,
+      );
+    },
+  },
+  marketplace: {
+    listings() {
+      return request<MarketplaceListingsResponse>("/marketplace/listings");
+    },
+    listing(listingId: string | number) {
+      return request<MarketplaceListingResponse>(
+        `/marketplace/listings/${encodeURIComponent(String(listingId))}`,
       );
     },
   },

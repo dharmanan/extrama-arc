@@ -11,6 +11,7 @@ const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const roundRoutes = require('./routes/rounds');
 const actionRoutes = require('./routes/actions');
+const marketplaceRoutes = require('./routes/marketplace');
 const arcService = require('./services/arcService');
 const roundAutomationService = require('./services/roundAutomationService');
 const settlementEvidenceService = require('./services/settlementEvidenceService');
@@ -66,6 +67,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/rounds', roundRoutes);
 app.use('/api/actions', actionRoutes);
+app.use('/api/marketplace', marketplaceRoutes);
 
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);

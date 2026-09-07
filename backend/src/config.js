@@ -16,6 +16,9 @@ const schema = z.object({
   ALLOW_CODESPACE_ORIGINS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
   EXTREMA_FACTORY_ADDRESS: z.string().default("0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A"),
+  // Canonical Arc Testnet deployment (deploy tx 0x9b35faa5a16d46056c833ac5b7cb6186f37200e0e3d5c0b8ce0f328914474304),
+  // post-deploy verified: USDC()/FACTORY() match the canonical addresses above, nextListingId()==1.
+  EXTREMA_MARKETPLACE_ADDRESS: z.string().default("0x0C50FE3edD739B7268d58E1414F973e9A55dd037"),
   // Safety gate: disabled by default. Creation is enabled only after canonical
   // V2 timing has passed validation and the deployment explicitly opts in.
   EXTREMA_ENABLE_ROUND_CREATION: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),

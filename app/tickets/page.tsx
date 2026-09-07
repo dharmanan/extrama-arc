@@ -1,18 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AssetMark, ProductHeader } from "../product-components";
-import { useLocale } from "../i18n";
+import { useCopy, useLocale } from "../i18n";
 import {
   backendApi,
   isAuthSessionError,
+  type MarketplaceListing,
   type OwnedTicket,
   type OwnedTicketsResponse,
   type RefundExecutionMode,
   type ClaimExecutionMode,
 } from "../lib/backend-api";
-import { humanRoundStatus } from "../lib/display";
+import { formatUsdc, humanRoundStatus } from "../lib/display";
 import {
   authenticatePasskey,
   confirmClaimWithPasskey,
@@ -54,6 +55,49 @@ function ticketKey(ticket: OwnedTicket) {
   return `${ticket.ticketAddress}:${ticket.tokenId}`;
 }
 
+function listingLookupKey(ticketAddress: string, tokenId: string) {
+  return `${ticketAddress.toLowerCase()}:${tokenId}`;
+}
+
+// Read-only projection of a listing onto its owned ticket. No action is
+// offered here yet -- this states what is true onchain, nothing more.
+function marketplaceLine(
+  listing: MarketplaceListing,
+  locale: "en" | "tr",
+  t: ReturnType<typeof useCopy>,
+) {
+  const ask = formatUsdc(listing.askUsdc, locale);
+
+  switch (listing.state) {
+    case "ACTIVE":
+      return { label: t.marketplacePage.stateActive, detail: `${t.marketplacePage.listedFor} ${ask}` };
+    case "ACTION_NEEDED":
+      return {
+        label: t.marketplacePage.stateActionNeeded,
+        detail: `${t.marketplacePage.listedFor} ${ask} · ${
+          listing.unbuyableReason === "ownership_changed"
+            ? t.marketplacePage.reasonOwnershipChanged
+            : t.marketplacePage.reasonApprovalRevoked
+        }`,
+      };
+    case "EXPIRED":
+      return { label: t.marketplacePage.stateExpired, detail: `${t.marketplacePage.listedFor} ${ask}` };
+    case "CANCELLED":
+      return { label: t.marketplacePage.stateCancelled, detail: `${t.marketplacePage.listedFor} ${ask}` };
+    case "SOLD":
+      return {
+        label: t.marketplacePage.stateSold,
+        detail: listing.currentOwner
+          ? `${t.marketplacePage.soldTo} ${listing.currentOwner.slice(0, 6)}…${listing.currentOwner.slice(-4)}`
+          : "",
+      };
+    case "INVALIDATED":
+      return { label: t.marketplacePage.stateInvalidated, detail: "" };
+    default:
+      return null;
+  }
+}
+
 function isRefundEligible(ticket: OwnedTicket) {
   return ticket.roundStatus === "CANCELLED" && !ticket.isRefunded;
 }
@@ -71,8 +115,10 @@ const ARC_TESTNET_CHAIN_ID = 5042002;
 
 export default function TicketsPage() {
   const { locale } = useLocale();
+  const t = useCopy();
   const { address: ownerAddress, isConnected } = useAccount();
   const [state, setState] = useState<OwnedTicketsResponse | null>(null);
+  const [marketplaceListings, setMarketplaceListings] = useState<MarketplaceListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [authRequired, setAuthRequired] = useState(false);
@@ -125,6 +171,40 @@ export default function TicketsPage() {
   useEffect(() => {
     void loadTickets();
   }, [loadTickets]);
+
+  // Independent of loadTickets: a marketplace read failure must never block
+  // or degrade the ticket list itself, so it fails silently into an empty
+  // lookup rather than surfacing its own error state on this page.
+  useEffect(() => {
+    let cancelled = false;
+
+    backendApi.marketplace.listings()
+      .then((result) => {
+        if (!cancelled) setMarketplaceListings(result.listings);
+      })
+      .catch(() => {
+        if (!cancelled) setMarketplaceListings([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The most recent listing (highest listingId) per ticket is the only one
+  // relevant to display -- an older cancelled listing for the same token is
+  // superseded history, not current state.
+  const listingByTicket = useMemo(() => {
+    const map = new Map<string, MarketplaceListing>();
+    for (const listing of marketplaceListings) {
+      const key = listingLookupKey(listing.ticketAddress, listing.tokenId);
+      const existing = map.get(key);
+      if (!existing || Number(listing.listingId) > Number(existing.listingId)) {
+        map.set(key, listing);
+      }
+    }
+    return map;
+  }, [marketplaceListings]);
 
   async function handleAuthenticate() {
     if (!ownerAddress) return;
@@ -378,6 +458,8 @@ export default function TicketsPage() {
     const refundEligible = isRefundEligible(ticket);
     const claimOpen = claimTicketKey === key;
     const claimEligible = isClaimEligible(ticket);
+    const listing = listingByTicket.get(listingLookupKey(ticket.ticketAddress, ticket.tokenId));
+    const listingLine = listing ? marketplaceLine(listing, locale, t) : null;
 
     return (
       <article className="ex-ticket" key={key} data-direction={ticket.direction}>
@@ -414,6 +496,14 @@ export default function TicketsPage() {
             </div>
           </dl>
         </div>
+
+        {listing && listingLine && (
+          <div className="ex-ticket__market" data-state={listing.state}>
+            <span className="ex-ticket__market-eyebrow">{t.marketplacePage.ticketListingEyebrow}</span>
+            <span className="ex-ticket__market-label">{listingLine.label}</span>
+            {listingLine.detail && <span className="ex-ticket__market-detail">{listingLine.detail}</span>}
+          </div>
+        )}
 
         <div className="ex-ticket__actions">
           <Link href={"/results/" + ticket.slug + "/" + ticket.roundId}>{locale === "tr" ? "Turu aç" : "View round"} →</Link>
