@@ -276,14 +276,21 @@ export default function PoolDetailPage() {
 
     async function refresh() {
       try {
-        const [result, live] = await Promise.all([
-          backendApi.rounds.get(params.slug),
-          readBinanceLiveMarket(),
-        ]);
+        const result = await backendApi.rounds.get(params.slug);
+        let nextPool = result.pool;
+
+        try {
+          const live = await readBinanceLiveMarket();
+          nextPool = applyBinanceLiveMarketToPool(result.pool, live);
+        } catch {
+          // The live mark is a display overlay, not an entry precondition.
+          // Keep the real Arc round visible and usable when that overlay fails.
+        }
+
         if (cancelled) return;
         setState({
           ...result,
-          pool: applyBinanceLiveMarketToPool(result.pool, live),
+          pool: nextPool,
         });
         setError("");
         void refreshEntries(result.pool);

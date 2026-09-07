@@ -332,12 +332,19 @@ export default function PoolsClient() {
 
     async function refresh() {
       try {
-        const [state, live] = await Promise.all([
-          backendApi.rounds.list(),
-          readBinanceLiveMarket(),
-        ]);
+        const state = await backendApi.rounds.list();
+        let nextPools = state.pools;
+
+        try {
+          const live = await readBinanceLiveMarket();
+          nextPools = applyBinanceLiveMarket(state.pools, live);
+        } catch {
+          // Live mark price is presentation-only. A temporary market display
+          // outage must never hide otherwise valid Arc round state.
+        }
+
         if (cancelled) return;
-        setPools(applyBinanceLiveMarket(state.pools, live));
+        setPools(nextPools);
         setBlockNumber(state.chain.blockNumber);
         setError("");
       } catch (err: unknown) {

@@ -87,6 +87,7 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
   const { pool, round, chain } = result;
   const settled = round.contractStatus === "SETTLED";
   const cancelled = round.contractStatus === "CANCELLED";
+  const settledEvidenceMissing = settled && !round.marketResult;
   const asset = assetConfigs[pool.asset];
   const title = settled ? t.result.complete : cancelled ? t.result.cancelled : t.result.pending;
 
@@ -113,7 +114,15 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
                 <small>{directionLabel(pool.direction, locale)} · Binance</small>
               </div>
             ) : (
-              <p className="ex-result__state" data-cancelled={cancelled}>{cancelled ? t.result.cancelledBody : t.result.pendingBody}</p>
+              <p className="ex-result__state" data-cancelled={cancelled}>
+                {cancelled
+                  ? t.result.cancelledBody
+                  : settledEvidenceMissing
+                    ? (locale === "tr"
+                        ? "Tur zincir üzerinde sonuçlandı, ancak kanonik piyasa kanıtı şu anda kullanılamıyor."
+                        : "The round settled onchain, but canonical market evidence is currently unavailable.")
+                    : t.result.pendingBody}
+              </p>
             )}
           </div>
 
@@ -173,7 +182,7 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
 
         <div className="ex-result__actions">
           <a className="ex-btn ex-btn--ghost" href={`${chain.explorerUrl}/address/${pool.poolAddress}`} target="_blank" rel="noreferrer">{t.result.viewPoolOnArc}</a>
-          {(settled || cancelled) && round.marketResult && <Link className="ex-btn ex-btn--ink" href={`/verify/${pool.slug}/${round.roundId}`}>{t.result.verifySettlement}</Link>}
+          {(settled || cancelled) && round.marketPeriodStartAt && round.marketPeriodEndAt && <Link className="ex-btn ex-btn--ink" href={`/verify/${pool.slug}/${round.roundId}`}>{t.result.verifySettlement}</Link>}
           {cancelled ? <Link className="ex-btn ex-btn--ghost" href="/tickets">{t.result.refunds}</Link> : <Link className="ex-btn ex-btn--ghost" href="/tickets">{t.result.viewTickets}</Link>}
         </div>
       </div>

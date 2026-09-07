@@ -23,6 +23,12 @@ type ServerResult = {
     entryCloseAt: string;
     observationStartAt: string;
     observationEndAt: string;
+    marketPeriodStartAt: string | null;
+    marketPeriodEndAt: string | null;
+    marketResultCents: string | null;
+    marketResult: string | null;
+    marketResultExact: string | null;
+    marketEvidenceSha256: string | null;
     entryCount: number;
     totalStakeRaw: string;
     totalStakeUsdc: string;
