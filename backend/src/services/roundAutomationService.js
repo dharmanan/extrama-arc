@@ -8,6 +8,7 @@ const arcService = require('./arcService');
 const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
+const marketArchiveCore = require('./marketArchiveCore');
 const {
   currentDailySchedule,
   currentWeeklySchedule,
@@ -33,6 +34,7 @@ const READ_MAX_ATTEMPTS = 5;
 const READ_BASE_DELAY_MS = 200;
 
 const AUTOMATION_LOCK_ID = '504200220260906';
+const MARKET_ARCHIVE_LOCK_ID = '504200220260907';
 
 const POOL_ABI = [
   'function owner() view returns (address)',
@@ -85,6 +87,32 @@ async function withAutomationLock(work) {
       return await work();
     } finally {
       await client.query('SELECT pg_advisory_unlock($1::bigint)', [AUTOMATION_LOCK_ID]);
+    }
+  } finally {
+    client.release();
+  }
+}
+
+
+async function withMarketArchiveLock(work) {
+  const client = await db.getClient();
+  try {
+    const result = await client.query(
+      'SELECT pg_try_advisory_lock($1::bigint) AS locked',
+      [MARKET_ARCHIVE_LOCK_ID],
+    );
+
+    if (!result.rows[0]?.locked) {
+      return { skipped: true, reason: 'market_archive_lock_busy' };
+    }
+
+    try {
+      return await work();
+    } finally {
+      await client.query(
+        'SELECT pg_advisory_unlock($1::bigint)',
+        [MARKET_ARCHIVE_LOCK_ID],
+      );
     }
   } finally {
     client.release();
@@ -1129,41 +1157,175 @@ async function ensureCurrentDailyRounds() {
   return runPromise;
 }
 
-let marketArchiveTimer = null;
+let marketArchiveDailyTimer = null;
+const marketArchiveRetryTimers = new Map();
 
-function msUntilNextUtc0001(now = new Date()) {
-  const next = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-    0, 1, 0, 0,
-  ));
-  if (next.getTime() <= now.getTime()) {
-    next.setUTCDate(next.getUTCDate() + 1);
-  }
-  return next.getTime() - now.getTime();
+function scheduleTimeoutAt(when, work, { unref = true } = {}) {
+  const delayMs = Math.max(0, when.getTime() - Date.now());
+  const scheduled = setTimeout(work, delayMs);
+  if (unref) scheduled.unref?.();
+  return scheduled;
 }
 
-async function runDailyMarketArchiveJob() {
-  return withAutomationLock(async () => {
-    const result = await marketOutcomeService.ingestPreviousUtcDay(new Date());
-    console.log('[market-archive] daily batch complete', JSON.stringify(result));
+async function runDailyMarketArchiveJob({
+  marketDate = null,
+  trigger = 'manual',
+} = {}) {
+  return withMarketArchiveLock(async () => {
+    const result = marketDate
+      ? await marketOutcomeService.ingestUtcDayByDate(marketDate)
+      : await marketOutcomeService.ingestPreviousUtcDay(new Date());
+
+    console.log(
+      '[market-archive] batch complete',
+      JSON.stringify({
+        trigger,
+        marketDate: result.marketDate,
+        complete: result.complete,
+        daily: result.daily,
+        failures: result.failures,
+        weekly: result.weekly,
+        quarterly: result.quarterly,
+        derivedFailures: result.derivedFailures,
+      }),
+    );
+
     return result;
   });
 }
 
-function scheduleNextDailyMarketArchive() {
-  if (marketArchiveTimer) clearTimeout(marketArchiveTimer);
-  marketArchiveTimer = setTimeout(async () => {
+function clearMarketArchiveRetry(marketDate) {
+  const timerForDay = marketArchiveRetryTimers.get(marketDate);
+  if (timerForDay) clearTimeout(timerForDay);
+  marketArchiveRetryTimers.delete(marketDate);
+}
+
+function scheduleMarketArchiveRetry({ marketDate, marketPeriodEndAt }) {
+  if (marketArchiveRetryTimers.has(marketDate)) return;
+
+  const delayMs = marketArchiveCore.retryDelayMs({
+    marketPeriodEndAt,
+    now: new Date(),
+  });
+
+  const timerForDay = setTimeout(async () => {
+    marketArchiveRetryTimers.delete(marketDate);
+
     try {
-      await runDailyMarketArchiveJob();
+      const result = await runDailyMarketArchiveJob({
+        marketDate,
+        trigger: 'retry',
+      });
+
+      if (result?.skipped) {
+        console.warn(
+          '[market-archive] retry skipped',
+          JSON.stringify({ marketDate, reason: result.reason }),
+        );
+        scheduleMarketArchiveRetry({ marketDate, marketPeriodEndAt });
+        return;
+      }
+
+      if (!result.complete) {
+        console.warn(
+          '[market-archive] retry still incomplete',
+          JSON.stringify({
+            marketDate,
+            failures: result.failures,
+            derivedFailures: result.derivedFailures,
+          }),
+        );
+        scheduleMarketArchiveRetry({ marketDate, marketPeriodEndAt });
+        return;
+      }
+
+      clearMarketArchiveRetry(marketDate);
+      console.log(
+        '[market-archive] day complete',
+        JSON.stringify({ marketDate }),
+      );
     } catch (error) {
-      console.error('[market-archive] daily batch failed', error.message);
+      console.error(
+        '[market-archive] retry failed',
+        JSON.stringify({ marketDate, reason: error.message }),
+      );
+      scheduleMarketArchiveRetry({ marketDate, marketPeriodEndAt });
+    }
+  }, delayMs);
+
+  timerForDay.unref?.();
+  marketArchiveRetryTimers.set(marketDate, timerForDay);
+
+  console.log(
+    '[market-archive] retry scheduled',
+    JSON.stringify({
+      marketDate,
+      delaySeconds: Math.round(delayMs / 1000),
+    }),
+  );
+}
+
+async function handleMarketArchiveDay(marketDate, trigger) {
+  const window = marketArchiveCore.marketDateToWindow(marketDate);
+
+  try {
+    const result = await runDailyMarketArchiveJob({ marketDate, trigger });
+
+    if (result?.skipped) {
+      scheduleMarketArchiveRetry({
+        marketDate,
+        marketPeriodEndAt: window.marketPeriodEndAt,
+      });
+      return result;
+    }
+
+    if (!result.complete) {
+      scheduleMarketArchiveRetry({
+        marketDate,
+        marketPeriodEndAt: result.marketPeriodEndAt,
+      });
+      return result;
+    }
+
+    clearMarketArchiveRetry(marketDate);
+    return result;
+  } catch (error) {
+    console.error(
+      '[market-archive] day attempt failed',
+      JSON.stringify({ marketDate, trigger, reason: error.message }),
+    );
+    scheduleMarketArchiveRetry({
+      marketDate,
+      marketPeriodEndAt: window.marketPeriodEndAt,
+    });
+    return {
+      marketDate,
+      complete: false,
+      failures: [{ asset: null, reason: error.message }],
+      derivedFailures: [],
+    };
+  }
+}
+
+function scheduleNextDailyMarketArchive() {
+  if (marketArchiveDailyTimer) clearTimeout(marketArchiveDailyTimer);
+
+  const next = marketArchiveCore.nextUtc0001(new Date());
+
+  marketArchiveDailyTimer = scheduleTimeoutAt(next, async () => {
+    const window = marketArchiveCore.previousUtcDayWindow(next);
+
+    try {
+      await handleMarketArchiveDay(window.marketDate, 'daily-00:01');
     } finally {
       scheduleNextDailyMarketArchive();
     }
-  }, msUntilNextUtc0001());
-  marketArchiveTimer.unref?.();
+  });
+
+  console.log(
+    '[market-archive] next daily run scheduled',
+    JSON.stringify({ at: next.toISOString() }),
+  );
 }
 
 function startDailyMarketArchiveScheduler() {
@@ -1175,16 +1337,46 @@ function startDailyMarketArchiveScheduler() {
     0, 1, 0, 0,
   );
 
-  // One catch-up check on boot. Existing DB rows short-circuit before any
-  // external Binance request, so redeploys do not re-fetch an archived day.
+  // A restart after 00:01 performs one idempotent catch-up for yesterday.
+  // Already persisted asset/day outcomes short-circuit before any Binance
+  // request, so normal redeploys do not re-fetch completed assets.
   if (now.getTime() >= today0001) {
-    runDailyMarketArchiveJob().catch((error) => {
-      console.error('[market-archive] boot catch-up failed', error.message);
+    const window = marketArchiveCore.previousUtcDayWindow(now);
+    handleMarketArchiveDay(window.marketDate, 'boot-catch-up').catch((error) => {
+      console.error(
+        '[market-archive] boot catch-up failed',
+        JSON.stringify({ marketDate: window.marketDate, reason: error.message }),
+      );
     });
   }
 
   scheduleNextDailyMarketArchive();
   console.log('[market-archive] daily 00:01 UTC scheduler active');
+}
+
+function scheduleOneShotMarketArchiveTest({
+  marketDate,
+  delayMs,
+}) {
+  marketArchiveCore.marketDateToWindow(marketDate);
+
+  if (!Number.isInteger(delayMs) || delayMs < 0) {
+    throw new Error('market_archive_test_delay_invalid');
+  }
+
+  return new Promise((resolve, reject) => {
+    const when = new Date(Date.now() + delayMs);
+    scheduleTimeoutAt(
+      when,
+      () => {
+        runDailyMarketArchiveJob({
+          marketDate,
+          trigger: 'scheduled-smoke',
+        }).then(resolve, reject);
+      },
+      { unref: false },
+    );
+  });
 }
 
 let lastResolverSignature = '';
@@ -1316,10 +1508,14 @@ function stopRoundAutomation() {
     clearInterval(timer);
     timer = null;
   }
-  if (marketArchiveTimer) {
-    clearTimeout(marketArchiveTimer);
-    marketArchiveTimer = null;
+  if (marketArchiveDailyTimer) {
+    clearTimeout(marketArchiveDailyTimer);
+    marketArchiveDailyTimer = null;
   }
+  for (const timerForDay of marketArchiveRetryTimers.values()) {
+    clearTimeout(timerForDay);
+  }
+  marketArchiveRetryTimers.clear();
 }
 
 module.exports = {
@@ -1332,6 +1528,7 @@ module.exports = {
   previewLifecycle,
   runLifecycle,
   runDailyMarketArchiveJob,
+  scheduleOneShotMarketArchiveTest,
   startRoundAutomation,
   stopRoundAutomation,
 };

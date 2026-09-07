@@ -509,6 +509,106 @@ async function fetchMarkPriceWindow({
   );
 }
 
+
+async function fetchDailyMarkPriceCandle({
+  symbol,
+  marketPeriodStartAt,
+  marketPeriodEndAt,
+  fetchImpl = globalThis.fetch,
+}) {
+  if (!ALLOWED_SYMBOLS.has(symbol)) {
+    throw new Error('resolver_symbol_not_supported');
+  }
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('resolver_fetch_unavailable');
+  }
+
+  const startTimeMs = parseUtcIso(marketPeriodStartAt, 'market_period_start');
+  const endTimeExclusiveMs = parseUtcIso(marketPeriodEndAt, 'market_period_end');
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  if (
+    startTimeMs % dayMs !== 0 ||
+    endTimeExclusiveMs - startTimeMs !== dayMs
+  ) {
+    throw new Error('daily_mark_price_window_invalid');
+  }
+
+  const query = new URLSearchParams({
+    symbol,
+    interval: '1d',
+    startTime: String(startTimeMs),
+    endTime: String(endTimeExclusiveMs - 1),
+    limit: '1',
+  });
+
+  const failures = [];
+
+  for (const baseUrl of LIVE_MARK_BASE_URLS) {
+    const requestUrl =
+      `${baseUrl}${MARK_PRICE_KLINES_PATH}?${query.toString()}`;
+
+    try {
+      const response = await fetchImpl(requestUrl, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          'user-agent': 'EXTREMA-Daily-Archive/0.3',
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        failures.push(
+          `${baseUrl}:http_${response.status}:${body.slice(0, 160)}`,
+        );
+        continue;
+      }
+
+      const candles = await response.json();
+      if (!Array.isArray(candles) || candles.length !== 1) {
+        failures.push(
+          `${baseUrl}:daily_candle_count_mismatch:received_${Array.isArray(candles) ? candles.length : 'invalid'}`,
+        );
+        continue;
+      }
+
+      try {
+        validateRawCandle(candles[0], startTimeMs, dayMs);
+      } catch (error) {
+        failures.push(
+          `${baseUrl}:${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+
+      return {
+        source: 'Binance USDⓈ-M Futures Mark Price Klines',
+        endpoint: `${baseUrl}${MARK_PRICE_KLINES_PATH}`,
+        requestUrl,
+        symbol,
+        cadence: 'DAILY',
+        interval: '1d',
+        observationStartAt: marketPeriodStartAt,
+        observationEndAt: marketPeriodEndAt,
+        startTimeMs,
+        endTimeExclusiveMs,
+        expectedCandleCount: 1,
+        candles,
+        sourceDataSha256: sha256Hex(JSON.stringify(candles)),
+      };
+    } catch (error) {
+      failures.push(
+        `${baseUrl}:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  throw new Error(
+    `daily_mark_price_source_unavailable:${failures.join('|').slice(0, 1800)}`,
+  );
+}
+
 function calculateExtrema(windowData) {
   const { candles } = windowData;
   if (!Array.isArray(candles) || candles.length === 0) {
@@ -601,6 +701,7 @@ module.exports = {
   getLiveMarkPrices,
   CADENCE_INTERVALS,
   fetchMarkPriceWindow,
+  fetchDailyMarkPriceCandle,
   calculateExtrema,
   resolveExtremaWindow,
   decimalToCentsHalfUp,

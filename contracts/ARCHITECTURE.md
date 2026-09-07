@@ -363,9 +363,13 @@ Canonical ingestion:
 - The live UI mark price is a separate display path and is not the archive job.
 - At 00:01 UTC, one daily archive job processes the UTC day that just ended.
 - For each asset, the job makes one Binance `markPriceKlines` request with
-  `interval=1m` and `limit=1440`.
-- The 1440 returned candles are stored immutably in `daily_market_archives`.
-- DAILY HIGH/LOW is computed from that stored 1m archive.
+  `interval=1d` and `limit=1`.
+- The single closed Mark Price daily candle is stored immutably in
+  `daily_market_archives`; its HIGH and LOW are the official DAILY extrema.
+- A successful asset/day is idempotent and is never re-fetched on retry.
+- If any asset is unavailable, only missing asset/day records remain eligible:
+  retry is every minute through the first 10 minutes after UTC midnight, then
+  every 5 minutes until the day is complete. No fallback source can settle.
 - WEEKLY HIGH/LOW is derived only from the seven stored DAILY outcomes.
 - QUARTERLY HIGH/LOW is derived only from the stored DAILY outcomes in the
   completed calendar quarter.
@@ -380,10 +384,12 @@ Market periods use a half-open convention:
 Because Binance `endTime` is inclusive, the DAILY archive request ends at the
 final millisecond before `marketPeriodEndAt`.
 
-Every DAILY archive must contain exactly 1440 contiguous one-minute candles.
-Missing, duplicated, misaligned, or unexpected candles are a hard failure.
-No market outcome may be published and no 3+ entry round may be settled from
-incomplete source history.
+Every new DAILY archive must contain exactly one closed Binance 1d Mark Price
+candle whose UTC open/close timestamps match the requested day exactly.
+Existing previously validated 1m/1440 archives remain readable historical
+evidence. Missing, duplicated, misaligned, or unexpected source data is a hard
+failure. No market outcome may be published and no 3+ entry round may be
+settled from incomplete source history.
 
 Binance Mark Price Kline fields used by EXTREMA:
 

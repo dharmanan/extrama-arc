@@ -135,15 +135,15 @@ CREATE INDEX IF NOT EXISTS market_outcomes_period_idx
   ON market_outcomes (market_period_end_at DESC, cadence, asset);
 
 
--- One immutable Binance 1m archive per asset and completed UTC day.
--- The external Binance historical endpoint is called only to create a missing
--- DAILY archive. WEEKLY and QUARTERLY outcomes are derived from these rows.
+-- One immutable Binance daily Mark Price candle archive per asset and completed
+-- UTC day. New rows use one 1d candle. Existing validated 1m/1440 rows remain
+-- readable historical evidence. WEEKLY and QUARTERLY are DB-only derivations.
 CREATE TABLE IF NOT EXISTS daily_market_archives (
   asset VARCHAR(8) NOT NULL,
   symbol VARCHAR(16) NOT NULL,
   market_period_start_at TIMESTAMPTZ NOT NULL,
   market_period_end_at TIMESTAMPTZ NOT NULL,
-  interval VARCHAR(8) NOT NULL DEFAULT '1m',
+  interval VARCHAR(8) NOT NULL DEFAULT '1d',
   candle_count INTEGER NOT NULL,
   candles_json TEXT NOT NULL,
   source VARCHAR(128) NOT NULL,
@@ -155,3 +155,9 @@ CREATE TABLE IF NOT EXISTS daily_market_archives (
 
 CREATE INDEX IF NOT EXISTS daily_market_archives_period_idx
   ON daily_market_archives (market_period_end_at DESC, asset);
+
+
+-- CREATE TABLE IF NOT EXISTS does not update defaults on an existing Railway
+-- table, so make the new daily archive default explicit without rewriting rows.
+ALTER TABLE daily_market_archives
+  ALTER COLUMN interval SET DEFAULT '1d';

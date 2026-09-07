@@ -3,11 +3,15 @@
 const crypto = require('crypto');
 const db = require('../db');
 const {
-  fetchMarkPriceWindow,
+  fetchDailyMarkPriceCandle,
   calculateExtrema,
 } = require('./binanceResolverService');
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+const {
+  DAY_MS,
+  marketDateToWindow,
+  previousUtcDayWindow,
+  aggregateDailyOutcomes,
+} = require('./marketArchiveCore');
 
 const SYMBOLS = Object.freeze({
   BTC: 'BTCUSDT',
@@ -29,24 +33,6 @@ function toIso(value) {
   }
   if (value instanceof Date) return value.toISOString();
   throw new Error('market_period_timestamp_invalid');
-}
-
-function decimalToScaledInteger(value, scaleDigits = 18) {
-  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(value)) {
-    throw new Error('market_outcome_decimal_invalid');
-  }
-  const [whole, fraction = ''] = value.split('.');
-  if (fraction.length > scaleDigits) throw new Error('market_outcome_precision_too_large');
-  return (
-    BigInt(whole) * 10n ** BigInt(scaleDigits) +
-    BigInt(fraction.padEnd(scaleDigits, '0') || '0')
-  );
-}
-
-function compareDecimalStrings(a, b) {
-  const left = decimalToScaledInteger(a);
-  const right = decimalToScaledInteger(b);
-  return left === right ? 0 : left > right ? 1 : -1;
 }
 
 function rowToRecord(row) {
@@ -88,8 +74,18 @@ function archiveRowToRecord(row) {
   }
 
   const candles = JSON.parse(candlesJson);
-  if (!Array.isArray(candles) || candles.length !== Number(row.candle_count)) {
+  const candleCount = Number(row.candle_count);
+
+  if (!Array.isArray(candles) || candles.length !== candleCount) {
     throw new Error('daily_market_archive_candle_count_mismatch');
+  }
+
+  if (
+    (row.interval === '1d' && candleCount !== 1) ||
+    (row.interval === '1m' && candleCount !== 1440) ||
+    !['1d', '1m'].includes(row.interval)
+  ) {
+    throw new Error('daily_market_archive_interval_invalid');
   }
 
   return {
@@ -98,7 +94,7 @@ function archiveRowToRecord(row) {
     interval: row.interval,
     marketPeriodStartAt: row.market_period_start_at.toISOString(),
     marketPeriodEndAt: row.market_period_end_at.toISOString(),
-    candleCount: Number(row.candle_count),
+    candleCount,
     candles,
     candlesJson,
     source: row.source,
@@ -158,8 +154,8 @@ async function persistDailyMarketArchive({
   if (sourceDataSha256 !== windowData.sourceDataSha256) {
     throw new Error('daily_market_archive_source_hash_mismatch');
   }
-  if (windowData.candles.length !== 1440) {
-    throw new Error(`daily_market_archive_expected_1440_received_${windowData.candles.length}`);
+  if (windowData.interval !== '1d' || windowData.candles.length !== 1) {
+    throw new Error('daily_market_archive_expected_single_1d_candle');
   }
 
   const insert = await db.query(
@@ -177,7 +173,7 @@ async function persistDailyMarketArchive({
       symbol,
       toIso(marketPeriodStartAt),
       toIso(marketPeriodEndAt),
-      '1m',
+      windowData.interval,
       windowData.candles.length,
       candlesJson,
       windowData.source,
@@ -194,6 +190,14 @@ async function persistDailyMarketArchive({
     marketPeriodEndAt,
   });
   if (!existing) throw new Error('daily_market_archive_persist_failed');
+
+  if (
+    existing.interval !== windowData.interval ||
+    existing.sourceDataSha256 !== sourceDataSha256
+  ) {
+    throw new Error('daily_market_archive_conflict');
+  }
+
   return existing;
 }
 
@@ -261,6 +265,14 @@ async function persistMarketOutcome({
 
   if (!record) throw new Error('market_outcome_persist_failed');
   assertIntegrity(record);
+
+  if (
+    record.evidenceSha256 !== evidenceSha256 ||
+    record.sourceDataSha256 !== sourceDataSha256
+  ) {
+    throw new Error('market_outcome_conflict');
+  }
+
   return { record, created: insert.rows.length > 0 };
 }
 
@@ -269,6 +281,7 @@ function buildEvidence({
   endpoint,
   symbol,
   cadence,
+  interval,
   marketPeriodStartAt,
   marketPeriodEndAt,
   candleCount,
@@ -282,7 +295,7 @@ function buildEvidence({
     endpoint,
     symbol,
     cadence,
-    interval: '1m',
+    interval,
     marketPeriod: {
       startInclusive: toIso(marketPeriodStartAt),
       endExclusive: toIso(marketPeriodEndAt),
@@ -305,6 +318,7 @@ async function ensureDailyMarketOutcome({
   asset,
   marketPeriodStartAt,
   marketPeriodEndAt,
+  fetchImpl = globalThis.fetch,
 }) {
   const symbol = SYMBOLS[asset];
   if (!symbol) throw new Error('market_outcome_asset_unsupported');
@@ -331,12 +345,13 @@ async function ensureDailyMarketOutcome({
   let fetched = false;
 
   if (!archive) {
-    const windowData = await fetchMarkPriceWindow({
+    const windowData = await fetchDailyMarkPriceCandle({
       symbol,
-      cadence: 'DAILY',
-      observationStartAt: startIso,
-      observationEndAt: endIso,
+      marketPeriodStartAt: startIso,
+      marketPeriodEndAt: endIso,
+      fetchImpl,
     });
+
     archive = await persistDailyMarketArchive({
       asset,
       symbol,
@@ -353,6 +368,7 @@ async function ensureDailyMarketOutcome({
     endpoint: archive.endpoint,
     symbol,
     cadence: 'DAILY',
+    interval: archive.interval,
     marketPeriodStartAt: startIso,
     marketPeriodEndAt: endIso,
     candleCount: archive.candleCount,
@@ -365,7 +381,7 @@ async function ensureDailyMarketOutcome({
     asset,
     cadence: 'DAILY',
     symbol,
-    interval: '1m',
+    interval: archive.interval,
     marketPeriodStartAt: startIso,
     marketPeriodEndAt: endIso,
     high: extrema.high,
@@ -405,18 +421,6 @@ async function deriveMarketOutcomeFromDaily({
   });
   if (existing) return { record: existing, created: false };
 
-  const durationMs = Date.parse(endIso) - Date.parse(startIso);
-  const expectedDays = durationMs / DAY_MS;
-  if (!Number.isInteger(expectedDays) || expectedDays <= 0) {
-    throw new Error('derived_market_period_invalid');
-  }
-  if (cadence === 'WEEKLY' && expectedDays !== 7) {
-    throw new Error('weekly_market_period_must_be_7_days');
-  }
-  if (cadence === 'QUARTERLY' && (expectedDays < 89 || expectedDays > 92)) {
-    throw new Error('quarterly_market_period_invalid_day_count');
-  }
-
   const rows = await db.query(
     `SELECT * FROM market_outcomes
       WHERE asset = $1
@@ -433,43 +437,15 @@ async function deriveMarketOutcomeFromDaily({
     return record;
   });
 
-  if (daily.length !== expectedDays) {
-    throw new Error(
-      `derived_market_outcome_daily_archive_incomplete:expected_${expectedDays}:received_${daily.length}`,
-    );
-  }
+  const aggregate = aggregateDailyOutcomes({
+    records: daily,
+    cadence,
+    marketPeriodStartAt: startIso,
+    marketPeriodEndAt: endIso,
+  });
 
-  for (let index = 0; index < daily.length; index += 1) {
-    const expectedStart = new Date(Date.parse(startIso) + index * DAY_MS).toISOString();
-    const expectedEnd = new Date(Date.parse(startIso) + (index + 1) * DAY_MS).toISOString();
-    if (
-      daily[index].marketPeriodStartAt !== expectedStart ||
-      daily[index].marketPeriodEndAt !== expectedEnd
-    ) {
-      throw new Error('derived_market_outcome_daily_archive_gap');
-    }
-  }
-
-  let high = daily[0].high;
-  let low = daily[0].low;
-  for (let index = 1; index < daily.length; index += 1) {
-    if (compareDecimalStrings(daily[index].high.exact, high.exact) > 0) {
-      high = daily[index].high;
-    }
-    if (compareDecimalStrings(daily[index].low.exact, low.exact) < 0) {
-      low = daily[index].low;
-    }
-  }
-
-  const dailyEvidenceHashes = daily.map((record) => ({
-    marketPeriodStartAt: record.marketPeriodStartAt,
-    marketPeriodEndAt: record.marketPeriodEndAt,
-    evidenceSha256: record.evidenceSha256,
-    sourceDataSha256: record.sourceDataSha256,
-  }));
-  const sourceDataSha256 = sha256Hex(JSON.stringify(dailyEvidenceHashes));
-  const candleCount = daily.reduce((sum, record) => sum + record.candleCount, 0);
-  const source = 'EXTREMA derived from archived Binance daily mark-price data';
+  const sourceDataSha256 = sha256Hex(JSON.stringify(aggregate.dailyEvidenceHashes));
+  const source = 'EXTREMA derived from archived Binance daily mark-price candles';
   const endpoint = 'internal:daily-market-archive';
 
   const { canonicalEvidenceJson, evidenceSha256 } = buildEvidence({
@@ -477,25 +453,26 @@ async function deriveMarketOutcomeFromDaily({
     endpoint,
     symbol,
     cadence,
+    interval: '1d',
     marketPeriodStartAt: startIso,
     marketPeriodEndAt: endIso,
-    candleCount,
+    candleCount: aggregate.candleCount,
     sourceDataSha256,
-    high,
-    low,
-    dailyEvidenceHashes,
+    high: aggregate.high,
+    low: aggregate.low,
+    dailyEvidenceHashes: aggregate.dailyEvidenceHashes,
   });
 
   return persistMarketOutcome({
     asset,
     cadence,
     symbol,
-    interval: '1m',
+    interval: '1d',
     marketPeriodStartAt: startIso,
     marketPeriodEndAt: endIso,
-    high,
-    low,
-    candleCount,
+    high: aggregate.high,
+    low: aggregate.low,
+    candleCount: aggregate.candleCount,
     source,
     endpoint,
     sourceDataSha256,
@@ -509,14 +486,17 @@ async function ensureMarketOutcome({
   cadence,
   marketPeriodStartAt,
   marketPeriodEndAt,
+  fetchImpl = globalThis.fetch,
 }) {
   if (cadence === 'DAILY') {
     return ensureDailyMarketOutcome({
       asset,
       marketPeriodStartAt,
       marketPeriodEndAt,
+      fetchImpl,
     });
   }
+
   return deriveMarketOutcomeFromDaily({
     asset,
     cadence,
@@ -525,86 +505,127 @@ async function ensureMarketOutcome({
   });
 }
 
-async function ingestPreviousUtcDay(now = new Date()) {
-  const current = now instanceof Date ? now : new Date(now);
-  const dayEndMs = Date.UTC(
-    current.getUTCFullYear(),
-    current.getUTCMonth(),
-    current.getUTCDate(),
-    0, 0, 0, 0,
-  );
-  const dayStartMs = dayEndMs - DAY_MS;
-  const marketPeriodStartAt = new Date(dayStartMs).toISOString();
-  const marketPeriodEndAt = new Date(dayEndMs).toISOString();
+async function ingestUtcDayByDate(marketDate, { fetchImpl = globalThis.fetch } = {}) {
+  const {
+    marketPeriodStartAt,
+    marketPeriodEndAt,
+  } = marketDateToWindow(marketDate);
 
   const daily = [];
+  const failures = [];
+
   for (const asset of Object.keys(SYMBOLS)) {
-    const result = await ensureDailyMarketOutcome({
-      asset,
-      marketPeriodStartAt,
-      marketPeriodEndAt,
-    });
-    daily.push({
-      asset,
-      fetched: result.fetched,
-      created: result.created,
-      evidenceSha256: result.record.evidenceSha256,
-    });
-  }
-
-  const derived = { weekly: [], quarterly: [] };
-  const dayEnd = new Date(dayEndMs);
-
-  if (dayEnd.getUTCDay() === 1) {
-    const weeklyStart = new Date(dayEndMs - 7 * DAY_MS).toISOString();
-    for (const asset of Object.keys(SYMBOLS)) {
-      const result = await deriveMarketOutcomeFromDaily({
+    try {
+      const result = await ensureDailyMarketOutcome({
         asset,
-        cadence: 'WEEKLY',
-        marketPeriodStartAt: weeklyStart,
+        marketPeriodStartAt,
         marketPeriodEndAt,
+        fetchImpl,
       });
-      derived.weekly.push({
+
+      daily.push({
         asset,
+        fetched: result.fetched,
         created: result.created,
+        interval: result.record.interval,
+        candleCount: result.record.candleCount,
+        high: result.record.high.exact,
+        low: result.record.low.exact,
         evidenceSha256: result.record.evidenceSha256,
+      });
+    } catch (error) {
+      failures.push({
+        asset,
+        reason: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
+  const weekly = [];
+  const quarterly = [];
+  const derivedFailures = [];
+  const dayEnd = new Date(marketPeriodEndAt);
+
+  if (failures.length === 0 && dayEnd.getUTCDay() === 1) {
+    const weeklyStart = new Date(dayEnd.getTime() - 7 * DAY_MS).toISOString();
+
+    for (const asset of Object.keys(SYMBOLS)) {
+      try {
+        const result = await deriveMarketOutcomeFromDaily({
+          asset,
+          cadence: 'WEEKLY',
+          marketPeriodStartAt: weeklyStart,
+          marketPeriodEndAt,
+        });
+        weekly.push({
+          asset,
+          created: result.created,
+          evidenceSha256: result.record.evidenceSha256,
+        });
+      } catch (error) {
+        derivedFailures.push({
+          asset,
+          cadence: 'WEEKLY',
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   if (
+    failures.length === 0 &&
     dayEnd.getUTCDate() === 1 &&
     [0, 3, 6, 9].includes(dayEnd.getUTCMonth())
   ) {
     const quarterStart = new Date(
       Date.UTC(dayEnd.getUTCFullYear(), dayEnd.getUTCMonth() - 3, 1, 0, 0, 0, 0),
     ).toISOString();
+
     for (const asset of Object.keys(SYMBOLS)) {
-      const result = await deriveMarketOutcomeFromDaily({
-        asset,
-        cadence: 'QUARTERLY',
-        marketPeriodStartAt: quarterStart,
-        marketPeriodEndAt,
-      });
-      derived.quarterly.push({
-        asset,
-        created: result.created,
-        evidenceSha256: result.record.evidenceSha256,
-      });
+      try {
+        const result = await deriveMarketOutcomeFromDaily({
+          asset,
+          cadence: 'QUARTERLY',
+          marketPeriodStartAt: quarterStart,
+          marketPeriodEndAt,
+        });
+        quarterly.push({
+          asset,
+          created: result.created,
+          evidenceSha256: result.record.evidenceSha256,
+        });
+      } catch (error) {
+        derivedFailures.push({
+          asset,
+          cadence: 'QUARTERLY',
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
   return {
+    marketDate,
     marketPeriodStartAt,
     marketPeriodEndAt,
     daily,
-    ...derived,
+    failures,
+    weekly,
+    quarterly,
+    derivedFailures,
+    complete: failures.length === 0 && derivedFailures.length === 0,
   };
+}
+
+async function ingestPreviousUtcDay(now = new Date(), options = {}) {
+  const window = previousUtcDayWindow(now);
+  return ingestUtcDayByDate(window.marketDate, options);
 }
 
 async function listMarketOutcomes({ since, cadence = null } = {}) {
   const params = [];
   const where = [];
+
   if (since) {
     params.push(since);
     where.push(`market_period_end_at >= $${params.length}`);
@@ -613,12 +634,14 @@ async function listMarketOutcomes({ since, cadence = null } = {}) {
     params.push(cadence);
     where.push(`cadence = $${params.length}`);
   }
+
   const result = await db.query(
     `SELECT * FROM market_outcomes
      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
      ORDER BY market_period_end_at DESC, cadence, asset`,
     params,
   );
+
   return result.rows.map((row) => {
     const record = rowToRecord(row);
     assertIntegrity(record);
@@ -632,8 +655,10 @@ async function verifyMarketOutcomeStorage() {
        to_regclass('public.market_outcomes') AS outcomes,
        to_regclass('public.daily_market_archives') AS archives`,
   );
+
   if (!result.rows[0]?.outcomes) throw new Error('market_outcomes_table_missing');
   if (!result.rows[0]?.archives) throw new Error('daily_market_archives_table_missing');
+
   return { marketOutcomes: true, dailyMarketArchives: true };
 }
 
@@ -642,6 +667,7 @@ module.exports = {
   ensureDailyMarketOutcome,
   deriveMarketOutcomeFromDaily,
   ensureMarketOutcome,
+  ingestUtcDayByDate,
   ingestPreviousUtcDay,
   getDailyMarketArchive,
   getMarketOutcome,
