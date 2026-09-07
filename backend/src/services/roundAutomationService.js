@@ -9,6 +9,7 @@ const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
 const marketArchiveCore = require('./marketArchiveCore');
+const { sendOnceWithReconciliation } = require('./transactionReconciliation');
 const {
   currentDailySchedule,
   currentWeeklySchedule,
