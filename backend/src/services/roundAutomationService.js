@@ -1101,7 +1101,9 @@ async function runLifecycleInternal() {
 
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
-  const marketOutcomes = await ensureCompletedMarketOutcomes(now);
+  const marketOutcomes = config.EXTREMA_ENABLE_MARKET_OUTCOMES
+    ? await ensureCompletedMarketOutcomes(now)
+    : { executed: [], failures: [], skipped: true, reason: 'market_outcomes_disabled' };
   const { dueLock, dueCancel, dueSettle, readFailures } = await scanLifecycle(provider, now);
 
   const lock = await lockDueRoundsInternal(provider, now, dueLock);

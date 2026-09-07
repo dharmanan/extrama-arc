@@ -19,6 +19,10 @@ const schema = z.object({
   // Safety gate: disabled by default. Creation is enabled only after canonical
   // V2 timing has passed validation and the deployment explicitly opts in.
   EXTREMA_ENABLE_ROUND_CREATION: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  // Safety gate for the new canonical historical HIGH/LOW publisher.
+  // Keep disabled until the production Binance historical transport is proven.
+  // Live Binance display pricing is a separate path and remains enabled.
+  EXTREMA_ENABLE_MARKET_OUTCOMES: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   // AES-256-GCM envelope (v1.iv.ct.tag) of the resolver private key, produced
   // with the same ENCRYPTION_KEY used for wallet material. Optional: when it is
   // absent, resolver signing stays disabled and the rest of the lifecycle runs
