@@ -1430,11 +1430,15 @@ img{max-width:100%}
    homepage previews: numbered steps, the payout split, plain hairline rules.
    ========================================================================== */
 
+/* No max-width on the block itself: a ch value here is computed off the
+   block's own (body-scale) font size, not the giant heading inside it, so
+   it was capping the title far narrower than intended and forcing an
+   unnecessary wrap at desktop widths. The lede below carries its own
+   reading-width cap, so it stays a sane column regardless. */
 .ex-howitworks__head{
   display:grid;
   gap:clamp(14px,1.7vw,20px);
   align-content:start;
-  max-width:64ch;
   padding-block:clamp(42px,5.4vw,76px) clamp(30px,3.6vw,48px);
 }
 
