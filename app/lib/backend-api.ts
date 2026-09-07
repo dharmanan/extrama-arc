@@ -8,10 +8,14 @@ export type LiveRoundState = {
   roundId: number;
   contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
   canEnter: boolean;
+  scheduleVersion: "V1" | "V2";
   entryOpenAt: string;
   entryCloseAt: string;
   observationStartAt: string;
   observationEndAt: string;
+  marketPeriodStartAt: string | null;
+  marketPeriodEndAt: string | null;
+  settlementEligibleAt: string;
   entryCount: number;
   totalStakeRaw: string;
   totalStakeUsdc: string;
