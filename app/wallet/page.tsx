@@ -541,23 +541,25 @@ export default function WalletPage() {
           <p className="ex-lede">{t.wallet.choiceLede}</p>
         </div>
 
-        <div className="ex-wallet-panel">
-          <button className="ex-btn ex-btn--ink" type="button" onClick={() => {
-            setError("");
-            setStep("create");
-          }}>
-            {t.wallet.choiceCta}
-          </button>
-        </div>
-
-        <div className="ex-wallet-alt">
-          <div className="ex-wallet-alt__copy">
-            <p className="ex-wallet-alt__title">{t.wallet.reconnectTitle}</p>
-            <p className="ex-wallet-alt__body">{t.wallet.reconnectBody}</p>
+        <div className="ex-wallet-choice">
+          <div className="ex-wallet-choice__block">
+            <p className="ex-eyebrow">{t.wallet.choiceBlockEyebrow}</p>
+            <p className="ex-wallet-choice__body">{t.wallet.choiceBlockBody}</p>
+            <button className="ex-btn ex-btn--ink ex-wallet-choice__cta" type="button" onClick={() => {
+              setError("");
+              setStep("create");
+            }}>
+              {t.wallet.choiceCta}
+            </button>
           </div>
-          <button className="ex-btn ex-btn--ghost" type="button" onClick={handleReconnect} disabled={Boolean(busy)}>
-            {busy || t.wallet.reconnectCta}
-          </button>
+
+          <div className="ex-wallet-choice__block">
+            <p className="ex-eyebrow">{t.wallet.reconnectTitle}</p>
+            <p className="ex-wallet-choice__body">{t.wallet.reconnectBody}</p>
+            <button className="ex-btn ex-btn--ghost ex-wallet-choice__cta" type="button" onClick={handleReconnect} disabled={Boolean(busy)}>
+              {busy || t.wallet.reconnectCta}
+            </button>
+          </div>
         </div>
 
         {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}

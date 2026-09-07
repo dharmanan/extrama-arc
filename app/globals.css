@@ -1289,6 +1289,16 @@ img{max-width:100%}
 .ex-archive__summary dd,.ex-tickets__summary dd{margin:0;font-size:1rem;color:var(--ink)}
 .ex-archive__state,.ex-tickets__state,.ex-tickets__empty{display:grid;gap:14px;align-items:start;padding-block:clamp(34px,4.4vw,62px);border-bottom:1px solid var(--line-strong);max-width:100%}
 .ex-archive__state[data-tone="error"],.ex-tickets__state[data-tone="error"]{border-bottom-color:var(--ember)}
+
+/* A lone CTA in one of these state banners (session expired, connect
+   wallet, retry) sizes to its own content instead of stretching into a
+   full width bar -- same compact treatment as the Wallet Step 2 actions.
+   Left as the container's default (full width) below 641px, where a wide
+   tap target is the more comfortable choice. */
+@media(min-width:641px){
+  .ex-tickets__state .ex-btn,
+  .ex-wallet-ledger--prompt .ex-btn{justify-self:start}
+}
 .ex-tickets__empty h2{max-width:18ch}.ex-tickets__empty p{margin:0;max-width:54ch;color:var(--ink-2);line-height:1.6}.ex-tickets__empty a{justify-self:start;font-weight:600;border-bottom:1px solid var(--line-strong);padding-bottom:3px}
 .ex-archive__group{padding-block:clamp(34px,4.6vw,64px);border-bottom:1px solid var(--line-strong)}
 .ex-archive__date{display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding-bottom:18px}.ex-archive__date h2{font-size:clamp(1.8rem,3.2vw,2.7rem)}.ex-archive__date span{font-size:.8rem;color:var(--muted)}
@@ -1541,6 +1551,33 @@ img{max-width:100%}
 .ex-wallet-alt__title{margin:0;font-size:.95rem;font-weight:600;color:var(--ink)}
 .ex-wallet-alt__body{margin:0;font-size:.88rem;color:var(--muted)}
 
+/* ---- Choice section: two equal paths, first time vs returning ------------
+   Replaces a single oversized primary bar sitting above a visually weaker
+   secondary row. Both paths get the same block treatment -- eyebrow, one
+   explanatory line, one natural-width button -- so neither reads as the
+   "real" action and the other as an afterthought. */
+.ex-wallet-choice{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  padding-top:clamp(22px,2.8vw,32px);
+  margin-bottom:clamp(24px,3vw,36px);
+  border-top:1px solid var(--line-strong);
+}
+.ex-wallet-choice__block{
+  display:flex;
+  flex-direction:column;
+  align-items:start;
+  gap:12px;
+  padding-right:clamp(28px,3.4vw,44px);
+}
+.ex-wallet-choice__block + .ex-wallet-choice__block{
+  padding-left:clamp(28px,3.4vw,44px);
+  padding-right:0;
+  border-left:1px solid var(--line);
+}
+.ex-wallet-choice__body{margin:0;color:var(--ink-2);font-size:.9rem;line-height:1.55;max-width:38ch}
+.ex-wallet-choice__cta{margin-top:auto}
+
 .ex-wallet-change{
   display:block;
   border:0;
@@ -1673,6 +1710,15 @@ img{max-width:100%}
   .ex-wallet-address{flex-direction:column;align-items:flex-start;gap:10px}
   .ex-wallet-address button{align-self:flex-start}
   .ex-wallet-panel__actions{flex-direction:column;align-items:stretch}
+  .ex-wallet-choice{grid-template-columns:1fr;gap:clamp(22px,5vw,30px)}
+  .ex-wallet-choice__block{padding-right:0}
+  .ex-wallet-choice__block + .ex-wallet-choice__block{
+    padding-left:0;
+    border-left:0;
+    border-top:1px solid var(--line);
+    padding-top:clamp(22px,5vw,30px);
+  }
+  .ex-wallet-choice__cta{width:100%;justify-content:center;margin-top:4px}
 }
 
 /* ==========================================================================
