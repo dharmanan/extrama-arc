@@ -5,7 +5,6 @@ const config = require('../config');
 const db = require('../db');
 const { decrypt } = require('./cryptoService');
 const arcService = require('./arcService');
-const { resolveExtremaWindow } = require('./binanceResolverService');
 const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
@@ -56,6 +55,9 @@ const POOL_ABI = [
 
 let runPromise = null;
 let timer = null;
+const marketOutcomeRetryAt = new Map();
+const MARKET_OUTCOME_TRANSIENT_RETRY_MS = 2 * 60_000;
+const MARKET_OUTCOME_RESTRICTED_RETRY_MS = 60 * 60_000;
 
 const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
 const CADENCE_POOL_COUNT = 8;
@@ -211,7 +213,7 @@ function oldestScannedRoundId(nextRoundId) {
 
 function completedPeriodsForAutomation(now) {
   const dailyCurrent = currentDailySchedule(now);
-  const daily = [1n, 2n].map((daysBack) => ({
+  const daily = [1n].map((daysBack) => ({
     cadence: 'DAILY',
     marketPeriodStartAt: dailyCurrent.marketPeriodStartAt - daysBack * SECONDS_PER_DAY,
     marketPeriodEndAt: dailyCurrent.marketPeriodEndAt - daysBack * SECONDS_PER_DAY,
@@ -250,6 +252,15 @@ async function ensureCompletedMarketOutcomes(now) {
   const periods = completedPeriodsForAutomation(now);
   for (const period of periods) {
     for (const asset of Object.keys(RESOLVER_SYMBOLS)) {
+      const retryKey = [
+        asset,
+        period.cadence,
+        period.marketPeriodStartAt.toString(),
+        period.marketPeriodEndAt.toString(),
+      ].join('|');
+      const retryAt = marketOutcomeRetryAt.get(retryKey) || 0;
+      if (Date.now() < retryAt) continue;
+
       try {
         const outcome = await marketOutcomeService.ensureMarketOutcome({
           asset,
@@ -257,6 +268,7 @@ async function ensureCompletedMarketOutcomes(now) {
           marketPeriodStartAt: period.marketPeriodStartAt,
           marketPeriodEndAt: period.marketPeriodEndAt,
         });
+        marketOutcomeRetryAt.delete(retryKey);
         if (outcome.created) {
           executed.push({
             asset,
@@ -267,12 +279,24 @@ async function ensureCompletedMarketOutcomes(now) {
           });
         }
       } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const restricted =
+          reason.includes('http_451') ||
+          reason.toLowerCase().includes('restricted location');
+        marketOutcomeRetryAt.set(
+          retryKey,
+          Date.now() +
+            (restricted
+              ? MARKET_OUTCOME_RESTRICTED_RETRY_MS
+              : MARKET_OUTCOME_TRANSIENT_RETRY_MS),
+        );
         failures.push({
           asset,
           cadence: period.cadence,
           marketPeriodStartAt: new Date(Number(period.marketPeriodStartAt) * 1000).toISOString(),
           marketPeriodEndAt: new Date(Number(period.marketPeriodEndAt) * 1000).toISOString(),
-          reason: error.message,
+          reason,
+          retryAfterSeconds: restricted ? 3600 : 120,
         });
       }
     }
@@ -1312,7 +1336,7 @@ function startRoundAutomation() {
   runAndLog();
   timer = setInterval(runAndLog, 60_000);
   timer.unref?.();
-  console.log('[round-automation] daily scheduler active');
+  console.log('[round-automation] market scheduler active');
 }
 
 function stopRoundAutomation() {

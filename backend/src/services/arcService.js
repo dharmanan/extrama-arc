@@ -563,14 +563,6 @@ function buildStandardRoundPoolEntry(topology, roundId, round, contractStatus, l
       marketPeriodStartAt: isCanonicalV2Round(topology.cadence, round) ? toIso(round.entryOpenAt) : null,
       marketPeriodEndAt: isCanonicalV2Round(topology.cadence, round) ? toIso(round.observationEndAt) : null,
       settlementEligibleAt: toIso(round.observationEndAt),
-      marketPeriodStartAt,
-      marketPeriodEndAt,
-      marketResultCents: marketSide?.resolvedPriceCents ?? null,
-      marketResult: marketSide
-        ? (Number(marketSide.resolvedPriceCents) / 100).toFixed(2)
-        : null,
-      marketResultExact: marketSide?.exact ?? null,
-      marketEvidenceSha256: marketOutcome?.evidenceSha256 ?? null,
       entryCount: Number(round.entryCount),
       totalStakeRaw: round.totalStake.toString(),
       totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),

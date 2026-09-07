@@ -420,63 +420,93 @@ async function fetchMarkPriceWindow({
     interval,
     startTime: String(startTimeMs),
     // Binance endTime is inclusive. EXTREMA windows are [start, end),
-    // so request the final millisecond immediately before observationEndAt.
+    // so request the final millisecond immediately before the exclusive end.
     endTime: String(endTimeExclusiveMs - 1),
     limit: String(expectedCandleCount),
   });
 
-  const requestUrl =
-    `${BINANCE_USDM_BASE_URL}${MARK_PRICE_KLINES_PATH}?${query.toString()}`;
+  const failures = [];
 
-  const response = await fetchImpl(requestUrl, {
-    method: 'GET',
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'EXTREMA-Resolver/0.1',
-    },
-  });
+  for (const baseUrl of LIVE_MARK_BASE_URLS) {
+    const requestUrl =
+      `${baseUrl}${MARK_PRICE_KLINES_PATH}?${query.toString()}`;
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    throw new Error(
-      `resolver_source_http_${response.status}:${body.slice(0, 160)}`,
-    );
+    try {
+      const response = await fetchImpl(requestUrl, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          'user-agent': 'EXTREMA-Resolver/0.2',
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        failures.push(
+          `${baseUrl}:http_${response.status}:${body.slice(0, 160)}`,
+        );
+        continue;
+      }
+
+      const candles = await response.json();
+      if (!Array.isArray(candles)) {
+        failures.push(`${baseUrl}:resolver_source_response_invalid`);
+        continue;
+      }
+
+      if (candles.length !== expectedCandleCount) {
+        failures.push(
+          `${baseUrl}:resolver_candle_count_mismatch:expected_${expectedCandleCount}:received_${candles.length}`,
+        );
+        continue;
+      }
+
+      let valid = true;
+      let validationError = null;
+      for (let index = 0; index < candles.length; index += 1) {
+        try {
+          validateRawCandle(
+            candles[index],
+            startTimeMs + index * intervalMs,
+            intervalMs,
+          );
+        } catch (error) {
+          valid = false;
+          validationError = error instanceof Error ? error.message : String(error);
+          break;
+        }
+      }
+
+      if (!valid) {
+        failures.push(`${baseUrl}:${validationError}`);
+        continue;
+      }
+
+      return {
+        source: 'Binance USDⓈ-M Futures Mark Price Klines',
+        endpoint: `${baseUrl}${MARK_PRICE_KLINES_PATH}`,
+        requestUrl,
+        symbol,
+        cadence,
+        interval,
+        observationStartAt,
+        observationEndAt,
+        startTimeMs,
+        endTimeExclusiveMs,
+        expectedCandleCount,
+        candles,
+        sourceDataSha256: sha256Hex(JSON.stringify(candles)),
+      };
+    } catch (error) {
+      failures.push(
+        `${baseUrl}:${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
-  const candles = await response.json();
-  if (!Array.isArray(candles)) {
-    throw new Error('resolver_source_response_invalid');
-  }
-
-  if (candles.length !== expectedCandleCount) {
-    throw new Error(
-      `resolver_candle_count_mismatch:expected_${expectedCandleCount}:received_${candles.length}`,
-    );
-  }
-
-  for (let index = 0; index < candles.length; index += 1) {
-    validateRawCandle(
-      candles[index],
-      startTimeMs + index * intervalMs,
-      intervalMs,
-    );
-  }
-
-  return {
-    source: 'Binance USDⓈ-M Futures Mark Price Klines',
-    endpoint: `${BINANCE_USDM_BASE_URL}${MARK_PRICE_KLINES_PATH}`,
-    requestUrl,
-    symbol,
-    cadence,
-    interval,
-    observationStartAt,
-    observationEndAt,
-    startTimeMs,
-    endTimeExclusiveMs,
-    expectedCandleCount,
-    candles,
-    sourceDataSha256: sha256Hex(JSON.stringify(candles)),
-  };
+  throw new Error(
+    `resolver_source_unavailable:${failures.join('|').slice(0, 1800)}`,
+  );
 }
 
 function calculateExtrema(windowData) {
