@@ -277,47 +277,79 @@ Any future rescue function for accidental excess tokens must be limited to:
 
 and must never touch reserved escrow.
 
-## 10. Standard round UTC boundaries
+## 10. Canonical market periods and contract time gates
 
-All standard rounds use UTC boundaries. Entry closes before the observation window begins.
+All product timing is defined by the **market period**. "Observation" is not a
+product concept. The deployed `ExtremaPool` ABI still contains the immutable
+field names `observationStartAt` and `observationEndAt`; they are retained only
+as technical contract time gates.
 
-Deterministic cadence rules:
+Canonical cadence rules:
 
 - DAILY
-  - observation window: 00:00 UTC to next day 00:00 UTC
-  - entry close: exactly 4 hours before observation start
-  - therefore a daily observation beginning at 00:00 UTC closes entry at 20:00 UTC on the previous calendar day
+  - market period: UTC day `D 00:00 -> D+1 00:00`
+  - entry open: `D 00:00`
+  - entry close: `D 20:00`
+  - result calculation begins immediately after `D+1 00:00`
+  - normal publication target: within 10 minutes after period end
 
 - WEEKLY
-  - observation window: Monday 00:00 UTC to next Monday 00:00 UTC
-  - entry close: exactly 24 hours before observation start
-  - therefore weekly entry closes Sunday 00:00 UTC
+  - market period: Monday 00:00 UTC -> next Monday 00:00 UTC
+  - entry open: market-period start
+  - entry close: 24 hours before market-period end
+  - result calculation begins immediately after the next Monday 00:00 UTC
+  - normal publication target: within 10 minutes after period end
 
 - QUARTERLY
-  - observation window: first calendar day of the quarter at 00:00 UTC to first calendar day of the next quarter at 00:00 UTC
-  - entry close: exactly 24 hours before observation start
+  - market period: first calendar day of quarter 00:00 UTC -> first calendar
+    day of next quarter 00:00 UTC
+  - entry open: market-period start
+  - entry close: 24 hours before market-period end
+  - result calculation begins immediately after quarter end
+  - normal publication target: within 10 minutes after period end
 
-There is no MONTHLY cadence in the locked 24-pool architecture. Adding MONTHLY later would be a separate architecture change because it would increase the standard pool count.
+There is no extra day, week, or quarter after the target market period.
 
-These rules must be identical in contract round creation, backend scheduling, UI display, and resolver source-window calculation.
+For compatibility with the already deployed pool contract timestamp invariant:
+
+```
+entryOpenAt < entryCloseAt
+entryCloseAt <= observationStartAt
+observationStartAt < observationEndAt
+```
+
+new canonical rounds map the business schedule to legacy ABI fields as:
+
+```
+entryOpenAt        = marketPeriodStartAt
+entryCloseAt       = configured cutoff before marketPeriodEndAt
+observationStartAt = entryCloseAt
+observationEndAt   = marketPeriodEndAt
+```
+
+The Binance pricing window is **never** derived from
+`observationStartAt -> observationEndAt`. It is always:
+
+```
+[marketPeriodStartAt, marketPeriodEndAt)
+```
+
+A completed market period has an official market outcome regardless of
+participation. Zero, one, or two entries still produce real HIGH/LOW market
+results; the corresponding contract round is cancelled/refundable rather than
+settled for prizes.
+
+There is no MONTHLY cadence in the 24-pool architecture.
 
 ## 11. Settlement source
 
-Offchain resolver source:
+Offchain canonical market source:
 
 **Binance USDⓈ-M Futures Mark Price Klines**
 
 Canonical REST endpoint:
 
 `GET https://fapi.binance.com/fapi/v1/markPriceKlines`
-
-Request parameters:
-
-- `symbol`
-- `interval`
-- `startTime`
-- `endTime`
-- `limit`
 
 Symbols:
 
@@ -332,15 +364,17 @@ Cadence intervals:
 - WEEKLY = `15m`
 - QUARTERLY = `4h`
 
-Observation time convention is always half-open:
+Market periods use a half-open convention:
 
-`[observationStartAt, observationEndAt)`
+`[marketPeriodStartAt, marketPeriodEndAt)`
 
-Binance's request `endTime` is treated as inclusive by EXTREMA, so the resolver requests:
+Because Binance `endTime` is inclusive, EXTREMA requests the final millisecond
+before `marketPeriodEndAt`.
 
-`endTime = observationEndAt - 1 millisecond`
-
-The resolver must then verify every returned candle open time is exactly aligned and contiguous across the complete observation window. A missing, duplicated, misaligned, or unexpected candle is a hard failure and no settlement transaction may be produced.
+The resolver must verify every returned candle open time is aligned and
+contiguous across the complete market period. Missing, duplicated, misaligned,
+or unexpected candles are a hard failure. No market outcome may be published
+and no 3+ entry round may be settled from incomplete source history.
 
 Binance Mark Price Kline fields used by EXTREMA:
 
@@ -351,15 +385,17 @@ Binance Mark Price Kline fields used by EXTREMA:
 
 Resolution rules:
 
-- HIGH = maximum `[2]` across the complete observation window
-- LOW = minimum `[3]` across the complete observation window
-- source decimals are compared exactly, without JavaScript floating-point arithmetic
-- the final contract value is converted to integer cents using **nearest cent, half up**
-- the raw returned candle array is SHA-256 hashed and recorded with the calculation evidence
+- HIGH = maximum `[2]` across the complete market period
+- LOW = minimum `[3]` across the complete market period
+- source decimals are compared exactly without JavaScript floating-point arithmetic
+- final contract values use nearest-cent, half-up rounding
+- source data and canonical evidence are SHA-256 hashed and durably persisted
+- one asset/cadence/market-period source package produces both HIGH and LOW
+- participation count does not control whether the market outcome is computed
 
-Because prediction slots and `resolvedPriceCents` are integer cents, the same deterministic cent-rounding rule must be used for every asset and cadence.
-
-The pool identity already determines which asset/direction rule applies.
+The contract settlement layer consumes the persisted official market outcome:
+- fewer than 3 entries -> `CANCELLED`, with official market outcome still visible
+- 3 or more entries -> `SETTLED` using the persisted HIGH or LOW for that pool
 
 ## 12. Winner ranking
 
