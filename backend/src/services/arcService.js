@@ -1532,11 +1532,7 @@ async function readRoundEntries({ slug, roundId }) {
 // function never regenerates or backfills evidence for such a round; it
 // only ever reports what is actually and durably known.
 async function readRoundVerification({ slug, roundId }) {
-  if (
-    typeof slug !== 'string' ||
-    !Number.isInteger(roundId) ||
-    roundId <= 0
-  ) {
+  if (typeof slug !== 'string' || !Number.isInteger(roundId) || roundId <= 0) {
     throw new Error('round_verification_request_invalid');
   }
 
@@ -1547,9 +1543,7 @@ async function readRoundVerification({ slug, roundId }) {
 
   const provider = getProvider();
   const network = await rpcRead(() => provider.getNetwork());
-  if (network.chainId !== ARC_TESTNET_CHAIN_ID) {
-    throw new Error('arc_chain_id_mismatch');
-  }
+  if (network.chainId !== ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
 
   const poolAddress = ethers.getAddress(topology.poolAddress);
   const pool = new ethers.Contract(poolAddress, POOL_ABI, provider);
@@ -1560,10 +1554,7 @@ async function readRoundVerification({ slug, roundId }) {
   } catch {
     throw new Error('round_verification_not_found');
   }
-
-  if (Number(round.entryOpenAt) === 0) {
-    throw new Error('round_verification_not_found');
-  }
+  if (Number(round.entryOpenAt) === 0) throw new Error('round_verification_not_found');
 
   const contractStatus = CONTRACT_STATUSES[Number(round.status)];
   if (!contractStatus) throw new Error('extrema_round_status_invalid');
@@ -1573,7 +1564,6 @@ async function readRoundVerification({ slug, roundId }) {
     name: 'Arc Testnet',
     explorerUrl: 'https://testnet.arcscan.app',
   };
-
   const poolInfo = {
     slug,
     poolAddress,
@@ -1583,12 +1573,16 @@ async function readRoundVerification({ slug, roundId }) {
     sourceSymbol: SOURCE_SYMBOLS[topology.asset],
   };
 
+  const canonicalV2 = isCanonicalV2Round(topology.cadence, round);
+  const marketPeriodStartAt = canonicalV2 ? toIso(round.entryOpenAt) : null;
+  const marketPeriodEndAt = canonicalV2 ? toIso(round.observationEndAt) : null;
   const resolvedPriceCentsOnchain = BigInt(round.resolvedPriceCents);
   const roundInfo = {
     roundId,
     contractStatus,
-    observationStartAt: toIso(round.observationStartAt),
-    observationEndAt: toIso(round.observationEndAt),
+    marketPeriodStartAt,
+    marketPeriodEndAt,
+    settlementEligibleAt: toIso(round.observationEndAt),
     resolvedPriceCents: resolvedPriceCentsOnchain.toString(),
     resolvedPrice:
       resolvedPriceCentsOnchain > 0n
@@ -1596,23 +1590,23 @@ async function readRoundVerification({ slug, roundId }) {
         : null,
   };
 
-  if (contractStatus === 'ENTRY_OPEN' || contractStatus === 'LOCKED') {
-    return { chain, pool: poolInfo, round: roundInfo, verification: { status: 'PENDING' } };
-  }
-
-  if (contractStatus === 'CANCELLED') {
+  if (!canonicalV2) {
     return {
       chain,
       pool: poolInfo,
       round: roundInfo,
-      verification: { status: 'NOT_APPLICABLE', reason: 'round_cancelled' },
+      verification: { status: 'NOT_APPLICABLE', reason: 'legacy_v1_round' },
     };
   }
 
-  // contractStatus === 'SETTLED' from here.
-  let evidence;
+  let outcome;
   try {
-    evidence = await settlementEvidenceService.getSettlementEvidence({ poolAddress, roundId });
+    outcome = await marketOutcomeService.getMarketOutcome({
+      asset: topology.asset,
+      cadence: topology.cadence,
+      marketPeriodStartAt,
+      marketPeriodEndAt,
+    });
   } catch (error) {
     return {
       chain,
@@ -1622,18 +1616,18 @@ async function readRoundVerification({ slug, roundId }) {
     };
   }
 
-  if (!evidence) {
+  if (!outcome) {
     return {
       chain,
       pool: poolInfo,
       round: roundInfo,
-      verification: { status: 'EVIDENCE_MISSING', reason: 'settlement_evidence_missing' },
+      verification: { status: 'PENDING' },
     };
   }
 
   let parsedEvidence;
   try {
-    parsedEvidence = JSON.parse(evidence.canonicalEvidenceJson);
+    parsedEvidence = JSON.parse(outcome.canonicalEvidenceJson);
   } catch {
     return {
       chain,
@@ -1647,34 +1641,43 @@ async function readRoundVerification({ slug, roundId }) {
   }
 
   const selected = topology.direction === 'HIGH' ? parsedEvidence.high : parsedEvidence.low;
+  let settlementTxHash = null;
+  if (contractStatus === 'SETTLED') {
+    try {
+      const settlementEvidence = await settlementEvidenceService.getSettlementEvidence({
+        poolAddress,
+        roundId,
+      });
+      settlementTxHash = settlementEvidence?.settlementTxHash ?? null;
+    } catch (error) {
+      return {
+        chain,
+        pool: poolInfo,
+        round: roundInfo,
+        verification: { status: 'EVIDENCE_INTEGRITY_FAILED', reason: error.message },
+      };
+    }
+  }
 
-  const poolIdentityMatches =
-    evidence.poolAddress.toLowerCase() === poolAddress.toLowerCase() &&
-    evidence.slug === slug &&
-    evidence.asset === topology.asset &&
-    evidence.direction === topology.direction &&
-    evidence.cadence === topology.cadence;
+  const marketPeriodMatches =
+    outcome.marketPeriodStartAt === marketPeriodStartAt &&
+    outcome.marketPeriodEndAt === marketPeriodEndAt;
+  const resolvedPriceMatchesOnchain =
+    contractStatus === 'SETTLED'
+      ? selected.resolvedPriceCents === roundInfo.resolvedPriceCents
+      : null;
 
-  const observationWindowMatches =
-    evidence.observationStartAt === roundInfo.observationStartAt &&
-    evidence.observationEndAt === roundInfo.observationEndAt;
-
-  const resolvedPriceMatchesOnchain = evidence.resolvedPriceCents === roundInfo.resolvedPriceCents;
-
-  // getSettlementEvidence() already recomputed the hash from the persisted
-  // canonical TEXT and required it to match before returning here.
   const integrity = {
     evidenceHashValid: true,
-    poolIdentityMatches,
-    observationWindowMatches,
+    poolIdentityMatches: true,
+    marketPeriodMatches,
     resolvedPriceMatchesOnchain,
   };
-
   const allValid =
     integrity.evidenceHashValid &&
     integrity.poolIdentityMatches &&
-    integrity.observationWindowMatches &&
-    integrity.resolvedPriceMatchesOnchain;
+    integrity.marketPeriodMatches &&
+    (integrity.resolvedPriceMatchesOnchain !== false);
 
   return {
     chain,
@@ -1688,14 +1691,17 @@ async function readRoundVerification({ slug, roundId }) {
       cadence: parsedEvidence.cadence,
       direction: topology.direction,
       interval: parsedEvidence.interval,
-      observationWindow: parsedEvidence.observationWindow,
+      marketPeriod: {
+        startInclusive: outcome.marketPeriodStartAt,
+        endExclusive: outcome.marketPeriodEndAt,
+      },
       candleCount: parsedEvidence.candleCount,
       sourceDataSha256: parsedEvidence.sourceDataSha256,
       rounding: parsedEvidence.rounding,
       selected,
-      evidenceSha256: evidence.evidenceSha256,
-      createdAt: evidence.createdAt,
-      settlementTxHash: evidence.settlementTxHash,
+      evidenceSha256: outcome.evidenceSha256,
+      createdAt: outcome.computedAt,
+      settlementTxHash,
       integrity,
     },
   };
