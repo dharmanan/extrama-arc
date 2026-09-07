@@ -559,6 +559,14 @@ function buildStandardRoundPoolEntry(topology, roundId, round, contractStatus, l
       entryCloseAt: toIso(round.entryCloseAt),
       observationStartAt: toIso(round.observationStartAt),
       observationEndAt: toIso(round.observationEndAt),
+      marketPeriodStartAt,
+      marketPeriodEndAt,
+      marketResultCents: marketSide?.resolvedPriceCents ?? null,
+      marketResult: marketSide
+        ? (Number(marketSide.resolvedPriceCents) / 100).toFixed(2)
+        : null,
+      marketResultExact: marketSide?.exact ?? null,
+      marketEvidenceSha256: marketOutcome?.evidenceSha256 ?? null,
       entryCount: Number(round.entryCount),
       totalStakeRaw: round.totalStake.toString(),
       totalStakeUsdc: ethers.formatUnits(round.totalStake, 6),
@@ -1279,6 +1287,22 @@ async function readRoundResult({ slug, roundId }) {
 
   const contractStatus = CONTRACT_STATUSES[Number(round.status)];
   if (!contractStatus) throw new Error('extrema_round_status_invalid');
+
+  const canonicalV2 = isCanonicalV2Round(topology.cadence, round);
+  const marketPeriodStartAt = canonicalV2 ? toIso(round.entryOpenAt) : null;
+  const marketPeriodEndAt = canonicalV2 ? toIso(round.observationEndAt) : null;
+  let marketOutcome = null;
+  if (canonicalV2) {
+    marketOutcome = await marketOutcomeService.getMarketOutcome({
+      asset: topology.asset,
+      cadence: topology.cadence,
+      marketPeriodStartAt,
+      marketPeriodEndAt,
+    });
+  }
+  const marketSide = marketOutcome
+    ? (topology.direction === 'HIGH' ? marketOutcome.high : marketOutcome.low)
+    : null;
 
   const resolvedPriceCents = BigInt(round.resolvedPriceCents);
   const winnerTicketIds = Array.from(round.winnerTicketIds, (id) => BigInt(id));
