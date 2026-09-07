@@ -14,6 +14,7 @@ const actionRoutes = require('./routes/actions');
 const arcService = require('./services/arcService');
 const roundAutomationService = require('./services/roundAutomationService');
 const settlementEvidenceService = require('./services/settlementEvidenceService');
+const marketOutcomeService = require('./services/marketOutcomeService');
 
 const app = express();
 
@@ -130,6 +131,13 @@ const server = app.listen(config.PORT, () => {
   // affect auth/wallet/entry/claim/refund or any other already-proven
   // functionality. It exists purely to surface schema drift loudly in
   // logs before Phase B ever makes this table load-bearing.
+  marketOutcomeService
+    .verifyMarketOutcomeStorage()
+    .then(() => console.log('[market-outcome] storage verified'))
+    .catch((error) => {
+      console.error('[market-outcome] storage check failed', JSON.stringify({ reason: error.message }));
+    });
+
   settlementEvidenceService
     .verifySettlementEvidenceStorage()
     .then((result) => {
