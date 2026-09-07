@@ -8,6 +8,12 @@ const arcService = require('./arcService');
 const { resolveExtremaWindow } = require('./binanceResolverService');
 const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
+const {
+  currentDailySchedule,
+  currentWeeklySchedule,
+  currentQuarterlySchedule,
+  isCanonicalV2Round,
+} = require('./canonicalMarketSchedule');
 
 const ARC_CHAIN_ID = 5042002n;
 const MIN_ENTRIES = 3;
@@ -32,13 +38,6 @@ const RESOLVER_SYMBOLS = Object.freeze({
   HYPE: 'HYPEUSDT',
 });
 
-// Canonical observation offsets, mirroring the validation already enforced by
-// backend/src/scripts/create-next-round.js so both paths agree.
-const CADENCE_RULES = Object.freeze({
-  DAILY: { leadSeconds: 4n * 3600n, durationSeconds: 24n * 3600n },
-  WEEKLY: { leadSeconds: 24n * 3600n, durationSeconds: 7n * 24n * 3600n },
-  QUARTERLY: { leadSeconds: 24n * 3600n, durationSeconds: null },
-});
 const AUTOMATION_LOCK_ID = '504200220260906';
 
 const POOL_ABI = [
@@ -56,19 +55,8 @@ const POOL_ABI = [
 let runPromise = null;
 let timer = null;
 
-function currentDailySchedule(chainTimestamp) {
-  const now = new Date(Number(chainTimestamp) * 1000);
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const day = now.getUTCDate();
-
-  return {
-    entryOpenAt: BigInt(Math.floor(Date.UTC(year, month, day, 0, 0, 0) / 1000)),
-    entryCloseAt: BigInt(Math.floor(Date.UTC(year, month, day, 20, 0, 0) / 1000)),
-    observationStartAt: BigInt(Math.floor(Date.UTC(year, month, day + 1, 0, 0, 0) / 1000)),
-    observationEndAt: BigInt(Math.floor(Date.UTC(year, month, day + 2, 0, 0, 0) / 1000)),
-  };
-}
+const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
+const CADENCE_POOL_COUNT = 8;
 
 function sameSchedule(round, schedule) {
   return (
@@ -80,106 +68,6 @@ function sameSchedule(round, schedule) {
   );
 }
 
-const SECONDS_PER_DAY = 86400n;
-const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
-const CADENCE_POOL_COUNT = 8;
-
-// Finds the next Sunday 00:00 UTC strictly after `now`. WEEKLY observation
-// always starts the following Monday (contracts/ARCHITECTURE.md section 10),
-// so this anchors the canonical weekly schedule the same way
-// currentDailySchedule anchors to the calendar day containing `now`. Pure
-// Date.UTC arithmetic, so month/year rollover is handled by the platform,
-// never hardcoded.
-function nextWeeklyEntryCloseAfter(now) {
-  const nowDate = new Date(Number(now) * 1000);
-  const year = nowDate.getUTCFullYear();
-  const month = nowDate.getUTCMonth();
-  const day = nowDate.getUTCDate();
-  const weekday = nowDate.getUTCDay(); // 0 = Sunday ... 6 = Saturday
-
-  const todayMidnight = BigInt(Math.floor(Date.UTC(year, month, day, 0, 0, 0) / 1000));
-  const daysUntilSunday = BigInt((7 - weekday) % 7);
-  let candidate = todayMidnight + daysUntilSunday * SECONDS_PER_DAY;
-  // Entry must still be open (now < entryCloseAt), so a Sunday that has
-  // already arrived (or is exactly now) cannot be this round's close.
-  if (candidate <= now) candidate += 7n * SECONDS_PER_DAY;
-  return candidate;
-}
-
-// Canonical WEEKLY schedule: observation Monday 00:00 UTC -> next Monday
-// 00:00 UTC, entry closes exactly 24h before observation start (Sunday
-// 00:00 UTC) -- the same offsets already enforced by
-// backend/src/scripts/create-next-round.js's validateCadence and by
-// contracts/ARCHITECTURE.md section 10. Entry windows tile with zero gap:
-// this round's entryOpenAt equals the previous weekly round's
-// entryCloseAt, so a new enterable round is always available the instant
-// the previous one closes.
-function currentWeeklySchedule(chainTimestamp) {
-  const { leadSeconds, durationSeconds } = CADENCE_RULES.WEEKLY;
-  const entryCloseAt = nextWeeklyEntryCloseAfter(chainTimestamp);
-  const observationStartAt = entryCloseAt + leadSeconds;
-  const observationEndAt = observationStartAt + durationSeconds;
-  const entryOpenAt = entryCloseAt - durationSeconds;
-  return { entryOpenAt, entryCloseAt, observationStartAt, observationEndAt };
-}
-
-function quarterStartUtc(year, quarterIndex) {
-  return BigInt(Math.floor(Date.UTC(year, quarterIndex * 3, 1, 0, 0, 0) / 1000));
-}
-
-// Canonical QUARTERLY schedule: observation first calendar day of the
-// quarter 00:00 UTC -> first calendar day of the next quarter 00:00 UTC,
-// entry closes exactly 24h before (contracts/ARCHITECTURE.md section 10).
-// Quarter length (89-92 days) is never hardcoded -- only the calendar
-// quarter boundary (month 0/3/6/9, day 1) is computed, so this is correct
-// across every quarter length and every year, leap or not. Entry windows
-// tile with zero gap, the same rule as WEEKLY.
-function currentQuarterlySchedule(chainTimestamp) {
-  const nowDate = new Date(Number(chainTimestamp) * 1000);
-  let year = nowDate.getUTCFullYear();
-  let quarterIndex = Math.floor(nowDate.getUTCMonth() / 3);
-
-  let observationStartAt = quarterStartUtc(year, quarterIndex);
-  let entryCloseAt = observationStartAt - CADENCE_RULES.QUARTERLY.leadSeconds;
-
-  // Entry must still be open (now < entryCloseAt). Advance quarter by
-  // quarter -- never more than one iteration in practice -- until the
-  // computed window actually contains `now`.
-  while (entryCloseAt <= chainTimestamp) {
-    quarterIndex += 1;
-    if (quarterIndex > 3) {
-      quarterIndex = 0;
-      year += 1;
-    }
-    observationStartAt = quarterStartUtc(year, quarterIndex);
-    entryCloseAt = observationStartAt - CADENCE_RULES.QUARTERLY.leadSeconds;
-  }
-
-  const prevYear = quarterIndex === 0 ? year - 1 : year;
-  const prevQuarterIndex = quarterIndex === 0 ? 3 : quarterIndex - 1;
-  const entryOpenAt = quarterStartUtc(prevYear, prevQuarterIndex) - CADENCE_RULES.QUARTERLY.leadSeconds;
-
-  const nextYear = quarterIndex === 3 ? year + 1 : year;
-  const nextQuarterIndex = quarterIndex === 3 ? 0 : quarterIndex + 1;
-  const observationEndAt = quarterStartUtc(nextYear, nextQuarterIndex);
-
-  return { entryOpenAt, entryCloseAt, observationStartAt, observationEndAt };
-}
-
-// WEEKLY/QUARTERLY idempotency intentionally does NOT compare entryOpenAt,
-// unlike sameSchedule() above which DAILY still uses unchanged. Round #1 on
-// all 24 pools (including every WEEKLY/QUARTERLY pool) was bootstrap-created
-// by script/CreateStandardRounds.s.sol with entryOpenAt set to the deploy
-// transaction's block.timestamp, not a calendar-aligned value, and
-// ExtremaPool.createRound (contracts/src/ExtremaPool.sol) only constrains
-// entryOpenAt < entryCloseAt <= observationStartAt < observationEndAt on
-// chain -- entryOpenAt carries no canonical meaning beyond ordering. DAILY
-// never hits this in practice because a new calendar day always makes its
-// old round irrelevant within hours. WEEKLY/QUARTERLY rounds stay "current"
-// for a week or a quarter, so matching on entryOpenAt here would make this
-// code treat the already-correct live Round #1 as missing and attempt a
-// duplicate create. The three fields that actually define the prediction
-// window are compared instead.
 function sameObservationWindow(round, schedule) {
   return (
     round &&
@@ -382,6 +270,9 @@ async function scanLifecycle(provider, now) {
 }
 
 async function ensureCurrentDailyRoundsInternal() {
+  if (!config.EXTREMA_ENABLE_ROUND_CREATION) {
+    return { skipped: true, reason: 'round_creation_disabled' };
+  }
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
   const schedule = currentDailySchedule(now);
@@ -544,6 +435,9 @@ async function ensureCurrentDailyRoundsInternal() {
 // unreadable pool, a schedule-ahead pool, or a failed broadcast is recorded
 // as a structured failure and never blocks the other seven.
 async function ensureCurrentCadenceRoundsInternal(cadenceName, cadenceEnumValue, scheduleFn) {
+  if (!config.EXTREMA_ENABLE_ROUND_CREATION) {
+    return { skipped: true, reason: 'round_creation_disabled' };
+  }
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
   const schedule = scheduleFn(now);
@@ -942,6 +836,13 @@ async function executeResolverAction(provider, now, item, signer) {
 
   const round = await safeRead(() => item.pool.getRound(item.roundId), context);
   const status = Number(round.status);
+
+  // Legacy V1 rounds used a future pricing window. They remain immutable
+  // onchain history, but must never be auto-settled under the canonical V2
+  // market-period rules.
+  if (!isCanonicalV2Round(item.topology.cadence, round)) {
+    return { slug, roundId, action: 'noop', reason: 'legacy_v1_round' };
+  }
   const entryCount = Number(round.entryCount);
 
   // Another instance may have completed this already.
@@ -1391,5 +1292,4 @@ module.exports = {
   runLifecycle,
   startRoundAutomation,
   stopRoundAutomation,
-  CADENCE_RULES,
 };
