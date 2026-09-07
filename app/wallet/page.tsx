@@ -8,10 +8,13 @@ import { arcTestnet } from "../lib/web3";
 import { shortAddress, useWalletSession } from "../wallet-session";
 import { backendApi, isAuthSessionError } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
+import { useCopy } from "../i18n";
 
 type Step = "owner" | "choice" | "create" | "recovery" | "ready";
 
 export default function WalletPage() {
+  const t = useCopy();
+
   const {
     address: walletAddress,
     status: walletStatus,
@@ -233,39 +236,41 @@ export default function WalletPage() {
 
   if (step === "recovery" && walletAddress && privateKey) {
     return (
-      <main className="wf-page">
+      <main className="ex-wallet-page">
         <ProductHeader />
-        <section className="wf-main">
-          <p>ONE-TIME DISCLOSURE</p>
-          <h1>Save your EXTREMA private key</h1>
-          <p>
-            This private key is returned only when the backend creates the wallet.
-            It will not be shown again by EXTREMA after you continue.
-          </p>
+        <div className="ex-shell">
+          <div className="ex-wallet-hero">
+            <p className="ex-eyebrow">{t.wallet.recoveryEyebrow}</p>
+            <h1 className="ex-display ex-display--lg">{t.wallet.recoveryTitle}</h1>
+            <p className="ex-lede">{t.wallet.recoveryLede}</p>
+          </div>
 
-          <section className="wf-panel wf-section">
-            <p><b>EXTREMA wallet address</b></p>
-            <p className="wf-code">{walletAddress}</p>
+          <div className="ex-wallet-recovery">
+            <div className="ex-wallet-recovery__row">
+              <span className="ex-wallet-recovery__tag">{t.wallet.addressSafe}</span>
+              <span className="ex-wallet-recovery__label">{t.wallet.addressLabel}</span>
+              <p className="ex-wallet-recovery__value ex-num">{walletAddress}</p>
+            </div>
 
-            <p><b>Private key</b></p>
-            <p className="wf-code">{privateKey}</p>
+            <div className="ex-wallet-recovery__row" data-danger="true">
+              <span className="ex-wallet-recovery__tag" data-danger="true">{t.wallet.keyNeverShare}</span>
+              <span className="ex-wallet-recovery__label">{t.wallet.keyLabel}</span>
+              <p className="ex-wallet-recovery__value ex-wallet-recovery__value--key ex-num">{privateKey}</p>
+            </div>
 
-            <p>
-              Store it in a password manager or another secure vault.
-              Anyone with this key controls the wallet.
-            </p>
+            <p className="ex-wallet-recovery__warning">{t.wallet.keyWarning}</p>
 
-            <label className="wf-row" style={{ justifyContent: "flex-start" }}>
+            <label className="ex-wallet-recovery__confirm">
               <input
                 type="checkbox"
                 checked={recoveryConfirmed}
                 onChange={(event) => setRecoveryConfirmed(event.target.checked)}
               />
-              I have saved the private key securely.
+              <span>{t.wallet.confirmSaved}</span>
             </label>
 
             <button
-              className="wf-action"
+              className="ex-btn ex-btn--ink"
               type="button"
               disabled={!recoveryConfirmed}
               onClick={() => {
@@ -274,258 +279,297 @@ export default function WalletPage() {
                 setStep("ready");
               }}
             >
-              I have saved the key · Continue
+              {t.wallet.recoveryCta}
             </button>
-          </section>
-        </section>
+          </div>
+        </div>
       </main>
     );
   }
 
   if (step === "ready" && walletStatus === "ready" && walletAddress) {
     return (
-      <main className="wf-page">
+      <main className="ex-wallet-page">
         <ProductHeader />
-        <section className="wf-main">
-          <p>ARC TESTNET WALLET</p>
-          <h1>EXTREMA wallet ready</h1>
-          {walletNotice && <p className="wf-message">{walletNotice}</p>}
+        <div className="ex-shell">
+          <div className="ex-wallet-hero">
+            <p className="ex-eyebrow">{t.wallet.readyEyebrow}</p>
+            <h1 className="ex-display ex-display--lg">{t.wallet.readyTitle}</h1>
+          </div>
 
-          <div className="wf-two-col wf-section">
-            <section className="wf-panel">
-              {ownerAddress && (
-                <p><b>Owner wallet:</b> {shortAddress(ownerAddress)}</p>
-              )}
-              <p><b>EXTREMA wallet:</b> {shortAddress(walletAddress)}</p>
-              <div className="wf-row" style={{ justifyContent: "flex-start", alignItems: "center" }}>
-                <p className="wf-code" style={{ margin: 0, flex: 1 }}>{walletAddress}</p>
-                <button className="wf-action" type="button" onClick={copyExtremaAddress}>
-                  {copiedAddress ? "Copied" : "Copy address"}
+          {walletNotice && <p className="ex-entry__msg" data-tone="ok">{walletNotice}</p>}
+
+          <div className="ex-wallet-ready">
+            <section className="ex-wallet-ready__main">
+              <div className="ex-wallet-ready__marks">
+                {ownerAddress && (
+                  <div className="ex-wallet-mark">
+                    <span className="ex-wallet-mark__key">{t.wallet.ownerWallet}</span>
+                    <span className="ex-wallet-mark__val ex-num">{shortAddress(ownerAddress)}</span>
+                  </div>
+                )}
+                <div className="ex-wallet-mark">
+                  <span className="ex-wallet-mark__key">{t.wallet.extremaWallet}</span>
+                  <span className="ex-wallet-mark__val ex-num">{shortAddress(walletAddress)}</span>
+                </div>
+              </div>
+
+              <div className="ex-wallet-address">
+                <p className="ex-wallet-address__value ex-num">{walletAddress}</p>
+                <button className="ex-btn ex-btn--ghost" type="button" onClick={copyExtremaAddress}>
+                  {copiedAddress ? t.wallet.copied : t.wallet.copyAddress}
                 </button>
               </div>
 
               {sessionNeedsAuth ? (
-                <section className="wf-panel wf-section">
-                  <h3>Session expired</h3>
-                  <p>Authenticate with your passkey to continue.</p>
+                <div className="ex-wallet-ledger ex-wallet-ledger--prompt">
+                  <p className="ex-wallet-ledger__prompt-title">{t.wallet.sessionExpiredTitle}</p>
+                  <p className="ex-wallet-ledger__prompt-body">{t.wallet.sessionExpiredBody}</p>
                   <button
-                    className="wf-action"
+                    className="ex-btn ex-btn--ink"
                     type="button"
                     onClick={handleResumeSession}
                     disabled={Boolean(busy)}
                   >
-                    {busy || "Authenticate with passkey"}
+                    {busy || t.wallet.authenticateWithPasskey}
                   </button>
-                </section>
+                </div>
               ) : chainState ? (
-                <>
-                  <p><b>Network:</b> {chainState.chain.name} · Chain ID {chainState.chain.id}</p>
-                  <p><b>Block:</b> {chainState.chain.blockNumber}</p>
-                  <p><b>Native gas balance:</b> {chainState.native.balanceFormatted} {chainState.native.symbol}</p>
-                  <p><b>Native decimals:</b> {chainState.native.decimals}</p>
-                  <p><b>USDC contract:</b></p>
-                  <p className="wf-code">{chainState.usdc.address}</p>
-                  <p><b>USDC decimals:</b> {chainState.usdc.decimals}</p>
-                  <p><b>Real USDC balance:</b> {chainState.usdc.balanceFormatted} {chainState.usdc.symbol}</p>
-                </>
+                <dl className="ex-pool__facts">
+                  <div>
+                    <dt>{t.wallet.chainNetwork}</dt>
+                    <dd className="ex-num">{chainState.chain.name} · {t.wallet.chainId} {chainState.chain.id}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.wallet.blockNumber}</dt>
+                    <dd className="ex-num">{chainState.chain.blockNumber}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.wallet.nativeGasBalance}</dt>
+                    <dd className="ex-num">{chainState.native.balanceFormatted} {chainState.native.symbol}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.wallet.usdcContract}</dt>
+                    <dd className="ex-num">{chainState.usdc.address}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.wallet.usdcBalance}</dt>
+                    <dd className="ex-num">{chainState.usdc.balanceFormatted} {chainState.usdc.symbol}</dd>
+                  </div>
+                </dl>
               ) : (
-                <p>{chainBusy || "Arc Testnet balance not loaded yet."}</p>
+                <p className="ex-wallet-ledger__pending">{chainBusy || t.wallet.balanceNotLoaded}</p>
               )}
 
-              {!sessionNeedsAuth && chainError && <p className="wf-message">{chainError}</p>}
+              {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
 
-              <div className="wf-row">
-                <button className="wf-action" type="button" onClick={refreshChainState} disabled={Boolean(chainBusy)}>
-                  {chainBusy || "Refresh onchain balance"}
+              <div className="ex-wallet-actions">
+                <button className="ex-btn ex-btn--ghost" type="button" onClick={refreshChainState} disabled={Boolean(chainBusy)}>
+                  {chainBusy || t.wallet.refreshBalance}
                 </button>
                 <a
-                  className="wf-action"
+                  className="ex-btn ex-btn--ghost"
                   href="https://faucet.circle.com/"
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Open Circle Faucet
+                  {t.wallet.openFaucet}
                 </a>
                 {chainState && (
                   <a
-                    className="wf-action"
+                    className="ex-btn ex-btn--ghost"
                     href={chainState.wallet.explorerUrl}
                     target="_blank"
                     rel="noreferrer"
                   >
-                    View on ArcScan
+                    {t.wallet.viewOnArcScan}
                   </a>
                 )}
-                <Link className="wf-action" href="/pools">Explore pools</Link>
+                <Link className="ex-btn ex-btn--ink" href="/pools">{t.wallet.explorePools}</Link>
               </div>
             </section>
 
-            <section className="wf-panel">
-              <h2>Session</h2>
-              <p>
-                The EXTREMA wallet private key is encrypted on the backend.
-                Returning sessions authenticate with the owner wallet plus passkey.
-              </p>
-              <button className="wf-action" type="button" onClick={handleLock}>
-                Disconnect session
+            <section className="ex-entry ex-wallet-session">
+              <h3 className="ex-entry__title">{t.wallet.sessionTitle}</h3>
+              <p className="ex-entry__note">{t.wallet.sessionBody}</p>
+              <button className="ex-btn ex-btn--ghost" type="button" onClick={handleLock}>
+                {t.wallet.disconnectSession}
               </button>
             </section>
           </div>
-        </section>
+        </div>
       </main>
     );
   }
 
   if (step === "owner") {
     return (
-      <main className="wf-page">
+      <main className="ex-wallet-page">
         <ProductHeader />
-        <section className="wf-main">
-          <div className="wf-row" style={{ marginBottom: 24 }}>
-            <div>
-              <b>Owner wallet</b>
-              <div>{isConnected && connectedAddress ? shortAddress(connectedAddress) : "Not connected"}</div>
+        <div className="ex-shell">
+          <div className="ex-wallet-strip">
+            <div className="ex-wallet-strip__item">
+              <span className="ex-wallet-strip__key">{t.wallet.ownerWallet}</span>
+              <span className="ex-wallet-strip__val ex-num">
+                {isConnected && connectedAddress ? shortAddress(connectedAddress) : t.wallet.notConnected}
+              </span>
             </div>
-            <div>
-              <b>Network</b>
-              <div>{chain?.name || "—"}</div>
+            <div className="ex-wallet-strip__item">
+              <span className="ex-wallet-strip__key">{t.wallet.network}</span>
+              <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
             </div>
-            <button className="wf-action" type="button" onClick={isConnected ? () => disconnect() : handleConnectInjected}>
-              {isConnected ? "Disconnect" : "Connect wallet"}
-            </button>
+            <div className="ex-wallet-strip__actions">
+              <button className="ex-btn ex-btn--ghost" type="button" onClick={isConnected ? () => disconnect() : handleConnectInjected}>
+                {isConnected ? t.wallet.disconnect : t.wallet.connectOwnerWallet}
+              </button>
+            </div>
           </div>
-          <p>STEP 1</p>
-          <h1>Connect your owner wallet</h1>
-          <p>
-            This wallet proves account ownership. It is separate from the EXTREMA wallet
-            that will be created for predictions.
-          </p>
 
-          <section className="wf-panel wf-section">
-            <h2>Owner wallet required</h2>
-            <p>MetaMask, Rabby or another injected EVM wallet can be used.</p>
-            <button className="wf-action" type="button" onClick={handleConnectInjected} disabled={Boolean(busy)}>
-              {busy || "Connect owner wallet"}
+          <div className="ex-wallet-hero">
+            <p className="ex-eyebrow">{t.wallet.entranceEyebrow}</p>
+            <h1 className="ex-display ex-display--xl">{t.wallet.entranceTitle}</h1>
+            <p className="ex-lede">{t.wallet.entranceLede}</p>
+          </div>
+
+          <div className="ex-band-split ex-band-split--2">
+            <div>
+              <p className="ex-wallet-explain__key">{t.wallet.ownerExplainKey}</p>
+              <p className="ex-wallet-explain__body">{t.wallet.ownerExplainBody}</p>
+            </div>
+            <div>
+              <p className="ex-wallet-explain__key">{t.wallet.extremaExplainKey}</p>
+              <p className="ex-wallet-explain__body">{t.wallet.extremaExplainBody}</p>
+            </div>
+          </div>
+
+          <div className="ex-wallet-panel">
+            <button className="ex-btn ex-btn--ink" type="button" onClick={handleConnectInjected} disabled={Boolean(busy)}>
+              {busy || t.wallet.connectCta}
             </button>
-            {error && <p className="wf-message">{error}</p>}
-          </section>
-        </section>
+            <p className="ex-wallet-panel__note">{t.wallet.requirementNote}</p>
+            {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
+          </div>
+        </div>
       </main>
     );
   }
 
   if (step === "create" && ownerAddress) {
     return (
-      <main className="wf-page">
+      <main className="ex-wallet-page">
         <ProductHeader />
-        <section className="wf-main">
-          <div className="wf-row" style={{ marginBottom: 24 }}>
-            <div><b>Owner wallet</b><div>{connectedAddress ? shortAddress(connectedAddress) : "Not connected"}</div></div>
-            <div><b>Network</b><div>{chain?.name || "—"}</div></div>
-            <div className="wf-row">
+        <div className="ex-shell">
+          <div className="ex-wallet-strip">
+            <div className="ex-wallet-strip__item">
+              <span className="ex-wallet-strip__key">{t.wallet.ownerWallet}</span>
+              <span className="ex-wallet-strip__val ex-num">{connectedAddress ? shortAddress(connectedAddress) : t.wallet.notConnected}</span>
+            </div>
+            <div className="ex-wallet-strip__item">
+              <span className="ex-wallet-strip__key">{t.wallet.network}</span>
+              <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
+            </div>
+            <div className="ex-wallet-strip__actions">
               {chain?.id !== arcTestnet.id && (
-                <button className="wf-action" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
-                  Switch to Arc Testnet
+                <button className="ex-btn ex-btn--ghost" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
+                  {t.wallet.switchToArc}
                 </button>
               )}
-              <button className="wf-action" type="button" onClick={() => disconnect()}>Disconnect</button>
+              <button className="ex-btn ex-btn--ghost" type="button" onClick={() => disconnect()}>{t.wallet.disconnect}</button>
             </div>
           </div>
-          <p>STEP 3</p>
-          <h1>Set up EXTREMA wallet</h1>
-          <p>Owner: {shortAddress(ownerAddress)}</p>
 
-          <section className="wf-panel wf-section">
-            <label className="wf-field">
-              Device name
+          <div className="ex-wallet-hero">
+            <p className="ex-eyebrow">{t.wallet.createEyebrow}</p>
+            <h1 className="ex-display ex-display--lg">{t.wallet.createTitle}</h1>
+          </div>
+
+          <div className="ex-wallet-panel">
+            <label className="ex-entry__field">
+              <span className="ex-entry__label">{t.wallet.deviceNameLabel}</span>
               <input
                 value={deviceName}
                 maxLength={100}
                 onChange={(event) => setDeviceName(event.target.value)}
-                placeholder="e.g. My MacBook"
+                placeholder={t.wallet.deviceNamePlaceholder}
               />
             </label>
 
-            <p>
-              Next, your owner wallet will ask you to sign an EXTREMA registration message.
-              Only after that succeeds will the browser ask you to register a passkey.
-              If this owner already has an EXTREMA wallet, the existing wallet will be restored.
-              Otherwise a new wallet will be created and its private key will be shown once.
-            </p>
+            <p className="ex-wallet-panel__note">{t.wallet.createFlowNote}</p>
 
-            <div className="wf-row">
-              <button className="wf-action" type="button" onClick={handleCreate} disabled={Boolean(busy)}>
-                {busy || "Sign, register passkey & continue"}
+            <div className="ex-wallet-panel__actions">
+              <button className="ex-btn ex-btn--ink" type="button" onClick={handleCreate} disabled={Boolean(busy)}>
+                {busy || t.wallet.createCta}
               </button>
-              <button className="wf-action" type="button" onClick={() => setStep("choice")} disabled={Boolean(busy)}>
-                Back
+              <button className="ex-btn ex-btn--ghost" type="button" onClick={() => setStep("choice")} disabled={Boolean(busy)}>
+                {t.wallet.back}
               </button>
             </div>
 
-            {error && <p className="wf-message">{error}</p>}
-          </section>
-        </section>
+            {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
+          </div>
+        </div>
       </main>
     );
   }
 
   return (
-    <main className="wf-page">
+    <main className="ex-wallet-page">
       <ProductHeader />
-      <section className="wf-main">
-        <div className="wf-row" style={{ marginBottom: 24 }}>
-          <div><b>Owner wallet</b><div>{connectedAddress ? shortAddress(connectedAddress) : "Not connected"}</div></div>
-          <div><b>Network</b><div>{chain?.name || "—"}</div></div>
-          <div className="wf-row">
+      <div className="ex-shell">
+        <div className="ex-wallet-strip">
+          <div className="ex-wallet-strip__item">
+            <span className="ex-wallet-strip__key">{t.wallet.ownerWallet}</span>
+            <span className="ex-wallet-strip__val ex-num">{connectedAddress ? shortAddress(connectedAddress) : t.wallet.notConnected}</span>
+          </div>
+          <div className="ex-wallet-strip__item">
+            <span className="ex-wallet-strip__key">{t.wallet.network}</span>
+            <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
+          </div>
+          <div className="ex-wallet-strip__actions">
             {chain?.id !== arcTestnet.id && (
-              <button className="wf-action" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
-                Switch to Arc Testnet
+              <button className="ex-btn ex-btn--ghost" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
+                {t.wallet.switchToArc}
               </button>
             )}
-            <button className="wf-action" type="button" onClick={() => disconnect()}>Disconnect</button>
+            <button className="ex-btn ex-btn--ghost" type="button" onClick={() => disconnect()}>{t.wallet.disconnect}</button>
           </div>
         </div>
-        <p>STEP 2</p>
-        <h1>EXTREMA wallet</h1>
-        <p>Owner wallet connected: <b>{ownerAddress ? shortAddress(ownerAddress) : "—"}</b></p>
 
-        <div className="wf-two-col wf-section">
-          <section className="wf-panel">
-            <h2>Set up EXTREMA wallet</h2>
-            <p>
-              Register a passkey to continue. If this owner already has an EXTREMA wallet,
-              it will be restored. Otherwise a new server-managed EVM wallet will be created
-              and its private key will be shown exactly once.
-            </p>
-            <button className="wf-action" type="button" onClick={() => {
-              setError("");
-              setStep("create");
-            }}>
-              Register passkey & continue
-            </button>
-          </section>
-
-          <section className="wf-panel">
-            <h2>Reconnect existing EXTREMA wallet</h2>
-            <p>
-              Already created one? Authenticate with the registered passkey and restore the session.
-            </p>
-            <button className="wf-action" type="button" onClick={handleReconnect} disabled={Boolean(busy)}>
-              {busy || "Authenticate with passkey"}
-            </button>
-          </section>
+        <div className="ex-wallet-hero">
+          <p className="ex-eyebrow">{t.wallet.choiceEyebrow}</p>
+          <h1 className="ex-display ex-display--lg">{t.wallet.choiceTitle}</h1>
+          <p className="ex-lede">{t.wallet.choiceLede}</p>
         </div>
 
-        <button className="wf-action" type="button" onClick={() => {
+        <div className="ex-wallet-panel">
+          <button className="ex-btn ex-btn--ink" type="button" onClick={() => {
+            setError("");
+            setStep("create");
+          }}>
+            {t.wallet.choiceCta}
+          </button>
+        </div>
+
+        <div className="ex-wallet-alt">
+          <div className="ex-wallet-alt__copy">
+            <p className="ex-wallet-alt__title">{t.wallet.reconnectTitle}</p>
+            <p className="ex-wallet-alt__body">{t.wallet.reconnectBody}</p>
+          </div>
+          <button className="ex-btn ex-btn--ghost" type="button" onClick={handleReconnect} disabled={Boolean(busy)}>
+            {busy || t.wallet.reconnectCta}
+          </button>
+        </div>
+
+        {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
+
+        <button className="ex-wallet-change" type="button" onClick={() => {
           disconnect();
           setOwnerAddress(null);
           setStep("owner");
         }}>
-          Change owner wallet
+          {t.wallet.changeOwner}
         </button>
-
-        {error && <p className="wf-message">{error}</p>}
-      </section>
+      </div>
     </main>
   );
 }
