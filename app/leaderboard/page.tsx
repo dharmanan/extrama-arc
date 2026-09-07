@@ -5,6 +5,7 @@ import { ProductHeader } from "../product-components";
 import { backendApi, type ArchiveWinner } from "../lib/backend-api";
 import { formatUsdc } from "../lib/display";
 import { useCopy, useLocale } from "../i18n";
+import { useWalletSession } from "../wallet-session";
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -64,7 +65,9 @@ function buildLeaderboard(winners: ArchiveWinner[]): LeaderboardRow[] {
 export default function LeaderboardPage() {
   const { locale } = useLocale();
   const t = useCopy();
+  const { address: ownAddress } = useWalletSession();
   const [winners, setWinners] = useState<ArchiveWinner[] | null>(null);
+  const [blockNumber, setBlockNumber] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -80,6 +83,7 @@ export default function LeaderboardPage() {
           .filter((round) => round.contractStatus === "SETTLED")
           .flatMap((round) => round.winners);
         setWinners(settledWinners);
+        setBlockNumber(result.chain.blockNumber);
         setError("");
       })
       .catch((cause: unknown) => {
@@ -97,52 +101,86 @@ export default function LeaderboardPage() {
 
   const rows = useMemo(() => (winners ? buildLeaderboard(winners) : []), [winners]);
 
-  return (
-    <main className="wf-page">
-      <ProductHeader />
-      <section className="wf-main">
-        <p>{t.leaderboardWindow}</p>
-        <h1>{t.leaderboard}</h1>
+  // Derived purely from the already-correct BigInt rows above; buildLeaderboard()
+  // itself is untouched.
+  const totalPrizeRaw = useMemo(
+    () => rows.reduce((total, row) => total + row.totalRewardRaw, BigInt(0)),
+    [rows],
+  );
 
-        {loading && <p>{t.leaderboardLoading}</p>}
+  return (
+    <main className="ex-leaderboard">
+      <ProductHeader />
+      <div className="ex-shell">
+        <section className="ex-leaderboard__head">
+          <div>
+            <p className="ex-eyebrow">{t.leaderboardWindow}</p>
+            <h1 className="ex-display ex-display--lg">{t.leaderboard}</h1>
+            <p className="ex-lede">{t.leaderboardLede}</p>
+          </div>
+
+          <dl className="ex-leaderboard__summary">
+            <div><dt>{t.leaderboardEntrants}</dt><dd className="ex-num">{rows.length}</dd></div>
+            <div><dt>{t.leaderboardTotalPrize}</dt><dd className="ex-num">{formatUsdc(rawToDecimalString(totalPrizeRaw), locale)}</dd></div>
+            <div><dt>Arc Testnet</dt><dd className="ex-num">{blockNumber ?? "—"}</dd></div>
+          </dl>
+        </section>
+
+        {loading && (
+          <section className="ex-leaderboard__state">
+            <p className="ex-eyebrow">{t.leaderboardWindow}</p>
+            <p>{t.leaderboardLoading}</p>
+          </section>
+        )}
 
         {!loading && error && (
-          <section className="wf-panel wf-section">
+          <section className="ex-leaderboard__state" data-tone="error">
+            <p className="ex-eyebrow">{t.leaderboardUnavailable}</p>
             <p>{error}</p>
           </section>
         )}
 
         {!loading && !error && rows.length === 0 && (
-          <section className="wf-panel wf-section">
+          <section className="ex-leaderboard__state">
+            <p className="ex-eyebrow">{t.leaderboardWindow}</p>
             <p>{t.leaderboardEmpty}</p>
           </section>
         )}
 
         {!loading && !error && rows.length > 0 && (
-          <table className="wf-table wf-section">
-            <thead>
-              <tr>
-                <th>{t.leaderboardRank}</th>
-                <th>{t.leaderboardWallet}</th>
-                <th>{t.leaderboardWins}</th>
-                <th>{t.leaderboardPodiums}</th>
-                <th>{t.leaderboardPrizeValue}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <tr key={row.address}>
-                  <td>#{index + 1}</td>
-                  <td title={row.address}>{shortAddress(row.address)}</td>
-                  <td>{row.wins}</td>
-                  <td>{row.podiums}</td>
-                  <td>{formatUsdc(rawToDecimalString(row.totalRewardRaw), locale)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="ex-leaderboard__ledger">
+            <div className="ex-leaderboard-row ex-leaderboard-row--head" aria-hidden="true">
+              <span>{t.leaderboardRank}</span>
+              <span>{t.leaderboardWallet}</span>
+              <span>{t.leaderboardWins}</span>
+              <span>{t.leaderboardPodiums}</span>
+              <span>{t.leaderboardPrizeValue}</span>
+            </div>
+
+            {rows.map((row, index) => {
+              const isYou = Boolean(ownAddress) && row.address.toLowerCase() === ownAddress?.toLowerCase();
+              return (
+                <div className="ex-leaderboard-row" data-podium={index < 3} data-you={isYou} key={row.address}>
+                  <span className="ex-leaderboard-row__rank ex-num">{String(index + 1).padStart(2, "0")}</span>
+                  <span className="ex-leaderboard-row__wallet">
+                    <span className="ex-num" title={row.address}>{shortAddress(row.address)}</span>
+                    {isYou && <b className="ex-leaderboard-row__you">{t.leaderboardYou}</b>}
+                  </span>
+                  <span className="ex-leaderboard-row__stats">
+                    <span className="ex-leaderboard-row__stat" data-label={t.leaderboardWins}>
+                      <span className="ex-num">{row.wins}</span>
+                    </span>
+                    <span className="ex-leaderboard-row__stat" data-label={t.leaderboardPodiums}>
+                      <span className="ex-num">{row.podiums}</span>
+                    </span>
+                  </span>
+                  <span className="ex-leaderboard-row__prize ex-num">{formatUsdc(rawToDecimalString(row.totalRewardRaw), locale)}</span>
+                </div>
+              );
+            })}
+          </div>
         )}
-      </section>
+      </div>
     </main>
   );
 }

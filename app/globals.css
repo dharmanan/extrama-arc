@@ -1330,3 +1330,125 @@ img{max-width:100%}
 @media(max-width:700px){
   .ex-archive__query{align-items:flex-start;flex-direction:column;gap:10px}
 }
+
+/* ==========================================================================
+   Leaderboard. A ranked ledger, not a table: hairline rules, mono numerals,
+   ember reserved for the viewer's own row and for a top-3 rank. Attribution
+   and BigInt accounting live entirely in the page component; this is
+   presentation only.
+   ========================================================================== */
+
+.ex-leaderboard{padding-bottom:clamp(56px,7vw,100px)}
+
+.ex-leaderboard__head{
+  display:grid;
+  grid-template-columns:minmax(0,6fr) minmax(280px,4fr);
+  gap:clamp(30px,6vw,96px);
+  align-items:end;
+  padding-block:clamp(42px,5.4vw,76px);
+  border-bottom:1px solid var(--line-strong);
+}
+.ex-leaderboard__head>div:first-child{display:grid;gap:16px}
+
+.ex-leaderboard__summary{display:grid;margin:0;border-top:1px solid var(--line-strong)}
+.ex-leaderboard__summary>div{display:flex;align-items:baseline;justify-content:space-between;gap:18px;padding-block:12px;border-bottom:1px solid var(--line)}
+.ex-leaderboard__summary dt{font-size:.72rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.ex-leaderboard__summary dd{margin:0;font-size:1rem;color:var(--ink)}
+
+.ex-leaderboard__state{display:grid;gap:10px;padding-block:clamp(34px,4.4vw,62px);border-bottom:1px solid var(--line-strong)}
+.ex-leaderboard__state[data-tone="error"]{border-bottom-color:var(--ember)}
+.ex-leaderboard__state p{margin:0;color:var(--ink-2);font-size:.98rem;line-height:1.55}
+
+.ex-leaderboard__ledger{border-top:1px solid var(--line-strong)}
+
+.ex-leaderboard-row{
+  display:grid;
+  grid-template-columns:minmax(46px,.5fr) minmax(160px,3fr) minmax(64px,.9fr) minmax(64px,.9fr) minmax(120px,1.3fr);
+  gap:clamp(14px,2vw,28px);
+  align-items:center;
+  padding-block:clamp(14px,1.7vw,20px);
+  padding-inline:clamp(6px,.8vw,10px);
+  border-bottom:1px solid var(--line);
+}
+.ex-leaderboard-row--head{
+  padding-block:0 10px;
+  font-size:.75rem;
+  font-weight:700;
+  letter-spacing:.13em;
+  text-transform:uppercase;
+  color:var(--muted);
+  border-bottom:1px solid var(--line-strong);
+}
+.ex-leaderboard-row__rank{font-size:1.02rem}
+.ex-leaderboard-row[data-podium="true"] .ex-leaderboard-row__rank{color:var(--ember)}
+.ex-leaderboard-row__wallet{display:flex;align-items:baseline;gap:9px;min-width:0;flex-wrap:wrap}
+.ex-leaderboard-row__you{
+  font-size:.68rem;
+  font-weight:700;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--ember);
+}
+.ex-leaderboard-row[data-you="true"]{background:var(--ember-soft)}
+/* display:contents on desktop keeps wins/podiums as direct grid items of
+   the row (their own columns); the mobile query below turns it into the
+   actual flex container that pairs them into one collapsed cell. */
+.ex-leaderboard-row__stats{display:contents}
+.ex-leaderboard-row__stat{display:flex}
+.ex-leaderboard-row__prize{font-size:1rem;text-align:right}
+
+@media(max-width:900px){
+  .ex-leaderboard__head{grid-template-columns:minmax(0,1fr);align-items:start}
+}
+
+@media(max-width:640px){
+  .ex-leaderboard-row--head{display:none}
+  .ex-leaderboard-row{
+    grid-template-columns:auto minmax(0,1fr) auto;
+    grid-template-areas:"rank wallet prize" "rank stats stats";
+    row-gap:8px;
+  }
+  .ex-leaderboard-row__rank{grid-area:rank;align-self:start}
+  .ex-leaderboard-row__wallet{grid-area:wallet}
+  .ex-leaderboard-row__prize{grid-area:prize;text-align:right}
+  .ex-leaderboard-row__stats{grid-area:stats;display:flex}
+  .ex-leaderboard-row__stat{display:inline-flex}
+  .ex-leaderboard-row__stat + .ex-leaderboard-row__stat{margin-inline-start:20px}
+  .ex-leaderboard-row__stat::before{
+    content:attr(data-label) " ";
+    font-size:.7rem;
+    font-weight:600;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin-inline-end:6px;
+  }
+}
+
+/* ==========================================================================
+   How it works. The full manual, built from the same components the
+   homepage previews: numbered steps, the payout split, plain hairline rules.
+   ========================================================================== */
+
+.ex-howitworks__head{
+  display:grid;
+  gap:clamp(14px,1.7vw,20px);
+  align-content:start;
+  max-width:64ch;
+  padding-block:clamp(42px,5.4vw,76px) clamp(30px,3.6vw,48px);
+}
+
+.ex-howitworks__close{padding-block:clamp(48px,6vw,84px);border-top:1px solid var(--line-strong)}
+.ex-howitworks__close-inner{
+  display:grid;
+  grid-template-columns:minmax(0,6fr) minmax(0,5fr);
+  gap:clamp(24px,4vw,56px);
+  align-items:center;
+}
+.ex-howitworks__close-inner>div:first-child{display:grid;gap:10px}
+.ex-howitworks__close-actions{display:flex;flex-wrap:wrap;gap:12px;justify-self:end}
+
+@media(max-width:900px){
+  .ex-howitworks__close-inner{grid-template-columns:minmax(0,1fr);align-items:start}
+  .ex-howitworks__close-actions{justify-self:start}
+}
