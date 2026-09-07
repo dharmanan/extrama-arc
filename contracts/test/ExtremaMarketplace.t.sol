@@ -295,7 +295,7 @@ contract ExtremaMarketplaceTest {
     function testCancelledRoundCannotBeListedOrBought() public {
         uint256 roundId = _createRound();
         uint256 aliceTicket = _enter(ALICE, roundId, 10_000);
-        _enter(BOB, roundId, 11_000);
+        uint256 bobTicket = _enter(BOB, roundId, 11_000);
         _approveTicket(ALICE, aliceTicket);
         uint256 listingId = _list(ALICE, aliceTicket, 1_000_000);
 
@@ -305,8 +305,8 @@ contract ExtremaMarketplaceTest {
         marketplace.buy(listingId);
 
         vm.expectRevert(ExtremaMarketplace.RoundNotTradable.selector);
-        vm.prank(ALICE);
-        marketplace.list(address(ticket), aliceTicket, 2_000_000);
+        vm.prank(BOB);
+        marketplace.list(address(ticket), bobTicket, 2_000_000);
     }
 
     function testUnsoldWinningTicketKeepsSellerClaimRight() public {
@@ -375,7 +375,7 @@ contract ExtremaMarketplaceTest {
         require(usdc.balanceOf(BOB) - bobBefore == 1_000_000, "sold refund");
     }
 
-    function testFailedUsdcTransferRevertsEntirePurchase() public {
+    function testPurchaseRevertsOnFailedUsdcTransfer() public {
         uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
         _approveTicket(ALICE, tokenId);
         uint256 listingId = _list(ALICE, tokenId, 1_000_000);
