@@ -93,6 +93,7 @@ contract ExtremaMarketplaceTest {
         require(listing.tokenId == tokenId, "token id");
         require(listing.askUsdc == 123_456_789, "ask");
         require(listing.roundId == roundId, "round");
+        require(listing.createdAt == uint64(block.timestamp), "created at");
         require(listing.status == ExtremaMarketplace.ListingStatus.ACTIVE, "active");
         require(ticket.ownerOf(tokenId) == ALICE, "non custodial");
     }
@@ -182,27 +183,38 @@ contract ExtremaMarketplaceTest {
 
         vm.expectRevert(ExtremaMarketplace.SellerNotOwner.selector);
         vm.prank(CAROL);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
         require(marketplace.isListingBuyable(listingId) == false, "not buyable");
         require(marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.ACTIVE, "active");
     }
 
     function testPerTokenApprovalIsRequiredButApprovalForAllIsNot() public {
         uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
-        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
 
         vm.prank(ALICE);
         ticket.setApprovalForAll(address(marketplace), true);
-        vm.prank(BOB);
-        usdc.approve(address(marketplace), 1_000_000);
         vm.expectRevert(ExtremaMarketplace.TokenNotApproved.selector);
-        vm.prank(BOB);
-        marketplace.buy(listingId);
+        vm.prank(ALICE);
+        marketplace.list(address(ticket), tokenId, 1_000_000);
 
         _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        usdc.approve(address(marketplace), 1_000_000);
+        vm.prank(BOB);
+        marketplace.buy(listingId, 1_000_000);
         require(ticket.ownerOf(tokenId) == BOB, "buyer owns nft");
+    }
+
+    function testListingWithoutPerTokenApprovalFails() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        vm.expectRevert(ExtremaMarketplace.TokenNotApproved.selector);
+        vm.prank(ALICE);
+        marketplace.list(address(ticket), tokenId, 1_000_000);
+
+        _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
+        require(marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.ACTIVE, "listed");
     }
 
     function testApprovalRemovalMakesListingUnbuyable() public {
@@ -214,9 +226,37 @@ contract ExtremaMarketplaceTest {
         ticket.approve(address(0), tokenId);
         vm.expectRevert(ExtremaMarketplace.TokenNotApproved.selector);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
         require(ticket.ownerOf(tokenId) == ALICE, "nft unchanged");
         require(marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.ACTIVE, "listing unchanged");
+    }
+
+    function testRevokedApprovalBlocksPriceUpdateUntilReapproved() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
+
+        vm.prank(ALICE);
+        ticket.approve(address(0), tokenId);
+        vm.expectRevert(ExtremaMarketplace.TokenNotApproved.selector);
+        vm.prank(ALICE);
+        marketplace.updatePrice(listingId, 2_000_000);
+
+        _approveTicket(ALICE, tokenId);
+        vm.prank(ALICE);
+        marketplace.updatePrice(listingId, 2_000_000);
+        require(marketplace.getListing(listingId).askUsdc == 2_000_000, "updated after reapprove");
+    }
+
+    function testCancelDoesNotRequireApproval() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
+        vm.prank(ALICE);
+        ticket.approve(address(0), tokenId);
+        vm.prank(ALICE);
+        marketplace.cancel(listingId);
+        require(marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.CANCELLED, "cancelled");
     }
 
     function testBuyTransfersExactUsdcAndNftAtomically() public {
@@ -229,7 +269,7 @@ contract ExtremaMarketplaceTest {
         uint256 sellerBefore = usdc.balanceOf(ALICE);
         uint256 buyerBefore = usdc.balanceOf(BOB);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_234_567);
 
         require(usdc.balanceOf(ALICE) - sellerBefore == 1_234_567, "seller exact");
         require(buyerBefore - usdc.balanceOf(BOB) == 1_234_567, "buyer exact");
@@ -238,13 +278,76 @@ contract ExtremaMarketplaceTest {
         require(marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.SOLD, "sold");
     }
 
+    function testBuyerPriceProtectionRequiresExactExpectedAsk() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
+
+        vm.prank(ALICE);
+        marketplace.updatePrice(listingId, 2_000_000);
+        vm.prank(BOB);
+        usdc.approve(address(marketplace), 2_000_000);
+
+        uint256 buyerBefore = usdc.balanceOf(BOB);
+        vm.expectRevert(ExtremaMarketplace.PriceChanged.selector);
+        vm.prank(BOB);
+        marketplace.buy(listingId, 1_000_000);
+        require(usdc.balanceOf(BOB) == buyerBefore, "stale price unchanged");
+
+        vm.prank(BOB);
+        marketplace.buy(listingId, 2_000_000);
+        require(ticket.ownerOf(tokenId) == BOB, "correct price succeeds");
+    }
+
+    function testIncompatibleContractBuyerRollsBackUsdcAndNftDelivery() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
+        NonReceiverBuyer buyer = new NonReceiverBuyer();
+        buyer.prepare(usdc, address(marketplace), 1_000_000);
+
+        uint256 buyerBefore = usdc.balanceOf(address(buyer));
+        uint256 sellerBefore = usdc.balanceOf(ALICE);
+        vm.expectRevert(ExtremaMarketplace.NftTransferFailed.selector);
+        buyer.execute(marketplace, listingId, 1_000_000);
+
+        require(usdc.balanceOf(address(buyer)) == buyerBefore, "buyer usdc rolled back");
+        require(usdc.balanceOf(ALICE) == sellerBefore, "seller usdc rolled back");
+        require(ticket.ownerOf(tokenId) == ALICE, "nft rolled back");
+        require(
+            marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.ACTIVE,
+            "listing rolled back"
+        );
+    }
+
+    function testOwnershipStaleListingCanBeInvalidatedAndRelistedByNewOwner() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        _approveTicket(ALICE, tokenId);
+        uint256 oldListingId = _list(ALICE, tokenId, 1_000_000);
+        uint64 oldCreatedAt = marketplace.getListing(oldListingId).createdAt;
+
+        vm.prank(ALICE);
+        ticket.transferFrom(ALICE, BOB, tokenId);
+        vm.warp(block.timestamp + 1);
+        _approveTicket(BOB, tokenId);
+        uint256 newListingId = _list(BOB, tokenId, 2_000_000);
+
+        require(newListingId != oldListingId, "new listing id");
+        require(
+            marketplace.getListing(oldListingId).status == ExtremaMarketplace.ListingStatus.INVALIDATED,
+            "old invalidated"
+        );
+        require(marketplace.activeListingId(address(ticket), tokenId) == newListingId, "new active slot");
+        require(marketplace.getListing(newListingId).createdAt > oldCreatedAt, "new created at");
+    }
+
     function testSellerCannotBuyOwnListing() public {
         uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
         _approveTicket(ALICE, tokenId);
         uint256 listingId = _list(ALICE, tokenId, 1_000_000);
         vm.expectRevert(ExtremaMarketplace.BuyerIsSeller.selector);
         vm.prank(ALICE);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
     }
 
     function testBuyRejectedAtOneHourCutoff() public {
@@ -257,7 +360,7 @@ contract ExtremaMarketplaceTest {
         vm.warp(observationEndAt - 1 hours);
         vm.expectRevert(ExtremaMarketplace.TradingWindowClosed.selector);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
     }
 
     function testLockedRoundRemainsTradableBeforeCutoff() public {
@@ -270,7 +373,7 @@ contract ExtremaMarketplaceTest {
         vm.prank(BOB);
         usdc.approve(address(marketplace), 1_000_000);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
         require(ticket.ownerOf(tokenId) == BOB, "locked sale");
     }
 
@@ -285,7 +388,7 @@ contract ExtremaMarketplaceTest {
         _settle(roundId);
         vm.expectRevert(ExtremaMarketplace.RoundNotTradable.selector);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
 
         vm.expectRevert(ExtremaMarketplace.RoundNotTradable.selector);
         vm.prank(ALICE);
@@ -302,7 +405,7 @@ contract ExtremaMarketplaceTest {
         _cancel(roundId);
         vm.expectRevert(ExtremaMarketplace.RoundNotTradable.selector);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
 
         vm.expectRevert(ExtremaMarketplace.RoundNotTradable.selector);
         vm.prank(BOB);
@@ -334,7 +437,7 @@ contract ExtremaMarketplaceTest {
         vm.prank(BOB);
         usdc.approve(address(marketplace), 1_000_000);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
 
         _settle(roundId);
         (uint256 storedTicketId, uint256 storedRoundId, address originalEntrant, uint64 prediction, uint64 sequence) =
@@ -367,7 +470,7 @@ contract ExtremaMarketplaceTest {
         vm.prank(BOB);
         usdc.approve(address(marketplace), 1_000_000);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
         _cancel(secondRound);
         uint256 bobBefore = usdc.balanceOf(BOB);
         vm.prank(BOB);
@@ -384,7 +487,7 @@ contract ExtremaMarketplaceTest {
 
         vm.expectRevert(ExtremaMarketplace.TokenTransferFailed.selector);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
         require(ticket.ownerOf(tokenId) == ALICE, "nft unchanged");
         require(marketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.ACTIVE, "listing unchanged");
     }
@@ -436,7 +539,7 @@ contract ExtremaMarketplaceTest {
         attackUsdc.configureAttack(address(attackMarketplace), listingId);
         vm.expectRevert(ExtremaMarketplace.TokenTransferFailed.selector);
         vm.prank(BOB);
-        attackMarketplace.buy(listingId);
+        attackMarketplace.buy(listingId, 1_000_000);
         require(attackTicket.ownerOf(tokenId) == ALICE, "reentrant nft unchanged");
         require(
             attackMarketplace.getListing(listingId).status == ExtremaMarketplace.ListingStatus.ACTIVE,
@@ -461,7 +564,7 @@ contract ExtremaMarketplaceTest {
         vm.expectRevert(ExtremaMarketplace.ListingNotFound.selector);
         marketplace.cancel(999);
         vm.expectRevert(ExtremaMarketplace.ListingNotFound.selector);
-        marketplace.buy(999);
+        marketplace.buy(999, 0);
     }
 
     function testSoldListingCannotBeUpdatedOrCancelled() public {
@@ -471,7 +574,7 @@ contract ExtremaMarketplaceTest {
         vm.prank(BOB);
         usdc.approve(address(marketplace), 1_000_000);
         vm.prank(BOB);
-        marketplace.buy(listingId);
+        marketplace.buy(listingId, 1_000_000);
 
         vm.expectRevert(ExtremaMarketplace.ListingNotActive.selector);
         vm.prank(ALICE);
@@ -598,7 +701,7 @@ contract ReentrantUSDC {
 
         if (attack && msg.sender == attackMarketplace) {
             attack = false;
-            ExtremaMarketplace(attackMarketplace).buy(attackListingId);
+            ExtremaMarketplace(attackMarketplace).buy(attackListingId, 1_000_000);
         }
 
         _transfer(from, to, amount);
@@ -609,5 +712,16 @@ contract ReentrantUSDC {
         require(balanceOf[from] >= amount, "balance");
         balanceOf[from] -= amount;
         balanceOf[to] += amount;
+    }
+}
+
+contract NonReceiverBuyer {
+    function prepare(MockUSDC usdc, address marketplace, uint256 amount) external {
+        usdc.mint(address(this), amount);
+        usdc.approve(marketplace, amount);
+    }
+
+    function execute(ExtremaMarketplace marketplace, uint256 listingId, uint256 expectedAskUsdc) external {
+        marketplace.buy(listingId, expectedAskUsdc);
     }
 }

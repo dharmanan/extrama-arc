@@ -30,13 +30,15 @@ contract ExtremaMarketplace {
     error TokenTransferFailed();
     error NftTransferFailed();
     error Reentrancy();
+    error PriceChanged();
 
     uint256 internal constant TRADING_CUTOFF = 1 hours;
 
     enum ListingStatus {
         ACTIVE,
         SOLD,
-        CANCELLED
+        CANCELLED,
+        INVALIDATED
     }
 
     struct Listing {
@@ -45,6 +47,7 @@ contract ExtremaMarketplace {
         uint256 tokenId;
         uint256 askUsdc;
         uint256 roundId;
+        uint64 createdAt;
         ListingStatus status;
     }
 
@@ -67,6 +70,7 @@ contract ExtremaMarketplace {
     );
     event ListingPriceUpdated(uint256 indexed listingId, uint256 askUsdc);
     event Cancelled(uint256 indexed listingId);
+    event Invalidated(uint256 indexed listingId);
     event Sold(
         uint256 indexed listingId,
         address indexed seller,
@@ -97,7 +101,6 @@ contract ExtremaMarketplace {
     ) external nonReentrant returns (uint256 listingId) {
         if (ticket == address(0)) revert ZeroAddress();
         if (askUsdc == 0) revert InvalidAskPrice();
-        if (activeListingId[ticket][tokenId] != 0) revert ActiveListingExists();
 
         (, uint256 roundId, ExtremaPool.Round memory round) =
             _resolveTicketRound(ticket, tokenId);
@@ -106,6 +109,25 @@ contract ExtremaMarketplace {
         address currentOwner = _ownerOf(ticket, tokenId);
         if (currentOwner != msg.sender) revert NotTicketOwner();
 
+        uint256 existingListingId = activeListingId[ticket][tokenId];
+        if (existingListingId != 0) {
+            Listing storage existingListing = listings[existingListingId];
+            if (
+                existingListing.status == ListingStatus.ACTIVE
+                    && existingListing.seller == currentOwner
+            ) revert ActiveListingExists();
+
+            if (existingListing.status == ListingStatus.ACTIVE) {
+                existingListing.status = ListingStatus.INVALIDATED;
+                emit Invalidated(existingListingId);
+            }
+            delete activeListingId[ticket][tokenId];
+        }
+
+        if (_approvedForToken(ticket, tokenId) != address(this)) {
+            revert TokenNotApproved();
+        }
+
         listingId = nextListingId++;
         listings[listingId] = Listing({
             seller: msg.sender,
@@ -113,6 +135,7 @@ contract ExtremaMarketplace {
             tokenId: tokenId,
             askUsdc: askUsdc,
             roundId: roundId,
+            createdAt: uint64(block.timestamp),
             status: ListingStatus.ACTIVE
         });
         activeListingId[ticket][tokenId] = listingId;
@@ -132,6 +155,9 @@ contract ExtremaMarketplace {
         _requireTradable(round);
 
         if (_ownerOf(listing.ticket, listing.tokenId) != msg.sender) revert SellerNotOwner();
+        if (_approvedForToken(listing.ticket, listing.tokenId) != address(this)) {
+            revert TokenNotApproved();
+        }
 
         listing.askUsdc = newAskUsdc;
         listing.roundId = roundId;
@@ -154,8 +180,9 @@ contract ExtremaMarketplace {
     }
 
     /// @notice Atomically exchange exact USDC for the approved ticket NFT.
-    function buy(uint256 listingId) external nonReentrant {
+    function buy(uint256 listingId, uint256 expectedAskUsdc) external nonReentrant {
         Listing storage listing = _activeListing(listingId);
+        if (listing.askUsdc != expectedAskUsdc) revert PriceChanged();
         if (msg.sender == listing.seller) revert BuyerIsSeller();
 
         (, , ExtremaPool.Round memory round) =
@@ -326,7 +353,7 @@ contract ExtremaMarketplace {
     }
 
     function _safeNftTransfer(address ticket, address from, address to, uint256 tokenId) internal {
-        try ExtremaTicket(ticket).transferFrom(from, to, tokenId) {
+        try ExtremaTicket(ticket).safeTransferFrom(from, to, tokenId) {
             // no-op
         } catch {
             revert NftTransferFailed();
