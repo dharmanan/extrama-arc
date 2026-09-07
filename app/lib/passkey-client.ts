@@ -2,6 +2,7 @@
 
 import {
   backendApi,
+  type MarketplaceExecutionMode,
   type PublicKeyCredentialCreationOptionsJSON,
   type PublicKeyCredentialRequestOptionsJSON,
 } from "./backend-api";
@@ -459,3 +460,357 @@ export async function confirmExternalClaimReceipt(actionId: string, txHash: stri
   return finished.result;
 }
 
+
+export type MarketplaceListStartInput = {
+  ticketAddress: string;
+  tokenId: string;
+  askUsdcRaw: string;
+};
+
+export async function confirmMarketplaceListWithPasskey(input: MarketplaceListStartInput) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startMarketplaceList(input);
+
+  const actionMatches =
+    start.action.action === "MARKETPLACE_LIST" &&
+    start.action.chainId === 5042002 &&
+    addressesEqual(start.action.ticketAddress, input.ticketAddress) &&
+    start.action.tokenId === input.tokenId &&
+    start.action.askUsdcRaw === input.askUsdcRaw &&
+    (start.action.executionMode === "BACKEND_WALLET" || start.action.executionMode === "EXTERNAL_OWNER") &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Listing confirmation details did not match the requested ticket.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishMarketplaceList(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.executionMode !== start.action.executionMode
+  ) {
+    throw new Error("Confirmed listing authorization did not match the request.");
+  }
+
+  if (finished.executionMode === "BACKEND_WALLET") {
+    if (
+      finished.result.chainId !== 5042002 ||
+      !addressesEqual(finished.result.ticketAddress, input.ticketAddress) ||
+      finished.result.tokenId !== input.tokenId ||
+      finished.result.askUsdcRaw !== input.askUsdcRaw
+    ) {
+      throw new Error("Confirmed listing did not match the requested ticket.");
+    }
+
+    return { executionMode: "BACKEND_WALLET" as const, result: finished.result };
+  }
+
+  if (
+    finished.transactionRequest.chainId !== 5042002 ||
+    !addressesEqual(finished.transactionRequest.from, start.action.walletAddress)
+  ) {
+    throw new Error("Listing transaction request did not match the requested ticket.");
+  }
+
+  return {
+    executionMode: "EXTERNAL_OWNER" as const,
+    actionId: start.actionId,
+    payloadHash: start.payloadHash,
+    transactionRequest: finished.transactionRequest,
+    sellerAddress: start.action.walletAddress,
+  };
+}
+
+export async function confirmExternalMarketplaceListReceipt(actionId: string, txHash: string) {
+  const finished = await backendApi.actions.verifyMarketplaceList(actionId, txHash);
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== actionId ||
+    finished.result.chainId !== 5042002 ||
+    finished.result.listTxHash.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error("Listing receipt verification failed.");
+  }
+
+  return finished.result;
+}
+
+export type MarketplaceUpdatePriceStartInput = {
+  listingId: string;
+  newAskUsdcRaw: string;
+};
+
+export async function confirmMarketplaceUpdatePriceWithPasskey(input: MarketplaceUpdatePriceStartInput) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startMarketplaceUpdatePrice(input);
+
+  const actionMatches =
+    start.action.action === "MARKETPLACE_UPDATE_PRICE" &&
+    start.action.chainId === 5042002 &&
+    start.action.listingId === input.listingId &&
+    start.action.newAskUsdcRaw === input.newAskUsdcRaw &&
+    (start.action.executionMode === "BACKEND_WALLET" || start.action.executionMode === "EXTERNAL_OWNER") &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Price change confirmation details did not match the requested listing.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishMarketplaceUpdatePrice(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.executionMode !== start.action.executionMode
+  ) {
+    throw new Error("Confirmed price change authorization did not match the request.");
+  }
+
+  if (finished.executionMode === "BACKEND_WALLET") {
+    if (
+      finished.result.chainId !== 5042002 ||
+      finished.result.listingId !== input.listingId ||
+      finished.result.newAskUsdcRaw !== input.newAskUsdcRaw
+    ) {
+      throw new Error("Confirmed price change did not match the requested listing.");
+    }
+
+    return { executionMode: "BACKEND_WALLET" as const, result: finished.result };
+  }
+
+  if (
+    finished.transactionRequest.chainId !== 5042002 ||
+    !addressesEqual(finished.transactionRequest.from, start.action.walletAddress)
+  ) {
+    throw new Error("Price change transaction request did not match the requested listing.");
+  }
+
+  return {
+    executionMode: "EXTERNAL_OWNER" as const,
+    actionId: start.actionId,
+    payloadHash: start.payloadHash,
+    transactionRequest: finished.transactionRequest,
+    sellerAddress: start.action.walletAddress,
+  };
+}
+
+export async function confirmExternalMarketplaceUpdatePriceReceipt(actionId: string, txHash: string) {
+  const finished = await backendApi.actions.verifyMarketplaceUpdatePrice(actionId, txHash);
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== actionId ||
+    finished.result.chainId !== 5042002 ||
+    finished.result.updateTxHash.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error("Price change receipt verification failed.");
+  }
+
+  return finished.result;
+}
+
+export type MarketplaceCancelStartInput = {
+  listingId: string;
+};
+
+export async function confirmMarketplaceCancelWithPasskey(input: MarketplaceCancelStartInput) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startMarketplaceCancel(input);
+
+  const actionMatches =
+    start.action.action === "MARKETPLACE_CANCEL" &&
+    start.action.chainId === 5042002 &&
+    start.action.listingId === input.listingId &&
+    (start.action.executionMode === "BACKEND_WALLET" || start.action.executionMode === "EXTERNAL_OWNER") &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Cancellation confirmation details did not match the requested listing.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishMarketplaceCancel(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.executionMode !== start.action.executionMode
+  ) {
+    throw new Error("Confirmed cancellation authorization did not match the request.");
+  }
+
+  if (finished.executionMode === "BACKEND_WALLET") {
+    if (finished.result.chainId !== 5042002 || finished.result.listingId !== input.listingId) {
+      throw new Error("Confirmed cancellation did not match the requested listing.");
+    }
+
+    return { executionMode: "BACKEND_WALLET" as const, result: finished.result };
+  }
+
+  if (
+    finished.transactionRequest.chainId !== 5042002 ||
+    !addressesEqual(finished.transactionRequest.from, start.action.walletAddress)
+  ) {
+    throw new Error("Cancellation transaction request did not match the requested listing.");
+  }
+
+  return {
+    executionMode: "EXTERNAL_OWNER" as const,
+    actionId: start.actionId,
+    payloadHash: start.payloadHash,
+    transactionRequest: finished.transactionRequest,
+    sellerAddress: start.action.walletAddress,
+  };
+}
+
+export async function confirmExternalMarketplaceCancelReceipt(actionId: string, txHash: string) {
+  const finished = await backendApi.actions.verifyMarketplaceCancel(actionId, txHash);
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== actionId ||
+    finished.result.chainId !== 5042002 ||
+    finished.result.cancelTxHash.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error("Cancellation receipt verification failed.");
+  }
+
+  return finished.result;
+}
+
+export type MarketplaceBuyStartInput = {
+  listingId: string;
+  expectedAskUsdcRaw: string;
+  executionMode: MarketplaceExecutionMode;
+};
+
+export async function confirmMarketplaceBuyWithPasskey(input: MarketplaceBuyStartInput) {
+  ensurePasskeySupport();
+
+  const start = await backendApi.actions.startMarketplaceBuy(input);
+
+  const actionMatches =
+    start.action.action === "MARKETPLACE_BUY" &&
+    start.action.chainId === 5042002 &&
+    start.action.listingId === input.listingId &&
+    start.action.expectedAskUsdcRaw === input.expectedAskUsdcRaw &&
+    start.action.executionMode === input.executionMode &&
+    typeof start.action.nonce === "string" &&
+    start.action.nonce.length >= 16 &&
+    Date.parse(start.action.expiresAt) > Date.now();
+
+  if (!actionMatches) {
+    throw new Error("Purchase confirmation details did not match the requested listing.");
+  }
+
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(start.publicKey),
+  });
+
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+
+  const finished = await backendApi.actions.finishMarketplaceBuy(
+    start.actionId,
+    encodeCredential(credential),
+  );
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== start.actionId ||
+    finished.payloadHash !== start.payloadHash ||
+    finished.executionMode !== start.action.executionMode
+  ) {
+    throw new Error("Confirmed purchase authorization did not match the request.");
+  }
+
+  if (finished.executionMode === "BACKEND_WALLET") {
+    if (
+      finished.result.chainId !== 5042002 ||
+      finished.result.listingId !== input.listingId ||
+      finished.result.askUsdcRaw !== input.expectedAskUsdcRaw
+    ) {
+      throw new Error("Confirmed purchase did not match the requested listing.");
+    }
+
+    return { executionMode: "BACKEND_WALLET" as const, result: finished.result };
+  }
+
+  if (
+    finished.transactionRequest.chainId !== 5042002 ||
+    !addressesEqual(finished.transactionRequest.from, start.action.walletAddress)
+  ) {
+    throw new Error("Purchase transaction request did not match the requested listing.");
+  }
+
+  return {
+    executionMode: "EXTERNAL_OWNER" as const,
+    actionId: start.actionId,
+    payloadHash: start.payloadHash,
+    transactionRequest: finished.transactionRequest,
+    buyerAddress: start.action.walletAddress,
+  };
+}
+
+export async function confirmExternalMarketplaceBuyReceipt(actionId: string, txHash: string) {
+  const finished = await backendApi.actions.verifyMarketplaceBuy(actionId, txHash);
+
+  if (
+    finished.confirmed !== true ||
+    finished.actionId !== actionId ||
+    finished.result.chainId !== 5042002 ||
+    finished.result.buyTxHash.toLowerCase() !== txHash.toLowerCase()
+  ) {
+    throw new Error("Purchase receipt verification failed.");
+  }
+
+  return finished.result;
+}

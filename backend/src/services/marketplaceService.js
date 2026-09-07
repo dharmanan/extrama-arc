@@ -5,6 +5,7 @@ const config = require('../config');
 const {
   getArcProvider,
   ARC_TESTNET_CHAIN_ID,
+  ARC_TESTNET_USDC_ADDRESS,
   ARC_POOL_TOPOLOGY,
 } = require('./arcService');
 
@@ -26,6 +27,10 @@ const MARKETPLACE_ABI = [
 const TICKET_ABI = [
   'function ownerOf(uint256 tokenId) view returns (address)',
   'function getApproved(uint256 tokenId) view returns (address)',
+];
+
+const USDC_ALLOWANCE_ABI = [
+  'function allowance(address owner,address spender) view returns (uint256)',
 ];
 
 const POOL_ABI = [
@@ -468,8 +473,74 @@ async function readMarketplaceListing(listingId) {
   };
 }
 
+// Live per-token approval check, independent of any listing -- used before a
+// seller lists or relists a ticket, and before a price update, so the
+// frontend can offer the exact per-token approve step only when it is
+// actually needed rather than unconditionally.
+async function readTicketApprovalState({ ticketAddress, tokenId }) {
+  if (!ethers.isAddress(ticketAddress)) {
+    throw new Error('marketplace_approval_request_invalid');
+  }
+  if (typeof tokenId !== 'string' || !/^[1-9][0-9]*$/.test(tokenId)) {
+    throw new Error('marketplace_approval_request_invalid');
+  }
+
+  const topology = findTopologyByTicket(ticketAddress);
+  if (!topology) {
+    throw new Error('marketplace_approval_unsupported_ticket');
+  }
+
+  const provider = getArcProvider();
+  const marketplaceAddress = ethers.getAddress(config.EXTREMA_MARKETPLACE_ADDRESS);
+  const ticket = new ethers.Contract(topology.ticketAddress, TICKET_ABI, provider);
+
+  let owner;
+  try {
+    owner = await rpcRead(() => ticket.ownerOf(tokenId));
+  } catch {
+    throw new Error('marketplace_ticket_not_found');
+  }
+
+  const approvedAddress = await rpcRead(() => ticket.getApproved(tokenId)).catch(() => null);
+  const isApproved = approvedAddress !== null
+    && approvedAddress.toLowerCase() === marketplaceAddress.toLowerCase();
+
+  return {
+    ticketAddress: topology.ticketAddress,
+    tokenId,
+    owner: ethers.getAddress(owner),
+    marketplaceAddress,
+    isApproved,
+  };
+}
+
+// Live USDC allowance from a wallet to the marketplace contract -- used
+// before a buyer confirms a purchase, so the frontend can offer the exact
+// USDC approve step only when the current allowance is insufficient for the
+// specific ask being bought.
+async function readUsdcAllowance({ owner }) {
+  if (!ethers.isAddress(owner)) {
+    throw new Error('marketplace_allowance_request_invalid');
+  }
+
+  const provider = getArcProvider();
+  const marketplaceAddress = ethers.getAddress(config.EXTREMA_MARKETPLACE_ADDRESS);
+  const usdc = new ethers.Contract(ARC_TESTNET_USDC_ADDRESS, USDC_ALLOWANCE_ABI, provider);
+
+  const allowanceRaw = await rpcRead(() => usdc.allowance(owner, marketplaceAddress));
+
+  return {
+    owner: ethers.getAddress(owner),
+    marketplaceAddress,
+    usdcAddress: ARC_TESTNET_USDC_ADDRESS,
+    allowanceRaw: allowanceRaw.toString(),
+  };
+}
+
 module.exports = {
   getMarketplaceListingsState,
   refreshMarketplaceListingsCache,
   readMarketplaceListing,
+  readTicketApprovalState,
+  readUsdcAllowance,
 };

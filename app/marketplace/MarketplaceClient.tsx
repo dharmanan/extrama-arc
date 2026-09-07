@@ -1,12 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { backendApi, type MarketplaceListing } from "../lib/backend-api";
+import { useAccount } from "wagmi";
+import {
+  backendApi,
+  isAuthSessionError,
+  type MarketplaceExecutionMode,
+  type MarketplaceListing,
+  type MarketplaceUsdcAllowance,
+} from "../lib/backend-api";
 import { assetConfigs } from "../lib/asset-config";
 import type { Asset } from "../lib/domain";
 import { useCopy, useLocale } from "../i18n";
 import { formatUsdc } from "../lib/display";
+import { useWalletSession } from "../wallet-session";
+import {
+  confirmExternalMarketplaceBuyReceipt,
+  confirmMarketplaceBuyWithPasskey,
+} from "../lib/passkey-client";
+import {
+  getOwnerChainId,
+  sendOwnerTransaction,
+  waitForOwnerTransactionReceipt,
+} from "../lib/owner-wallet";
+import { encodeApproveCalldata } from "../lib/erc-approve";
+
+const ARC_TESTNET_CHAIN_ID = 5042002;
 
 const ASSET_ORDER: Asset[] = ["BTC", "ETH", "SOL", "HYPE"];
 const assetFilters: ("All" | Asset)[] = ["All", "BTC", "ETH", "SOL", "HYPE"];
@@ -14,6 +34,26 @@ const cadenceFilters: ("All" | "Daily" | "Weekly" | "Quarterly")[] = ["All", "Da
 
 type Copy = ReturnType<typeof useCopy>;
 type Locale = "en" | "tr";
+
+function marketplaceErrorCopy(cause: unknown, t: Copy) {
+  const message = cause instanceof Error ? cause.message : "";
+  const knownCodes: Record<string, string> = {
+    marketplace_price_changed: t.marketplacePage.errorPriceChanged,
+    marketplace_insufficient_usdc: t.marketplacePage.errorInsufficientUsdc,
+    marketplace_insufficient_gas: t.marketplacePage.errorInsufficientGas,
+    marketplace_approval_failed: t.marketplacePage.errorApprovalFailed,
+    marketplace_listing_not_active: t.marketplacePage.errorListingNotActive,
+    marketplace_listing_not_buyable: t.marketplacePage.errorListingNotBuyable,
+    marketplace_trading_window_closed: t.marketplacePage.errorTradingWindowClosed,
+    marketplace_round_not_tradable: t.marketplacePage.errorRoundNotTradable,
+    marketplace_buyer_is_seller: t.marketplacePage.errorBuyerIsSeller,
+    marketplace_seller_no_longer_owner: t.marketplacePage.errorSellerNoLongerOwner,
+  };
+
+  if (message in knownCodes) return knownCodes[message];
+  if (message && !/^[a-z_]+$/.test(message)) return message;
+  return t.marketplacePage.errorGeneric;
+}
 
 function cadenceKey(value: "Daily" | "Weekly" | "Quarterly") {
   return value.toUpperCase() as MarketplaceListing["cadence"];
@@ -100,51 +140,72 @@ function CutoffCell({ listing, locale, t }: { listing: MarketplaceListing; local
   );
 }
 
-function MarketplaceRow({ listing, locale, t }: { listing: MarketplaceListing; locale: Locale; t: Copy }) {
+function MarketplaceRow({
+  listing,
+  locale,
+  t,
+  onBuy,
+  buyDisabled,
+}: {
+  listing: MarketplaceListing;
+  locale: Locale;
+  t: Copy;
+  onBuy: () => void;
+  buyDisabled: boolean;
+}) {
   const config = assetConfigs[listing.asset];
 
   return (
-    <Link className="ex-market-row" href={`/pools/${listing.slug}`}>
-      <span className="ex-market-row__identity">
-        <img src={config.brandSrc} alt="" />
-        <span className="ex-market-row__identity-text">
-          <span className="ex-market-row__symbol">{listing.asset}</span>
-          <span className="ex-market-row__meta">
-            {localizedCadence(listing.cadence, locale)} ·{" "}
-            <span className="ex-market-row__dir">
-              <DirectionMark direction={listing.direction} />
-              {localizedDirection(listing.direction, t)}
+    <div className="ex-market-row">
+      <Link className="ex-market-row__link" href={`/pools/${listing.slug}`}>
+        <span className="ex-market-row__identity">
+          <img src={config.brandSrc} alt="" />
+          <span className="ex-market-row__identity-text">
+            <span className="ex-market-row__symbol">{listing.asset}</span>
+            <span className="ex-market-row__meta">
+              {localizedCadence(listing.cadence, locale)} ·{" "}
+              <span className="ex-market-row__dir">
+                <DirectionMark direction={listing.direction} />
+                {localizedDirection(listing.direction, t)}
+              </span>
             </span>
           </span>
         </span>
-      </span>
 
-      <span className="ex-market-row__stat">
-        <span className="ex-num ex-market-row__val">{formatPrice(listing.predictionPrice, locale)}</span>
-        <span className="ex-market-row__key">{t.marketplacePage.columnPrediction}</span>
-      </span>
+        <span className="ex-market-row__stat">
+          <span className="ex-num ex-market-row__val">{formatPrice(listing.predictionPrice, locale)}</span>
+          <span className="ex-market-row__key">{t.marketplacePage.columnPrediction}</span>
+        </span>
 
-      <span className="ex-market-row__stat ex-market-row__stat--ask">
-        <span className="ex-num ex-market-row__val ex-market-row__ask">{formatUsdc(listing.askUsdc, locale)}</span>
-        <span className="ex-market-row__key">{t.marketplacePage.columnAsk}</span>
-      </span>
+        <span className="ex-market-row__stat ex-market-row__stat--ask">
+          <span className="ex-num ex-market-row__val ex-market-row__ask">{formatUsdc(listing.askUsdc, locale)}</span>
+          <span className="ex-market-row__key">{t.marketplacePage.columnAsk}</span>
+        </span>
 
-      <span className="ex-market-row__stat">
-        <span className="ex-num ex-market-row__val" title={listing.seller}>{shortAddress(listing.seller)}</span>
-        <span className="ex-market-row__key">{t.marketplacePage.columnSeller}</span>
-      </span>
+        <span className="ex-market-row__stat">
+          <span className="ex-num ex-market-row__val" title={listing.seller}>{shortAddress(listing.seller)}</span>
+          <span className="ex-market-row__key">{t.marketplacePage.columnSeller}</span>
+        </span>
 
-      <span className="ex-market-row__stat">
-        <span className="ex-num ex-market-row__val">{t.round} #{listing.roundId}</span>
-        <CutoffCell listing={listing} locale={locale} t={t} />
-      </span>
-    </Link>
+        <span className="ex-market-row__stat">
+          <span className="ex-num ex-market-row__val">{t.round} #{listing.roundId}</span>
+          <CutoffCell listing={listing} locale={locale} t={t} />
+        </span>
+      </Link>
+
+      <button type="button" className="ex-market-row__buy" onClick={onBuy} disabled={buyDisabled}>
+        {t.marketplacePage.buyAction}
+      </button>
+    </div>
   );
 }
 
 export default function MarketplaceClient() {
   const { locale } = useLocale();
   const t = useCopy();
+  const walletSession = useWalletSession();
+  const { address: ownerAddress, isConnected } = useAccount();
+
   const [asset, setAsset] = useState<"All" | Asset>("All");
   const [cadence, setCadence] = useState<"All" | "Daily" | "Weekly" | "Quarterly">("All");
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
@@ -154,35 +215,187 @@ export default function MarketplaceClient() {
   // underlying message. The fixed, human copy below covers every failure.
   const [error, setError] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | null = null;
+  const [buyListing, setBuyListing] = useState<MarketplaceListing | null>(null);
+  const [buyRefreshing, setBuyRefreshing] = useState(false);
+  const [buyPriceChanged, setBuyPriceChanged] = useState(false);
+  const [buyWalletChoice, setBuyWalletChoice] = useState<MarketplaceExecutionMode | null>(null);
+  const [buyAllowance, setBuyAllowance] = useState<MarketplaceUsdcAllowance | null>(null);
+  const [buyApproveBusy, setBuyApproveBusy] = useState(false);
+  const [buyBusy, setBuyBusy] = useState(false);
+  const [buyStatusText, setBuyStatusText] = useState("");
+  const [buyError, setBuyError] = useState("");
+  const [buyAuthRequired, setBuyAuthRequired] = useState(false);
+  const [buySuccess, setBuySuccess] = useState<{ explorerUrl: string } | null>(null);
 
-    async function refresh() {
-      try {
-        const state = await backendApi.marketplace.listings();
-        if (cancelled) return;
-        setListings(state.listings);
-        setBlockNumber(state.chain.blockNumber);
-        setError(false);
-      } catch {
-        if (cancelled) return;
-        setError(true);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const refreshListings = useCallback(async () => {
+    try {
+      const state = await backendApi.marketplace.listings();
+      setListings(state.listings);
+      setBlockNumber(state.chain.blockNumber);
+      setError(false);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
     }
+  }, []);
 
-    void refresh();
-    timer = setInterval(() => {
-      void refresh();
+  useEffect(() => {
+    void refreshListings();
+    const timer = setInterval(() => {
+      void refreshListings();
     }, 30_000);
 
-    return () => {
-      cancelled = true;
-      if (timer) clearInterval(timer);
-    };
-  }, []);
+    return () => clearInterval(timer);
+  }, [refreshListings]);
+
+  async function openBuyDrawer(listing: MarketplaceListing) {
+    setBuyListing(listing);
+    setBuyWalletChoice(null);
+    setBuyAllowance(null);
+    setBuyError("");
+    setBuyAuthRequired(false);
+    setBuyPriceChanged(false);
+    setBuySuccess(null);
+    await refreshBuyListing(listing.listingId);
+  }
+
+  function closeBuyDrawer() {
+    setBuyListing(null);
+    setBuyWalletChoice(null);
+    setBuyAllowance(null);
+    setBuyError("");
+    setBuyPriceChanged(false);
+  }
+
+  // Buy requires a fresh read of the listing immediately before it can be
+  // confirmed -- the price (and buyability) shown here must never be a
+  // stale value carried over from the last 30-second board refresh.
+  async function refreshBuyListing(listingId: string) {
+    setBuyRefreshing(true);
+    try {
+      const result = await backendApi.marketplace.listing(listingId);
+      setBuyListing(result.listing);
+      setBuyPriceChanged(false);
+    } catch {
+      // Keep whatever was already shown; the confirm step re-validates
+      // server-side regardless, so this failure is not itself blocking.
+    } finally {
+      setBuyRefreshing(false);
+    }
+  }
+
+  async function selectBuyWallet(mode: MarketplaceExecutionMode) {
+    setBuyWalletChoice(mode);
+    setBuyError("");
+    if (mode === "EXTERNAL_OWNER" && isConnected && ownerAddress) {
+      try {
+        const allowance = await backendApi.marketplace.usdcAllowance(ownerAddress);
+        setBuyAllowance(allowance);
+      } catch {
+        setBuyAllowance(null);
+      }
+    }
+  }
+
+  async function handleApproveUsdc() {
+    if (!buyListing || !isConnected || !ownerAddress) {
+      setBuyError(t.marketplacePage.connectOwnerWalletFirst);
+      return;
+    }
+
+    setBuyApproveBusy(true);
+    setBuyError("");
+
+    try {
+      const chainIdHex = await getOwnerChainId();
+      if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+        throw new Error(t.marketplacePage.switchToArcTestnet);
+      }
+
+      const allowance = buyAllowance ?? (await backendApi.marketplace.usdcAllowance(ownerAddress));
+      const data = encodeApproveCalldata(allowance.marketplaceAddress, buyListing.askUsdcRaw);
+      const txHash = await sendOwnerTransaction({
+        to: allowance.usdcAddress,
+        data,
+        value: "0x0",
+        from: ownerAddress,
+      });
+      await waitForOwnerTransactionReceipt(txHash);
+
+      const refreshed = await backendApi.marketplace.usdcAllowance(ownerAddress);
+      setBuyAllowance(refreshed);
+    } catch (cause) {
+      setBuyError(marketplaceErrorCopy(cause, t));
+    } finally {
+      setBuyApproveBusy(false);
+    }
+  }
+
+  async function handleConfirmPurchase() {
+    if (!buyListing || !buyWalletChoice) return;
+
+    setBuyBusy(true);
+    setBuyError("");
+    setBuyStatusText(t.marketplacePage.confirmingWithPasskey);
+
+    try {
+      const outcome = await confirmMarketplaceBuyWithPasskey({
+        listingId: buyListing.listingId,
+        expectedAskUsdcRaw: buyListing.askUsdcRaw,
+        executionMode: buyWalletChoice,
+      });
+
+      let explorerUrl: string;
+      if (outcome.executionMode === "BACKEND_WALLET") {
+        explorerUrl = outcome.result.explorerUrl;
+      } else {
+        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.buyerAddress.toLowerCase()) {
+          throw new Error(t.marketplacePage.connectMatchingWallet);
+        }
+
+        const chainIdHex = await getOwnerChainId();
+        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error(t.marketplacePage.switchToArcTestnet);
+        }
+
+        setBuyStatusText(t.marketplacePage.waitingForWalletTransaction);
+        const txHash = await sendOwnerTransaction({
+          to: outcome.transactionRequest.to,
+          data: outcome.transactionRequest.data,
+          value: outcome.transactionRequest.value,
+          from: outcome.transactionRequest.from,
+        });
+
+        setBuyStatusText(t.marketplacePage.waitingForConfirmation);
+        await waitForOwnerTransactionReceipt(txHash);
+
+        setBuyStatusText(t.marketplacePage.verifyingPurchase);
+        const result = await confirmExternalMarketplaceBuyReceipt(outcome.actionId, txHash);
+        explorerUrl = result.explorerUrl;
+      }
+
+      setBuySuccess({ explorerUrl });
+      closeBuyDrawer();
+      void refreshListings();
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setBuyAuthRequired(true);
+        setBuyError("");
+      } else if (cause instanceof Error && cause.message === "marketplace_price_changed") {
+        // Never retried automatically: the listing is refetched and the
+        // buyer must press confirm again on the new price.
+        setBuyPriceChanged(true);
+        setBuyError(t.marketplacePage.errorPriceChanged);
+        await refreshBuyListing(buyListing.listingId);
+      } else {
+        setBuyError(marketplaceErrorCopy(cause, t));
+      }
+    } finally {
+      setBuyBusy(false);
+      setBuyStatusText("");
+    }
+  }
 
   // Only genuinely buyable listings belong on the public board. A listing
   // that is technically still ACTIVE onchain but has gone stale (approval
@@ -217,6 +430,21 @@ export default function MarketplaceClient() {
         <h1 className="ex-display ex-display--xl">{t.marketplacePage.title}</h1>
         <p className="ex-lede">{t.marketplacePage.lede}</p>
       </div>
+
+      {buySuccess && (
+        <div className="ex-shell">
+          <section className="ex-ticket-notice">
+            <div>
+              <p className="ex-eyebrow">{t.marketplacePage.buySuccessEyebrow}</p>
+              <h2 className="ex-display ex-display--md">{t.marketplacePage.buySuccessTitle}</h2>
+            </div>
+            <p>{t.marketplacePage.buySuccessBody}</p>
+            <a href={buySuccess.explorerUrl} target="_blank" rel="noreferrer">
+              {locale === "tr" ? "İşlemi doğrula" : "Verify transaction"} →
+            </a>
+          </section>
+        </div>
+      )}
 
       <div className="ex-shell">
         <div className="ex-rail">
@@ -293,7 +521,107 @@ export default function MarketplaceClient() {
 
                   <div className="ex-market-ledger">
                     {group.listings.map((listing) => (
-                      <MarketplaceRow key={listing.listingId} listing={listing} locale={locale} t={t} />
+                      <Fragment key={listing.listingId}>
+                        <MarketplaceRow
+                          listing={listing}
+                          locale={locale}
+                          t={t}
+                          onBuy={() => void openBuyDrawer(listing)}
+                          buyDisabled={buyBusy}
+                        />
+                        {buyListing?.listingId === listing.listingId && (
+                          <div className="ex-market-drawer">
+                            <p className="ex-eyebrow">{t.marketplacePage.buyDrawerEyebrow}</p>
+
+                            <div className="ex-market-drawer__price">
+                              <span className="ex-market-drawer__price-key">{t.marketplacePage.buyPriceLabel}</span>
+                              <span className="ex-market-drawer__price-val ex-num">
+                                {buyRefreshing ? t.marketplacePage.buyRefreshing : formatUsdc(buyListing.askUsdc, locale)}
+                              </span>
+                            </div>
+
+                            {buyPriceChanged && (
+                              <p>
+                                <b>{t.marketplacePage.buyPriceChangedTitle}</b> {t.marketplacePage.buyPriceChangedBody}
+                              </p>
+                            )}
+
+                            {buyAuthRequired ? (
+                              <p className="ex-market-drawer__msg" data-tone="error">
+                                {t.marketplacePage.connectOwnerWalletFirst}{" "}
+                                <Link href="/wallet">{locale === "tr" ? "Cüzdanı yeniden bağla" : "Reconnect wallet"}</Link>
+                              </p>
+                            ) : (
+                              <>
+                                <div className="ex-market-drawer__wallets">
+                                  <button
+                                    type="button"
+                                    data-active={buyWalletChoice === "BACKEND_WALLET"}
+                                    onClick={() => void selectBuyWallet("BACKEND_WALLET")}
+                                    disabled={walletSession.status !== "ready"}
+                                  >
+                                    {t.marketplacePage.buyWalletBackend}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    data-active={buyWalletChoice === "EXTERNAL_OWNER"}
+                                    onClick={() => void selectBuyWallet("EXTERNAL_OWNER")}
+                                    disabled={!isConnected}
+                                  >
+                                    {t.marketplacePage.buyWalletOwner}
+                                  </button>
+                                </div>
+
+                                {buyWalletChoice === "EXTERNAL_OWNER" && !isConnected && (
+                                  <p className="ex-market-drawer__msg">{t.marketplacePage.connectWalletToBuy}</p>
+                                )}
+
+                                {buyWalletChoice === "BACKEND_WALLET" && <p>{t.marketplacePage.buyReadyBackend}</p>}
+
+                                {buyWalletChoice === "EXTERNAL_OWNER" && isConnected && (
+                                  <p>
+                                    {buyAllowance && BigInt(buyAllowance.allowanceRaw) >= BigInt(buyListing.askUsdcRaw)
+                                      ? t.marketplacePage.buyReadyOwner
+                                      : t.marketplacePage.buyNeedsUsdcApproval}
+                                  </p>
+                                )}
+
+                                {buyError && (
+                                  <p className="ex-market-drawer__msg" data-tone="error">
+                                    {buyError}
+                                  </p>
+                                )}
+
+                                <div className="ex-market-drawer-actions">
+                                  {buyWalletChoice === "EXTERNAL_OWNER" &&
+                                  isConnected &&
+                                  (!buyAllowance || BigInt(buyAllowance.allowanceRaw) < BigInt(buyListing.askUsdcRaw)) ? (
+                                    <button type="button" onClick={() => void handleApproveUsdc()} disabled={buyApproveBusy}>
+                                      {buyApproveBusy ? t.marketplacePage.approvingUsdc : t.marketplacePage.approveUsdcAction}
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleConfirmPurchase()}
+                                      disabled={
+                                        !buyWalletChoice ||
+                                        buyBusy ||
+                                        buyRefreshing ||
+                                        (buyWalletChoice === "EXTERNAL_OWNER" && !isConnected)
+                                      }
+                                    >
+                                      {buyBusy ? buyStatusText || t.marketplacePage.confirmingWithPasskey : t.marketplacePage.confirmPurchase}
+                                    </button>
+                                  )}
+                                  <button type="button" onClick={closeBuyDrawer} disabled={buyBusy || buyApproveBusy}>
+                                    {t.marketplacePage.cancel}
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </Fragment>
                     ))}
                   </div>
                 </section>

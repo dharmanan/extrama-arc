@@ -278,6 +278,275 @@ export type MarketplaceListingResponse = {
   listing: MarketplaceListing;
 };
 
+export type MarketplaceApprovalState = {
+  ticketAddress: string;
+  tokenId: string;
+  owner: string;
+  marketplaceAddress: string;
+  isApproved: boolean;
+};
+
+export type MarketplaceUsdcAllowance = {
+  owner: string;
+  marketplaceAddress: string;
+  usdcAddress: string;
+  allowanceRaw: string;
+};
+
+export type MarketplaceExecutionMode = "BACKEND_WALLET" | "EXTERNAL_OWNER";
+
+export type MarketplaceTransactionRequest = {
+  chainId: 5042002;
+  to: string;
+  data: string;
+  value: string;
+  from: string;
+};
+
+// ---- List --------------------------------------------------------------
+
+export type MarketplaceListActionPayload = {
+  action: "MARKETPLACE_LIST";
+  chainId: 5042002;
+  contract: string;
+  ticketAddress: string;
+  tokenId: string;
+  askUsdcRaw: string;
+  executionMode: MarketplaceExecutionMode;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type MarketplaceListActionStartResponse = {
+  actionId: string;
+  action: MarketplaceListActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type MarketplaceListExecutionResult = {
+  chainId: 5042002;
+  executionMode: MarketplaceExecutionMode;
+  marketplaceAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  seller: string;
+  askUsdcRaw: string;
+  listingId: string;
+  approvalTxHash: string | null;
+  listTxHash: string;
+  explorerUrl: string;
+};
+
+export type MarketplaceListActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: MarketplaceListExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_OWNER";
+      transactionRequest: MarketplaceTransactionRequest;
+    };
+
+export type MarketplaceListVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  result: MarketplaceListExecutionResult;
+};
+
+// ---- Update price --------------------------------------------------------
+
+export type MarketplaceUpdatePriceActionPayload = {
+  action: "MARKETPLACE_UPDATE_PRICE";
+  chainId: 5042002;
+  contract: string;
+  listingId: string;
+  ticketAddress: string;
+  tokenId: string;
+  newAskUsdcRaw: string;
+  executionMode: MarketplaceExecutionMode;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type MarketplaceUpdatePriceActionStartResponse = {
+  actionId: string;
+  action: MarketplaceUpdatePriceActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type MarketplaceUpdatePriceExecutionResult = {
+  chainId: 5042002;
+  executionMode: MarketplaceExecutionMode;
+  marketplaceAddress: string;
+  listingId: string;
+  ticketAddress: string;
+  tokenId: string;
+  newAskUsdcRaw: string;
+  approvalTxHash?: string | null;
+  updateTxHash: string;
+  explorerUrl: string;
+};
+
+export type MarketplaceUpdatePriceActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: MarketplaceUpdatePriceExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_OWNER";
+      transactionRequest: MarketplaceTransactionRequest;
+    };
+
+export type MarketplaceUpdatePriceVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  result: MarketplaceUpdatePriceExecutionResult;
+};
+
+// ---- Cancel ----------------------------------------------------------------
+
+export type MarketplaceCancelActionPayload = {
+  action: "MARKETPLACE_CANCEL";
+  chainId: 5042002;
+  contract: string;
+  listingId: string;
+  ticketAddress: string;
+  tokenId: string;
+  executionMode: MarketplaceExecutionMode;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type MarketplaceCancelActionStartResponse = {
+  actionId: string;
+  action: MarketplaceCancelActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type MarketplaceCancelExecutionResult = {
+  chainId: 5042002;
+  executionMode: MarketplaceExecutionMode;
+  marketplaceAddress: string;
+  listingId: string;
+  ticketAddress: string;
+  tokenId: string;
+  cancelTxHash: string;
+  explorerUrl: string;
+};
+
+export type MarketplaceCancelActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: MarketplaceCancelExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_OWNER";
+      transactionRequest: MarketplaceTransactionRequest;
+    };
+
+export type MarketplaceCancelVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  result: MarketplaceCancelExecutionResult;
+};
+
+// ---- Buy ---------------------------------------------------------------
+
+export type MarketplaceBuyActionPayload = {
+  action: "MARKETPLACE_BUY";
+  chainId: 5042002;
+  contract: string;
+  listingId: string;
+  ticketAddress: string;
+  tokenId: string;
+  sellerAddress: string;
+  expectedAskUsdcRaw: string;
+  executionMode: MarketplaceExecutionMode;
+  walletAddress: string;
+  nonce: string;
+  expiresAt: string;
+};
+
+export type MarketplaceBuyActionStartResponse = {
+  actionId: string;
+  action: MarketplaceBuyActionPayload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  publicKey: PublicKeyCredentialRequestOptionsJSON;
+};
+
+export type MarketplaceBuyExecutionResult = {
+  chainId: 5042002;
+  executionMode: MarketplaceExecutionMode;
+  marketplaceAddress: string;
+  listingId: string;
+  ticketAddress: string;
+  tokenId: string;
+  seller: string;
+  buyer: string;
+  askUsdcRaw: string;
+  approvalTxHash?: string | null;
+  buyTxHash: string;
+  explorerUrl: string;
+};
+
+export type MarketplaceBuyActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: MarketplaceBuyExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_OWNER";
+      transactionRequest: MarketplaceTransactionRequest;
+    };
+
+export type MarketplaceBuyVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  result: MarketplaceBuyExecutionResult;
+};
+
 export type OwnedTicket = {
   tokenId: string;
   roundId: number;
@@ -719,6 +988,16 @@ export const backendApi = {
         `/marketplace/listings/${encodeURIComponent(String(listingId))}`,
       );
     },
+    approval(ticketAddress: string, tokenId: string) {
+      return request<MarketplaceApprovalState>(
+        `/marketplace/tickets/${encodeURIComponent(ticketAddress)}/${encodeURIComponent(tokenId)}/approval`,
+      );
+    },
+    usdcAllowance(ownerAddress: string) {
+      return request<MarketplaceUsdcAllowance>(
+        `/marketplace/usdc-allowance/${encodeURIComponent(ownerAddress)}`,
+      );
+    },
   },
   actions: {
     startEntry(input: {
@@ -783,6 +1062,70 @@ export const backendApi = {
     },
     verifyClaim(actionId: string, txHash: string) {
       return post<ClaimVerifyResponse>("/actions/claim/verify", {
+        actionId,
+        txHash,
+      });
+    },
+    startMarketplaceList(input: { ticketAddress: string; tokenId: string; askUsdcRaw: string }) {
+      return post<MarketplaceListActionStartResponse>("/actions/marketplace-list/start", input);
+    },
+    finishMarketplaceList(actionId: string, credential: unknown) {
+      return post<MarketplaceListActionFinishResponse>("/actions/marketplace-list/finish", {
+        actionId,
+        credential,
+      });
+    },
+    verifyMarketplaceList(actionId: string, txHash: string) {
+      return post<MarketplaceListVerifyResponse>("/actions/marketplace-list/verify", {
+        actionId,
+        txHash,
+      });
+    },
+    startMarketplaceUpdatePrice(input: { listingId: string; newAskUsdcRaw: string }) {
+      return post<MarketplaceUpdatePriceActionStartResponse>("/actions/marketplace-update-price/start", input);
+    },
+    finishMarketplaceUpdatePrice(actionId: string, credential: unknown) {
+      return post<MarketplaceUpdatePriceActionFinishResponse>("/actions/marketplace-update-price/finish", {
+        actionId,
+        credential,
+      });
+    },
+    verifyMarketplaceUpdatePrice(actionId: string, txHash: string) {
+      return post<MarketplaceUpdatePriceVerifyResponse>("/actions/marketplace-update-price/verify", {
+        actionId,
+        txHash,
+      });
+    },
+    startMarketplaceCancel(input: { listingId: string }) {
+      return post<MarketplaceCancelActionStartResponse>("/actions/marketplace-cancel/start", input);
+    },
+    finishMarketplaceCancel(actionId: string, credential: unknown) {
+      return post<MarketplaceCancelActionFinishResponse>("/actions/marketplace-cancel/finish", {
+        actionId,
+        credential,
+      });
+    },
+    verifyMarketplaceCancel(actionId: string, txHash: string) {
+      return post<MarketplaceCancelVerifyResponse>("/actions/marketplace-cancel/verify", {
+        actionId,
+        txHash,
+      });
+    },
+    startMarketplaceBuy(input: {
+      listingId: string;
+      expectedAskUsdcRaw: string;
+      executionMode: MarketplaceExecutionMode;
+    }) {
+      return post<MarketplaceBuyActionStartResponse>("/actions/marketplace-buy/start", input);
+    },
+    finishMarketplaceBuy(actionId: string, credential: unknown) {
+      return post<MarketplaceBuyActionFinishResponse>("/actions/marketplace-buy/finish", {
+        actionId,
+        credential,
+      });
+    },
+    verifyMarketplaceBuy(actionId: string, txHash: string) {
+      return post<MarketplaceBuyVerifyResponse>("/actions/marketplace-buy/verify", {
         actionId,
         txHash,
       });

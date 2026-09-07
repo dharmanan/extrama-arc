@@ -7,18 +7,25 @@ import { useCopy, useLocale } from "../i18n";
 import {
   backendApi,
   isAuthSessionError,
+  type MarketplaceApprovalState,
   type MarketplaceListing,
   type OwnedTicket,
   type OwnedTicketsResponse,
   type RefundExecutionMode,
   type ClaimExecutionMode,
 } from "../lib/backend-api";
-import { formatUsdc, humanRoundStatus } from "../lib/display";
+import { formatUsdc, humanRoundStatus, parseUsdcToRaw } from "../lib/display";
 import {
   authenticatePasskey,
   confirmClaimWithPasskey,
   confirmExternalClaimReceipt,
+  confirmExternalMarketplaceCancelReceipt,
+  confirmExternalMarketplaceListReceipt,
+  confirmExternalMarketplaceUpdatePriceReceipt,
   confirmExternalRefundReceipt,
+  confirmMarketplaceCancelWithPasskey,
+  confirmMarketplaceListWithPasskey,
+  confirmMarketplaceUpdatePriceWithPasskey,
   confirmRefundWithPasskey,
   confirmTicketTransferWithPasskey,
 } from "../lib/passkey-client";
@@ -27,6 +34,7 @@ import {
   sendOwnerTransaction,
   waitForOwnerTransactionReceipt,
 } from "../lib/owner-wallet";
+import { encodeApproveCalldata } from "../lib/erc-approve";
 import { useAccount } from "wagmi";
 
 function titleCase(value: string) {
@@ -111,6 +119,41 @@ function isClaimEligible(ticket: OwnedTicket) {
   );
 }
 
+// Coarse client-side mirror of the contract's tradable window (entry open or
+// locked, before the round settles or is cancelled). The server re-checks
+// the exact window on every write, so this only decides whether to offer the
+// action at all -- it is never the source of truth.
+function isTradeEligible(ticket: OwnedTicket) {
+  return ticket.roundStatus === "ENTRY_OPEN" || ticket.roundStatus === "LOCKED";
+}
+
+type MarketDrawerMode = "list" | "changePrice" | "cancel";
+
+function marketplaceErrorCopy(cause: unknown, t: ReturnType<typeof useCopy>) {
+  const message = cause instanceof Error ? cause.message : "";
+  const knownCodes: Record<string, string> = {
+    marketplace_price_changed: t.marketplacePage.errorPriceChanged,
+    marketplace_insufficient_usdc: t.marketplacePage.errorInsufficientUsdc,
+    marketplace_insufficient_gas: t.marketplacePage.errorInsufficientGas,
+    marketplace_approval_failed: t.marketplacePage.errorApprovalFailed,
+    marketplace_not_ticket_owner: t.marketplacePage.errorNotTicketOwner,
+    marketplace_token_not_approved: t.marketplacePage.errorTokenNotApproved,
+    marketplace_listing_not_active: t.marketplacePage.errorListingNotActive,
+    marketplace_listing_not_buyable: t.marketplacePage.errorListingNotBuyable,
+    marketplace_trading_window_closed: t.marketplacePage.errorTradingWindowClosed,
+    marketplace_round_not_tradable: t.marketplacePage.errorRoundNotTradable,
+    marketplace_already_listed: t.marketplacePage.errorAlreadyListed,
+    marketplace_buyer_is_seller: t.marketplacePage.errorBuyerIsSeller,
+    marketplace_seller_no_longer_owner: t.marketplacePage.errorSellerNoLongerOwner,
+  };
+
+  if (message in knownCodes) return knownCodes[message];
+  // A message this file threw itself is already human copy, not a raw
+  // backend/contract identifier (those are always lowercase snake_case).
+  if (message && !/^[a-z_]+$/.test(message)) return message;
+  return t.marketplacePage.errorGeneric;
+}
+
 const ARC_TESTNET_CHAIN_ID = 5042002;
 
 export default function TicketsPage() {
@@ -147,6 +190,15 @@ export default function TicketsPage() {
     amountRaw: string;
   } | null>(null);
 
+  const [marketDrawer, setMarketDrawer] = useState<{ ticketKey: string; mode: MarketDrawerMode } | null>(null);
+  const [askInput, setAskInput] = useState("");
+  const [marketApproval, setMarketApproval] = useState<MarketplaceApprovalState | null>(null);
+  const [marketApprovalLoading, setMarketApprovalLoading] = useState(false);
+  const [marketApproveBusy, setMarketApproveBusy] = useState(false);
+  const [marketBusy, setMarketBusy] = useState("");
+  const [marketStatusText, setMarketStatusText] = useState("");
+  const [marketSuccess, setMarketSuccess] = useState<{ mode: MarketDrawerMode; explorerUrl: string } | null>(null);
+
   const loadTickets = useCallback(async () => {
     setLoading(true);
     try {
@@ -175,21 +227,18 @@ export default function TicketsPage() {
   // Independent of loadTickets: a marketplace read failure must never block
   // or degrade the ticket list itself, so it fails silently into an empty
   // lookup rather than surfacing its own error state on this page.
-  useEffect(() => {
-    let cancelled = false;
-
-    backendApi.marketplace.listings()
-      .then((result) => {
-        if (!cancelled) setMarketplaceListings(result.listings);
-      })
-      .catch(() => {
-        if (!cancelled) setMarketplaceListings([]);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  const loadMarketplaceListings = useCallback(async () => {
+    try {
+      const result = await backendApi.marketplace.listings();
+      setMarketplaceListings(result.listings);
+    } catch {
+      setMarketplaceListings([]);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadMarketplaceListings();
+  }, [loadMarketplaceListings]);
 
   // The most recent listing (highest listingId) per ticket is the only one
   // relevant to display -- an older cancelled listing for the same token is
@@ -451,7 +500,249 @@ export default function TicketsPage() {
     }
   }
 
-  function renderTicketCard(ticket: OwnedTicket, options: { showTransfer: boolean }) {
+  function closeMarketDrawer() {
+    setMarketDrawer(null);
+    setAskInput("");
+    setMarketApproval(null);
+    setMarketApproveBusy(false);
+    setMarketBusy("");
+    setMarketStatusText("");
+  }
+
+  async function openMarketDrawer(ticket: OwnedTicket, mode: MarketDrawerMode, isBackendWallet: boolean, existingAskUsdc?: string) {
+    const key = ticketKey(ticket);
+    setMarketDrawer({ ticketKey: key, mode });
+    setAskInput(mode === "changePrice" && existingAskUsdc ? existingAskUsdc : "");
+    setMarketSuccess(null);
+    setMarketApproval(null);
+    setError("");
+
+    if (!isBackendWallet && mode !== "cancel") {
+      setMarketApprovalLoading(true);
+      try {
+        const approval = await backendApi.marketplace.approval(ticket.ticketAddress, ticket.tokenId);
+        setMarketApproval(approval);
+      } catch {
+        setMarketApproval(null);
+      } finally {
+        setMarketApprovalLoading(false);
+      }
+    }
+  }
+
+  async function handleApproveTicket(ticket: OwnedTicket) {
+    if (!isConnected || !ownerAddress) {
+      setError(t.marketplacePage.connectOwnerWalletFirst);
+      return;
+    }
+
+    setMarketApproveBusy(true);
+    setError("");
+
+    try {
+      const chainIdHex = await getOwnerChainId();
+      if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+        throw new Error(t.marketplacePage.switchToArcTestnet);
+      }
+
+      const approval = marketApproval ?? (await backendApi.marketplace.approval(ticket.ticketAddress, ticket.tokenId));
+      const data = encodeApproveCalldata(approval.marketplaceAddress, ticket.tokenId);
+      const txHash = await sendOwnerTransaction({
+        to: ticket.ticketAddress,
+        data,
+        value: "0x0",
+        from: ownerAddress,
+      });
+      await waitForOwnerTransactionReceipt(txHash);
+
+      const refreshed = await backendApi.marketplace.approval(ticket.ticketAddress, ticket.tokenId);
+      setMarketApproval(refreshed);
+    } catch (cause) {
+      setError(marketplaceErrorCopy(cause, t));
+    } finally {
+      setMarketApproveBusy(false);
+    }
+  }
+
+  async function handleListOrRelist(ticket: OwnedTicket) {
+    const key = ticketKey(ticket);
+    const askUsdcRaw = parseUsdcToRaw(askInput);
+    if (!askUsdcRaw) {
+      setError(t.marketplacePage.askPriceInvalid);
+      return;
+    }
+
+    setMarketBusy(key);
+    setError("");
+    setMarketStatusText(t.marketplacePage.confirmingWithPasskey);
+
+    try {
+      const outcome = await confirmMarketplaceListWithPasskey({
+        ticketAddress: ticket.ticketAddress,
+        tokenId: ticket.tokenId,
+        askUsdcRaw,
+      });
+
+      let explorerUrl: string;
+      if (outcome.executionMode === "BACKEND_WALLET") {
+        explorerUrl = outcome.result.explorerUrl;
+      } else {
+        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.sellerAddress.toLowerCase()) {
+          throw new Error(t.marketplacePage.connectMatchingWallet);
+        }
+
+        const chainIdHex = await getOwnerChainId();
+        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error(t.marketplacePage.switchToArcTestnet);
+        }
+
+        setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
+        const txHash = await sendOwnerTransaction({
+          to: outcome.transactionRequest.to,
+          data: outcome.transactionRequest.data,
+          value: outcome.transactionRequest.value,
+          from: outcome.transactionRequest.from,
+        });
+
+        setMarketStatusText(t.marketplacePage.waitingForConfirmation);
+        await waitForOwnerTransactionReceipt(txHash);
+
+        setMarketStatusText(t.marketplacePage.verifyingListing);
+        const result = await confirmExternalMarketplaceListReceipt(outcome.actionId, txHash);
+        explorerUrl = result.explorerUrl;
+      }
+
+      setMarketSuccess({ mode: "list", explorerUrl });
+      closeMarketDrawer();
+      await Promise.all([loadTickets(), loadMarketplaceListings()]);
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
+        setError("");
+      } else {
+        setError(marketplaceErrorCopy(cause, t));
+      }
+    } finally {
+      setMarketBusy("");
+      setMarketStatusText("");
+    }
+  }
+
+  async function handleChangePrice(ticket: OwnedTicket, listingId: string) {
+    const key = ticketKey(ticket);
+    const newAskUsdcRaw = parseUsdcToRaw(askInput);
+    if (!newAskUsdcRaw) {
+      setError(t.marketplacePage.askPriceInvalid);
+      return;
+    }
+
+    setMarketBusy(key);
+    setError("");
+    setMarketStatusText(t.marketplacePage.confirmingWithPasskey);
+
+    try {
+      const outcome = await confirmMarketplaceUpdatePriceWithPasskey({ listingId, newAskUsdcRaw });
+
+      let explorerUrl: string;
+      if (outcome.executionMode === "BACKEND_WALLET") {
+        explorerUrl = outcome.result.explorerUrl;
+      } else {
+        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.sellerAddress.toLowerCase()) {
+          throw new Error(t.marketplacePage.connectMatchingWallet);
+        }
+
+        const chainIdHex = await getOwnerChainId();
+        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error(t.marketplacePage.switchToArcTestnet);
+        }
+
+        setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
+        const txHash = await sendOwnerTransaction({
+          to: outcome.transactionRequest.to,
+          data: outcome.transactionRequest.data,
+          value: outcome.transactionRequest.value,
+          from: outcome.transactionRequest.from,
+        });
+
+        setMarketStatusText(t.marketplacePage.waitingForConfirmation);
+        await waitForOwnerTransactionReceipt(txHash);
+
+        setMarketStatusText(t.marketplacePage.verifyingPriceChange);
+        const result = await confirmExternalMarketplaceUpdatePriceReceipt(outcome.actionId, txHash);
+        explorerUrl = result.explorerUrl;
+      }
+
+      setMarketSuccess({ mode: "changePrice", explorerUrl });
+      closeMarketDrawer();
+      await Promise.all([loadTickets(), loadMarketplaceListings()]);
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
+        setError("");
+      } else {
+        setError(marketplaceErrorCopy(cause, t));
+      }
+    } finally {
+      setMarketBusy("");
+      setMarketStatusText("");
+    }
+  }
+
+  async function handleCancelListing(ticket: OwnedTicket, listingId: string) {
+    const key = ticketKey(ticket);
+    setMarketBusy(key);
+    setError("");
+    setMarketStatusText(t.marketplacePage.confirmingWithPasskey);
+
+    try {
+      const outcome = await confirmMarketplaceCancelWithPasskey({ listingId });
+
+      let explorerUrl: string;
+      if (outcome.executionMode === "BACKEND_WALLET") {
+        explorerUrl = outcome.result.explorerUrl;
+      } else {
+        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.sellerAddress.toLowerCase()) {
+          throw new Error(t.marketplacePage.connectMatchingWallet);
+        }
+
+        const chainIdHex = await getOwnerChainId();
+        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
+          throw new Error(t.marketplacePage.switchToArcTestnet);
+        }
+
+        setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
+        const txHash = await sendOwnerTransaction({
+          to: outcome.transactionRequest.to,
+          data: outcome.transactionRequest.data,
+          value: outcome.transactionRequest.value,
+          from: outcome.transactionRequest.from,
+        });
+
+        setMarketStatusText(t.marketplacePage.waitingForConfirmation);
+        await waitForOwnerTransactionReceipt(txHash);
+
+        setMarketStatusText(t.marketplacePage.verifyingCancellation);
+        const result = await confirmExternalMarketplaceCancelReceipt(outcome.actionId, txHash);
+        explorerUrl = result.explorerUrl;
+      }
+
+      setMarketSuccess({ mode: "cancel", explorerUrl });
+      closeMarketDrawer();
+      await Promise.all([loadTickets(), loadMarketplaceListings()]);
+    } catch (cause) {
+      if (isAuthSessionError(cause)) {
+        setAuthRequired(true);
+        setError("");
+      } else {
+        setError(marketplaceErrorCopy(cause, t));
+      }
+    } finally {
+      setMarketBusy("");
+      setMarketStatusText("");
+    }
+  }
+
+  function renderTicketCard(ticket: OwnedTicket, options: { showTransfer: boolean; isBackendWallet: boolean }) {
     const key = ticketKey(ticket);
     const transferOpen = transferTicketKey === key;
     const refundOpen = refundTicketKey === key;
@@ -460,6 +751,12 @@ export default function TicketsPage() {
     const claimEligible = isClaimEligible(ticket);
     const listing = listingByTicket.get(listingLookupKey(ticket.ticketAddress, ticket.tokenId));
     const listingLine = listing ? marketplaceLine(listing, locale, t) : null;
+    const marketOpen = marketDrawer?.ticketKey === key ? marketDrawer.mode : null;
+    const isListed = Boolean(listing) && (listing?.state === "ACTIVE" || listing?.state === "ACTION_NEEDED");
+    const canList = isTradeEligible(ticket) && !isListed;
+    const hasPriorListing = Boolean(listing);
+    const marketApproved = options.isBackendWallet || Boolean(marketApproval?.isApproved);
+    const anyOtherBusy = Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy) || Boolean(marketBusy);
 
     return (
       <article className="ex-ticket" key={key} data-direction={ticket.direction}>
@@ -523,6 +820,25 @@ export default function TicketsPage() {
               {locale === "tr" ? "Ödülü al" : "Claim reward"} →
             </button>
           )}
+          {canList && (
+            <button type="button" onClick={() => void openMarketDrawer(ticket, "list", options.isBackendWallet)} disabled={anyOtherBusy}>
+              {hasPriorListing ? t.marketplacePage.relistAction : t.marketplacePage.listAction} →
+            </button>
+          )}
+          {isListed && listing && (
+            <button
+              type="button"
+              onClick={() => void openMarketDrawer(ticket, "changePrice", options.isBackendWallet, listing.askUsdc)}
+              disabled={anyOtherBusy}
+            >
+              {t.marketplacePage.changePriceAction} →
+            </button>
+          )}
+          {isListed && (
+            <button type="button" onClick={() => void openMarketDrawer(ticket, "cancel", options.isBackendWallet)} disabled={anyOtherBusy}>
+              {t.marketplacePage.cancelListingAction} →
+            </button>
+          )}
         </div>
 
         {transferOpen && (
@@ -572,6 +888,90 @@ export default function TicketsPage() {
                 {refundBusy === key ? refundStatusText || "Confirming refund..." : locale === "tr" ? "İadeyi onayla" : "Confirm refund"}
               </button>
               <button type="button" onClick={cancelRefund} disabled={Boolean(refundBusy)}>{locale === "tr" ? "Vazgeç" : "Cancel"}</button>
+            </div>
+          </div>
+        )}
+
+        {marketOpen && (
+          <div className="ex-ticket__drawer">
+            <p className="ex-eyebrow">
+              {marketOpen === "list"
+                ? hasPriorListing
+                  ? t.marketplacePage.relistDrawerEyebrow
+                  : t.marketplacePage.listDrawerEyebrow
+                : marketOpen === "changePrice"
+                  ? t.marketplacePage.changePriceDrawerEyebrow
+                  : t.marketplacePage.cancelDrawerEyebrow}
+            </p>
+
+            {marketOpen === "cancel" ? (
+              <p>{t.marketplacePage.cancelListingBody}</p>
+            ) : (
+              <>
+                <p>
+                  {options.isBackendWallet
+                    ? marketOpen === "list"
+                      ? t.marketplacePage.listBodyBackend
+                      : t.marketplacePage.changePriceBodyBackend
+                    : marketApprovalLoading
+                      ? t.marketplacePage.approvingTicket
+                      : marketApproved
+                        ? marketOpen === "list"
+                          ? t.marketplacePage.listBodyOwnerApproved
+                          : t.marketplacePage.changePriceBodyOwnerApproved
+                        : marketOpen === "list"
+                          ? t.marketplacePage.listBodyOwnerNeedsApproval
+                          : t.marketplacePage.changePriceBodyOwnerNeedsApproval}
+                </p>
+                <label className="ex-ticket__field">
+                  {t.marketplacePage.askPriceLabel}
+                  <input
+                    value={askInput}
+                    onChange={(event) => setAskInput(event.target.value)}
+                    placeholder="1.50"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+              </>
+            )}
+
+            <div className="ex-ticket__drawer-actions">
+              {marketOpen === "cancel" ? (
+                <button
+                  type="button"
+                  onClick={() => listing && void handleCancelListing(ticket, listing.listingId)}
+                  disabled={Boolean(marketBusy)}
+                >
+                  {marketBusy === key ? marketStatusText || t.marketplacePage.confirmingWithPasskey : t.marketplacePage.confirmCancelListing}
+                </button>
+              ) : !marketApproved ? (
+                <button type="button" onClick={() => void handleApproveTicket(ticket)} disabled={marketApproveBusy || marketApprovalLoading}>
+                  {marketApproveBusy ? t.marketplacePage.approvingTicket : t.marketplacePage.approveTicketAction}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void (marketOpen === "list"
+                      ? handleListOrRelist(ticket)
+                      : listing && handleChangePrice(ticket, listing.listingId))
+                  }
+                  disabled={Boolean(marketBusy)}
+                >
+                  {marketBusy === key
+                    ? marketStatusText || t.marketplacePage.confirmingWithPasskey
+                    : marketOpen === "list"
+                      ? hasPriorListing
+                        ? t.marketplacePage.confirmRelist
+                        : t.marketplacePage.confirmListing
+                      : t.marketplacePage.confirmPriceChange}
+                </button>
+              )}
+              <button type="button" onClick={closeMarketDrawer} disabled={Boolean(marketBusy) || marketApproveBusy}>
+                {t.marketplacePage.cancel}
+              </button>
             </div>
           </div>
         )}
@@ -630,6 +1030,35 @@ export default function TicketsPage() {
           </section>
         )}
 
+        {marketSuccess && (
+          <section className="ex-ticket-notice">
+            <div>
+              <p className="ex-eyebrow">
+                {marketSuccess.mode === "list"
+                  ? t.marketplacePage.listSuccessEyebrow
+                  : marketSuccess.mode === "changePrice"
+                    ? t.marketplacePage.priceChangeSuccessEyebrow
+                    : t.marketplacePage.cancelSuccessEyebrow}
+              </p>
+              <h2 className="ex-display ex-display--md">
+                {marketSuccess.mode === "list"
+                  ? t.marketplacePage.listSuccessTitle
+                  : marketSuccess.mode === "changePrice"
+                    ? t.marketplacePage.priceChangeSuccessTitle
+                    : t.marketplacePage.cancelSuccessTitle}
+              </h2>
+            </div>
+            <p>
+              {marketSuccess.mode === "list"
+                ? t.marketplacePage.listSuccessBody
+                : marketSuccess.mode === "changePrice"
+                  ? t.marketplacePage.priceChangeSuccessBody
+                  : t.marketplacePage.cancelSuccessBody}
+            </p>
+            <a href={marketSuccess.explorerUrl} target="_blank" rel="noreferrer">{locale === "tr" ? "İşlemi doğrula" : "Verify transaction"} →</a>
+          </section>
+        )}
+
         {loading && (
           <section className="ex-tickets__state">
             <p className="ex-eyebrow">{locale === "tr" ? "ZİNCİR OKUNUYOR" : "READING CHAIN"}</p>
@@ -676,7 +1105,7 @@ export default function TicketsPage() {
               <div><p className="ex-eyebrow">{locale === "tr" ? "YÖNETİLEN CÜZDAN" : "MANAGED WALLET"}</p><h2 className="ex-display ex-display--md">{state.backendWallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.backendWallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
               <p className="ex-num">Arc Testnet · {state.backendWallet.chain.blockNumber}</p>
             </header>
-            <div className="ex-ticket-list">{state.backendWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true }))}</div>
+            <div className="ex-ticket-list">{state.backendWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isBackendWallet: true }))}</div>
           </section>
         )}
 
@@ -687,7 +1116,7 @@ export default function TicketsPage() {
               <p className="ex-num">{state.ownerWallet.wallet.address}</p>
             </header>
             <p className="ex-ticket-group__note">{locale === "tr" ? "Bu biletler EXTREMA yönetimli cüzdanında değil, bağlı cüzdanında tutulur. Ödül ve iade işlemleri bağlı cüzdandan gönderilir." : "These NFTs are held by your connected wallet, not the EXTREMA-managed wallet. Reward claims and refunds are sent from the connected wallet."}</p>
-            <div className="ex-ticket-list">{state.ownerWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: false }))}</div>
+            <div className="ex-ticket-list">{state.ownerWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: false, isBackendWallet: false }))}</div>
           </section>
         )}
       </div>

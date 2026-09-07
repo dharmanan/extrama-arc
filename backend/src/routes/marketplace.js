@@ -39,4 +39,39 @@ router.get('/listings/:listingId', async (req, res, next) => {
   }
 });
 
+router.get('/tickets/:ticketAddress/:tokenId/approval', async (req, res, next) => {
+  try {
+    const result = await marketplaceService.readTicketApprovalState({
+      ticketAddress: req.params.ticketAddress,
+      tokenId: req.params.tokenId,
+    });
+    res.json(result);
+  } catch (error) {
+    if (
+      error.message === 'marketplace_approval_request_invalid' ||
+      error.message === 'marketplace_approval_unsupported_ticket'
+    ) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message === 'marketplace_ticket_not_found') {
+      return res.status(404).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
+router.get('/usdc-allowance/:ownerAddress', async (req, res, next) => {
+  try {
+    const result = await marketplaceService.readUsdcAllowance({
+      owner: req.params.ownerAddress,
+    });
+    res.json(result);
+  } catch (error) {
+    if (error.message === 'marketplace_allowance_request_invalid') {
+      return res.status(400).json({ error: error.message });
+    }
+    next(error);
+  }
+});
+
 module.exports = router;

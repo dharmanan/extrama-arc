@@ -112,6 +112,108 @@ function canonicalClaimPayload({
   };
 }
 
+function canonicalMarketplaceListPayload({
+  walletAddress,
+  marketplaceAddress,
+  ticketAddress,
+  tokenId,
+  askUsdcRaw,
+  executionMode,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'MARKETPLACE_LIST',
+    chainId: 5042002,
+    contract: marketplaceAddress,
+    ticketAddress,
+    tokenId,
+    askUsdcRaw,
+    executionMode,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+function canonicalMarketplaceUpdatePricePayload({
+  walletAddress,
+  marketplaceAddress,
+  listingId,
+  ticketAddress,
+  tokenId,
+  newAskUsdcRaw,
+  executionMode,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'MARKETPLACE_UPDATE_PRICE',
+    chainId: 5042002,
+    contract: marketplaceAddress,
+    listingId,
+    ticketAddress,
+    tokenId,
+    newAskUsdcRaw,
+    executionMode,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+function canonicalMarketplaceCancelPayload({
+  walletAddress,
+  marketplaceAddress,
+  listingId,
+  ticketAddress,
+  tokenId,
+  executionMode,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'MARKETPLACE_CANCEL',
+    chainId: 5042002,
+    contract: marketplaceAddress,
+    listingId,
+    ticketAddress,
+    tokenId,
+    executionMode,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+function canonicalMarketplaceBuyPayload({
+  walletAddress,
+  marketplaceAddress,
+  listingId,
+  ticketAddress,
+  tokenId,
+  sellerAddress,
+  expectedAskUsdcRaw,
+  executionMode,
+  nonce,
+  expiresAt,
+}) {
+  return {
+    action: 'MARKETPLACE_BUY',
+    chainId: 5042002,
+    contract: marketplaceAddress,
+    listingId,
+    ticketAddress,
+    tokenId,
+    sellerAddress,
+    expectedAskUsdcRaw,
+    executionMode,
+    walletAddress,
+    nonce,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
 async function insertActionRequest(params, actionType, payload) {
   const payloadHash = sha256Hex(JSON.stringify(payload));
 
@@ -200,6 +302,58 @@ async function createClaimRequest(params) {
   );
 }
 
+async function createMarketplaceListRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalMarketplaceListPayload({ ...params, nonce, expiresAt });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'MARKETPLACE_LIST',
+    payload,
+  );
+}
+
+async function createMarketplaceUpdatePriceRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalMarketplaceUpdatePricePayload({ ...params, nonce, expiresAt });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'MARKETPLACE_UPDATE_PRICE',
+    payload,
+  );
+}
+
+async function createMarketplaceCancelRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalMarketplaceCancelPayload({ ...params, nonce, expiresAt });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'MARKETPLACE_CANCEL',
+    payload,
+  );
+}
+
+async function createMarketplaceBuyRequest(params) {
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const payload = canonicalMarketplaceBuyPayload({ ...params, nonce, expiresAt });
+
+  return insertActionRequest(
+    { id, userId: params.userId, expiresAt },
+    'MARKETPLACE_BUY',
+    payload,
+  );
+}
+
 async function attachWebAuthnChallenge(userId, actionId, challenge, context) {
   const { rowCount } = await db.query(
     `UPDATE action_authorizations
@@ -250,7 +404,7 @@ async function consumeVerifiedAction(
   expectedPayloadHash,
   expectedActionType,
 ) {
-  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD'].includes(expectedActionType)) {
+  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD', 'MARKETPLACE_LIST', 'MARKETPLACE_UPDATE_PRICE', 'MARKETPLACE_CANCEL', 'MARKETPLACE_BUY'].includes(expectedActionType)) {
     throw new Error('action_authorization_invalid');
   }
 
@@ -283,7 +437,7 @@ async function consumeVerifiedAction(
 }
 
 async function getConsumedAction(userId, actionId, expectedActionType) {
-  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD'].includes(expectedActionType)) {
+  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD', 'MARKETPLACE_LIST', 'MARKETPLACE_UPDATE_PRICE', 'MARKETPLACE_CANCEL', 'MARKETPLACE_BUY'].includes(expectedActionType)) {
     throw new Error('action_authorization_invalid');
   }
 
@@ -314,6 +468,10 @@ module.exports = {
   createTicketTransferRequest,
   createRefundRequest,
   createClaimRequest,
+  createMarketplaceListRequest,
+  createMarketplaceUpdatePriceRequest,
+  createMarketplaceCancelRequest,
+  createMarketplaceBuyRequest,
   attachWebAuthnChallenge,
   consumeWebAuthnChallenge,
   consumeVerifiedAction,

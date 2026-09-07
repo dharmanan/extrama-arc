@@ -104,3 +104,17 @@ export function formatUsdc(value: string, locale: Locale = "en") {
     maximumFractionDigits: 6,
   }).format(numeric)} USDC`;
 }
+
+// Parses a user-typed decimal USDC amount (up to 6 fraction digits, no
+// thousands separators) into the raw integer string the backend expects.
+// Returns null for anything that isn't a positive amount.
+export function parseUsdcToRaw(value: string): string | null {
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d{1,6})?$/.test(trimmed)) return null;
+
+  const [whole, fraction = ""] = trimmed.split(".");
+  const paddedFraction = (fraction + "000000").slice(0, 6);
+  const raw = BigInt(whole) * BigInt(1_000_000) + BigInt(paddedFraction || "0");
+
+  return raw > BigInt(0) ? raw.toString() : null;
+}

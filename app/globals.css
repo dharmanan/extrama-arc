@@ -1695,7 +1695,7 @@ img{max-width:100%}
 
 .ex-market-row{
   display:grid;
-  grid-template-columns:minmax(0,2.1fr) minmax(90px,1fr) minmax(90px,1fr) minmax(90px,1fr) minmax(120px,1.2fr);
+  grid-template-columns:minmax(0,2.1fr) minmax(90px,1fr) minmax(90px,1fr) minmax(90px,1fr) minmax(120px,1.2fr) auto;
   gap:clamp(14px,2vw,28px);
   align-items:center;
   padding-block:clamp(15px,1.8vw,21px);
@@ -1704,6 +1704,25 @@ img{max-width:100%}
   transition:background-color .18s ease;
 }
 .ex-market-row:hover{background:rgba(16,21,20,.04)}
+
+/* Wraps every cell except the Buy button so the row keeps navigating to the
+   pool on click while the button stays its own, separately clickable
+   target -- display:contents removes the anchor from layout so the parent
+   grid still applies directly to its children. */
+.ex-market-row__link{display:contents;color:inherit}
+
+.ex-market-row__buy{
+  justify-self:end;
+  border:1px solid var(--ink);
+  border-radius:var(--r-pill);
+  background:var(--ink);
+  color:var(--paper);
+  padding:9px 18px;
+  font-size:.78rem;
+  font-weight:600;
+  white-space:nowrap;
+}
+.ex-market-row__buy:hover{background:#000}
 
 .ex-market-row__identity{display:flex;align-items:center;gap:11px;min-width:0}
 .ex-market-row__identity img{width:22px;height:22px;object-fit:contain;flex:none}
@@ -1740,13 +1759,30 @@ img{max-width:100%}
 .ex-market-row__cutoff[data-closed="true"]{color:var(--ember)}
 
 @media(max-width:900px){
-  .ex-market-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);row-gap:12px}
+  .ex-market-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto;row-gap:12px}
   .ex-market-row__identity{grid-column:1 / -1}
 }
 
 @media(max-width:560px){
-  .ex-market-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .ex-market-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto}
 }
+
+/* Inline purchase drawer -- appears as a full-width block directly under
+   its listing row, matching the ex-ticket__drawer language used for every
+   other value-moving action in the product. */
+.ex-market-drawer{display:grid;gap:14px;padding:clamp(20px,2.6vw,34px) clamp(14px,1.8vw,24px);border-top:1px solid var(--line-strong);background:rgba(16,21,20,.035)}
+.ex-market-drawer>p:not(.ex-eyebrow){margin:0;max-width:74ch;color:var(--ink-2);line-height:1.6}
+.ex-market-drawer__price{display:grid;gap:4px}
+.ex-market-drawer__price-key{font-size:.68rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.ex-market-drawer__price-val{font-size:1.4rem;font-family:var(--serif)}
+.ex-market-drawer__wallets{display:flex;flex-wrap:wrap;gap:10px}
+.ex-market-drawer__wallets button{border:1px solid var(--line-strong);border-radius:var(--r-pill);background:transparent;padding:10px 16px;font-size:.84rem;font-weight:600;color:var(--ink)}
+.ex-market-drawer__wallets button[data-active="true"]{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.ex-market-drawer-actions{display:flex;flex-wrap:wrap;gap:10px}
+.ex-market-drawer-actions button{border:1px solid var(--line-strong);border-radius:var(--r-pill);background:transparent;padding:10px 16px;font-size:.84rem;font-weight:600}
+.ex-market-drawer-actions button:first-child{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.ex-market-drawer__msg{font-size:.84rem;color:var(--ink-2)}
+.ex-market-drawer__msg[data-tone="error"]{color:var(--ember)}
 
 /* Read-only marketplace state line on an owned ticket card. Sits between the
    existing prediction/meta body and the existing action row -- states fact
