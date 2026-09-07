@@ -4,13 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run clean:next && next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run clean:next && next typegen && tsc --noEmit",
     "check": "npm run typecheck && npm run build",
     "backend:dev": "npm --prefix backend run dev",
     "backend:check": "npm --prefix backend run check",
-    "check:all": "npm run check && npm run backend:check"
+    "check:all": "npm run check && npm run backend:check",
+    "clean:next": "node -e \"require('node:fs').rmSync('.next',{recursive:true,force:true})\""
   },
   "dependencies": {
     "next": "^16.3.4",

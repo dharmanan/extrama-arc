@@ -1181,7 +1181,8 @@ async function runDailyMarketArchiveJob({
       JSON.stringify({
         trigger,
         marketDate: result.marketDate,
-        complete: result.complete,
+        sourceComplete: result.sourceComplete ?? result.complete,
+        derivationsComplete: result.derivationsComplete ?? true,
         daily: result.daily,
         failures: result.failures,
         weekly: result.weekly,
@@ -1228,11 +1229,10 @@ function scheduleMarketArchiveRetry({ marketDate, marketPeriodEndAt }) {
 
       if (!result.complete) {
         console.warn(
-          '[market-archive] retry still incomplete',
+          '[market-archive] daily source still incomplete',
           JSON.stringify({
             marketDate,
             failures: result.failures,
-            derivedFailures: result.derivedFailures,
           }),
         );
         scheduleMarketArchiveRetry({ marketDate, marketPeriodEndAt });

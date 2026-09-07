@@ -604,6 +604,9 @@ async function ingestUtcDayByDate(marketDate, { fetchImpl = globalThis.fetch } =
     }
   }
 
+  const sourceComplete = failures.length === 0;
+  const derivationsComplete = derivedFailures.length === 0;
+
   return {
     marketDate,
     marketPeriodStartAt,
@@ -613,7 +616,11 @@ async function ingestUtcDayByDate(marketDate, { fetchImpl = globalThis.fetch } =
     weekly,
     quarterly,
     derivedFailures,
-    complete: failures.length === 0 && derivedFailures.length === 0,
+    sourceComplete,
+    derivationsComplete,
+    // Backwards-compatible alias used by the archive retry path.
+    // "complete" means the four DAILY Binance source records are complete.
+    complete: sourceComplete,
   };
 }
 
