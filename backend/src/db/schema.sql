@@ -133,3 +133,25 @@ CREATE TABLE IF NOT EXISTS market_outcomes (
 
 CREATE INDEX IF NOT EXISTS market_outcomes_period_idx
   ON market_outcomes (market_period_end_at DESC, cadence, asset);
+
+
+-- One immutable Binance 1m archive per asset and completed UTC day.
+-- The external Binance historical endpoint is called only to create a missing
+-- DAILY archive. WEEKLY and QUARTERLY outcomes are derived from these rows.
+CREATE TABLE IF NOT EXISTS daily_market_archives (
+  asset VARCHAR(8) NOT NULL,
+  symbol VARCHAR(16) NOT NULL,
+  market_period_start_at TIMESTAMPTZ NOT NULL,
+  market_period_end_at TIMESTAMPTZ NOT NULL,
+  interval VARCHAR(8) NOT NULL DEFAULT '1m',
+  candle_count INTEGER NOT NULL,
+  candles_json TEXT NOT NULL,
+  source VARCHAR(128) NOT NULL,
+  endpoint TEXT NOT NULL,
+  source_data_sha256 CHAR(64) NOT NULL,
+  fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (asset, market_period_start_at, market_period_end_at)
+);
+
+CREATE INDEX IF NOT EXISTS daily_market_archives_period_idx
+  ON daily_market_archives (market_period_end_at DESC, asset);

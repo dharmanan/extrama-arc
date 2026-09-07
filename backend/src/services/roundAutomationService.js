@@ -32,13 +32,6 @@ const ROUND_SCAN_DEPTH = 12n;
 const READ_MAX_ATTEMPTS = 5;
 const READ_BASE_DELAY_MS = 200;
 
-const RESOLVER_SYMBOLS = Object.freeze({
-  BTC: 'BTCUSDT',
-  ETH: 'ETHUSDT',
-  SOL: 'SOLUSDT',
-  HYPE: 'HYPEUSDT',
-});
-
 const AUTOMATION_LOCK_ID = '504200220260906';
 
 const POOL_ABI = [
@@ -55,10 +48,6 @@ const POOL_ABI = [
 
 let runPromise = null;
 let timer = null;
-const marketOutcomeRetryAt = new Map();
-const MARKET_OUTCOME_TRANSIENT_RETRY_MS = 2 * 60_000;
-const MARKET_OUTCOME_RESTRICTED_RETRY_MS = 60 * 60_000;
-
 const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
 const CADENCE_POOL_COUNT = 8;
 
@@ -209,99 +198,6 @@ function slugOf(topology) {
 function oldestScannedRoundId(nextRoundId) {
   const floor = nextRoundId - ROUND_SCAN_DEPTH;
   return floor > 1n ? floor : 1n;
-}
-
-function completedPeriodsForAutomation(now) {
-  const dailyCurrent = currentDailySchedule(now);
-  const daily = [1n].map((daysBack) => ({
-    cadence: 'DAILY',
-    marketPeriodStartAt: dailyCurrent.marketPeriodStartAt - daysBack * SECONDS_PER_DAY,
-    marketPeriodEndAt: dailyCurrent.marketPeriodEndAt - daysBack * SECONDS_PER_DAY,
-  }));
-
-  const weeklyCurrent = currentWeeklySchedule(now);
-  const weekly = [{
-    cadence: 'WEEKLY',
-    marketPeriodStartAt: weeklyCurrent.marketPeriodStartAt - 7n * SECONDS_PER_DAY,
-    marketPeriodEndAt: weeklyCurrent.marketPeriodStartAt,
-  }];
-
-  const quarterlyCurrent = currentQuarterlySchedule(now);
-  const currentStart = new Date(Number(quarterlyCurrent.marketPeriodStartAt) * 1000);
-  let year = currentStart.getUTCFullYear();
-  let quarterIndex = Math.floor(currentStart.getUTCMonth() / 3) - 1;
-  if (quarterIndex < 0) {
-    quarterIndex = 3;
-    year -= 1;
-  }
-  const previousQuarterStart = BigInt(
-    Math.floor(Date.UTC(year, quarterIndex * 3, 1, 0, 0, 0) / 1000),
-  );
-  const quarterly = [{
-    cadence: 'QUARTERLY',
-    marketPeriodStartAt: previousQuarterStart,
-    marketPeriodEndAt: quarterlyCurrent.marketPeriodStartAt,
-  }];
-
-  return [...daily, ...weekly, ...quarterly];
-}
-
-async function ensureCompletedMarketOutcomes(now) {
-  const executed = [];
-  const failures = [];
-  const periods = completedPeriodsForAutomation(now);
-  for (const period of periods) {
-    for (const asset of Object.keys(RESOLVER_SYMBOLS)) {
-      const retryKey = [
-        asset,
-        period.cadence,
-        period.marketPeriodStartAt.toString(),
-        period.marketPeriodEndAt.toString(),
-      ].join('|');
-      const retryAt = marketOutcomeRetryAt.get(retryKey) || 0;
-      if (Date.now() < retryAt) continue;
-
-      try {
-        const outcome = await marketOutcomeService.ensureMarketOutcome({
-          asset,
-          cadence: period.cadence,
-          marketPeriodStartAt: period.marketPeriodStartAt,
-          marketPeriodEndAt: period.marketPeriodEndAt,
-        });
-        marketOutcomeRetryAt.delete(retryKey);
-        if (outcome.created) {
-          executed.push({
-            asset,
-            cadence: period.cadence,
-            marketPeriodStartAt: new Date(Number(period.marketPeriodStartAt) * 1000).toISOString(),
-            marketPeriodEndAt: new Date(Number(period.marketPeriodEndAt) * 1000).toISOString(),
-            evidenceSha256: outcome.record.evidenceSha256,
-          });
-        }
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        const restricted =
-          reason.includes('http_451') ||
-          reason.toLowerCase().includes('restricted location');
-        marketOutcomeRetryAt.set(
-          retryKey,
-          Date.now() +
-            (restricted
-              ? MARKET_OUTCOME_RESTRICTED_RETRY_MS
-              : MARKET_OUTCOME_TRANSIENT_RETRY_MS),
-        );
-        failures.push({
-          asset,
-          cadence: period.cadence,
-          marketPeriodStartAt: new Date(Number(period.marketPeriodStartAt) * 1000).toISOString(),
-          marketPeriodEndAt: new Date(Number(period.marketPeriodEndAt) * 1000).toISOString(),
-          reason,
-          retryAfterSeconds: restricted ? 3600 : 120,
-        });
-      }
-    }
-  }
-  return { executed, failures };
 }
 
 // Walks the recent rounds of every pool and classifies what each one is owed.
@@ -832,17 +728,28 @@ async function collectResolverActionsInternal(dueCancel, dueSettle) {
       entryCount: Number(item.round.entryCount),
     };
 
-    try {
-      const evidence = await resolveExtremaWindow({
-        symbol: RESOLVER_SYMBOLS[item.topology.asset],
-        cadence: item.topology.cadence,
-        observationStartAt: new Date(Number(item.round.observationStartAt) * 1000).toISOString(),
-        observationEndAt: new Date(Number(item.round.observationEndAt) * 1000).toISOString(),
-      });
+    if (!isCanonicalV2Round(item.topology.cadence, item.round)) {
+      entry.resolverError = 'legacy_v1_round';
+      pending.push(entry);
+      continue;
+    }
 
-      const side = item.topology.direction === 'HIGH' ? evidence.high : evidence.low;
+    try {
+      const marketPeriodStartAt =
+        new Date(Number(item.round.entryOpenAt) * 1000).toISOString();
+      const marketPeriodEndAt =
+        new Date(Number(item.round.observationEndAt) * 1000).toISOString();
+      const outcome = await marketOutcomeService.getMarketOutcome({
+        asset: item.topology.asset,
+        cadence: item.topology.cadence,
+        marketPeriodStartAt,
+        marketPeriodEndAt,
+      });
+      if (!outcome) throw new Error('market_outcome_not_ready');
+
+      const side = item.topology.direction === 'HIGH' ? outcome.high : outcome.low;
       entry.resolvedPriceCents = side.resolvedPriceCents;
-      entry.evidenceSha256 = evidence.evidenceSha256;
+      entry.evidenceSha256 = outcome.evidenceSha256;
     } catch (error) {
       entry.resolverError = error.message;
     }
@@ -928,7 +835,20 @@ async function executeResolverAction(provider, now, item, signer) {
     return { slug, roundId, action: 'cancelled', entryCount, ...result };
   }
 
-  // Settlement evidence is built before the write and must be complete.
+  const marketPeriodStartAt =
+    new Date(Number(round.entryOpenAt) * 1000).toISOString();
+  const marketPeriodEndAt =
+    new Date(Number(round.observationEndAt) * 1000).toISOString();
+  const marketOutcome = await marketOutcomeService.getMarketOutcome({
+    asset: item.topology.asset,
+    cadence: item.topology.cadence,
+    marketPeriodStartAt,
+    marketPeriodEndAt,
+  });
+  if (!marketOutcome) throw new Error('market_outcome_not_ready');
+
+  // Settlement uses only the already-archived official market outcome.
+  // It never makes a new Binance historical request.
   const evidence = await buildSettlementEvidence(item, marketOutcome);
 
   // Mandatory: durably persist the evidence, or, if evidence for this exact
@@ -1101,9 +1021,6 @@ async function runLifecycleInternal() {
 
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
-  const marketOutcomes = config.EXTREMA_ENABLE_MARKET_OUTCOMES
-    ? await ensureCompletedMarketOutcomes(now)
-    : { executed: [], failures: [], skipped: true, reason: 'market_outcomes_disabled' };
   const { dueLock, dueCancel, dueSettle, readFailures } = await scanLifecycle(provider, now);
 
   const lock = await lockDueRoundsInternal(provider, now, dueLock);
@@ -1120,7 +1037,6 @@ async function runLifecycleInternal() {
   return {
     chainTimestamp: Number(now),
     created,
-    marketOutcomes,
     lock,
     resolver,
     readFailures,
@@ -1213,6 +1129,64 @@ async function ensureCurrentDailyRounds() {
   return runPromise;
 }
 
+let marketArchiveTimer = null;
+
+function msUntilNextUtc0001(now = new Date()) {
+  const next = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0, 1, 0, 0,
+  ));
+  if (next.getTime() <= now.getTime()) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return next.getTime() - now.getTime();
+}
+
+async function runDailyMarketArchiveJob() {
+  return withAutomationLock(async () => {
+    const result = await marketOutcomeService.ingestPreviousUtcDay(new Date());
+    console.log('[market-archive] daily batch complete', JSON.stringify(result));
+    return result;
+  });
+}
+
+function scheduleNextDailyMarketArchive() {
+  if (marketArchiveTimer) clearTimeout(marketArchiveTimer);
+  marketArchiveTimer = setTimeout(async () => {
+    try {
+      await runDailyMarketArchiveJob();
+    } catch (error) {
+      console.error('[market-archive] daily batch failed', error.message);
+    } finally {
+      scheduleNextDailyMarketArchive();
+    }
+  }, msUntilNextUtc0001());
+  marketArchiveTimer.unref?.();
+}
+
+function startDailyMarketArchiveScheduler() {
+  const now = new Date();
+  const today0001 = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0, 1, 0, 0,
+  );
+
+  // One catch-up check on boot. Existing DB rows short-circuit before any
+  // external Binance request, so redeploys do not re-fetch an archived day.
+  if (now.getTime() >= today0001) {
+    runDailyMarketArchiveJob().catch((error) => {
+      console.error('[market-archive] boot catch-up failed', error.message);
+    });
+  }
+
+  scheduleNextDailyMarketArchive();
+  console.log('[market-archive] daily 00:01 UTC scheduler active');
+}
+
 let lastResolverSignature = '';
 
 function runAndLog() {
@@ -1240,13 +1214,6 @@ function runAndLog() {
           '[round-automation] quarterly round creation failures',
           JSON.stringify(result.created.quarterly.failures),
         );
-      }
-
-      for (const item of result.marketOutcomes?.executed || []) {
-        console.log('[market-outcome] published', JSON.stringify(item));
-      }
-      for (const failure of result.marketOutcomes?.failures || []) {
-        console.error('[market-outcome] failed', JSON.stringify(failure));
       }
 
       if (result.lock?.locked?.length) {
@@ -1334,7 +1301,10 @@ function startRoundAutomation() {
       console.error('[round-automation] resolver signer check errored', error.message);
     });
 
-  // Run once at boot, then keep the active lifecycle self-healing.
+  startDailyMarketArchiveScheduler();
+
+  // Round lifecycle remains a separate 60-second onchain reconciliation loop.
+  // It never fetches Binance historical market data.
   runAndLog();
   timer = setInterval(runAndLog, 60_000);
   timer.unref?.();
@@ -1342,9 +1312,14 @@ function startRoundAutomation() {
 }
 
 function stopRoundAutomation() {
-  if (!timer) return;
-  clearInterval(timer);
-  timer = null;
+  if (timer) {
+    clearInterval(timer);
+    timer = null;
+  }
+  if (marketArchiveTimer) {
+    clearTimeout(marketArchiveTimer);
+    marketArchiveTimer = null;
+  }
 }
 
 module.exports = {
@@ -1356,6 +1331,7 @@ module.exports = {
   verifyResolverConfiguration,
   previewLifecycle,
   runLifecycle,
+  runDailyMarketArchiveJob,
   startRoundAutomation,
   stopRoundAutomation,
 };

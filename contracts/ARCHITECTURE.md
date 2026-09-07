@@ -358,23 +358,32 @@ Symbols:
 - SOLUSDT
 - HYPEUSDT
 
-Cadence intervals:
+Canonical ingestion:
 
-- DAILY = `1m`
-- WEEKLY = `15m`
-- QUARTERLY = `4h`
+- The live UI mark price is a separate display path and is not the archive job.
+- At 00:01 UTC, one daily archive job processes the UTC day that just ended.
+- For each asset, the job makes one Binance `markPriceKlines` request with
+  `interval=1m` and `limit=1440`.
+- The 1440 returned candles are stored immutably in `daily_market_archives`.
+- DAILY HIGH/LOW is computed from that stored 1m archive.
+- WEEKLY HIGH/LOW is derived only from the seven stored DAILY outcomes.
+- QUARTERLY HIGH/LOW is derived only from the stored DAILY outcomes in the
+  completed calendar quarter.
+- WEEKLY and QUARTERLY therefore make zero additional Binance historical calls.
+- Settlement never calls Binance historical data directly; it reads the already
+  persisted official market outcome from PostgreSQL.
 
 Market periods use a half-open convention:
 
 `[marketPeriodStartAt, marketPeriodEndAt)`
 
-Because Binance `endTime` is inclusive, EXTREMA requests the final millisecond
-before `marketPeriodEndAt`.
+Because Binance `endTime` is inclusive, the DAILY archive request ends at the
+final millisecond before `marketPeriodEndAt`.
 
-The resolver must verify every returned candle open time is aligned and
-contiguous across the complete market period. Missing, duplicated, misaligned,
-or unexpected candles are a hard failure. No market outcome may be published
-and no 3+ entry round may be settled from incomplete source history.
+Every DAILY archive must contain exactly 1440 contiguous one-minute candles.
+Missing, duplicated, misaligned, or unexpected candles are a hard failure.
+No market outcome may be published and no 3+ entry round may be settled from
+incomplete source history.
 
 Binance Mark Price Kline fields used by EXTREMA:
 
@@ -390,7 +399,8 @@ Resolution rules:
 - source decimals are compared exactly without JavaScript floating-point arithmetic
 - final contract values use nearest-cent, half-up rounding
 - source data and canonical evidence are SHA-256 hashed and durably persisted
-- one asset/cadence/market-period source package produces both HIGH and LOW
+- one asset/day Binance archive produces both DAILY HIGH and DAILY LOW
+- WEEKLY and QUARTERLY outcomes are deterministic aggregates of DAILY archives
 - participation count does not control whether the market outcome is computed
 
 The contract settlement layer consumes the persisted official market outcome:
