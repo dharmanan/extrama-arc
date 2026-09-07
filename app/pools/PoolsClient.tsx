@@ -108,8 +108,7 @@ function DirectionMark({ direction }: { direction: LivePool["direction"] }) {
 }
 
 /**
- * The single overview countdown. Prediction window only: observation timing
- * belongs to the round and pool views, not to market discovery.
+ * The single overview countdown. It shows only real onchain entry windows.
  */
 function OverviewCountdown({ pools }: { pools: LivePool[] }) {
   const { locale } = useLocale();
@@ -143,21 +142,6 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
 
   const active = openRounds[0];
   const upcoming = nextRounds[0];
-  // Daily entry is canonically 00:00–20:00 UTC. Between a real Daily
-  // round's close and its observation start, the next Daily round has not
-  // necessarily been created onchain yet; that observation start is the
-  // canonical next entry opening. This derives only from the real round
-  // timing already on the board -- it never invents a pool or round.
-  const nextDailyOpening = pools
-    .filter((pool) => {
-      if (pool.cadence !== "DAILY") return false;
-      const closeAt = new Date(pool.round.entryCloseAt).getTime();
-      const nextOpenAt = new Date(pool.round.observationStartAt).getTime();
-      return Number.isFinite(closeAt) && Number.isFinite(nextOpenAt) && now >= closeAt && now < nextOpenAt;
-    })
-    .map((pool) => new Date(pool.round.observationStartAt).getTime())
-    .sort((a, b) => a - b)[0];
-
   if (active) {
     const target = new Date(active.round.entryCloseAt).getTime();
 
@@ -187,21 +171,6 @@ function OverviewCountdown({ pools }: { pools: LivePool[] }) {
         <p className="ex-window__value">{formatOverviewCountdown(target - now, locale)}</p>
         <p className="ex-window__meta">
           {t.opens} · {formatUtcCompact(upcoming.round.entryOpenAt, locale)}
-        </p>
-      </div>
-    );
-  }
-
-  if (nextDailyOpening !== undefined) {
-    return (
-      <div className="ex-window">
-        <p className="ex-window__label">{t.predictionWindow}</p>
-        <p className="ex-window__context">
-          {localizedCadence("DAILY", locale)} · {t.predictionsOpenIn}
-        </p>
-        <p className="ex-window__value">{formatOverviewCountdown(nextDailyOpening - now, locale)}</p>
-        <p className="ex-window__meta">
-          {t.opens} · {formatUtcCompact(new Date(nextDailyOpening).toISOString(), locale)}
         </p>
       </div>
     );
