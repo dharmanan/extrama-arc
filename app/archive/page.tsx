@@ -81,7 +81,7 @@ export default function ArchivePage() {
         if (cancelled) return;
         setRounds(result.rounds);
         setBlockNumber(result.chain.blockNumber);
-        const dates = Array.from(new Set(result.rounds.map((round) => utcDateKey(round.entryCloseAt)))).sort((a, b) => b.localeCompare(a));
+        const dates = Array.from(new Set(result.rounds.map((round) => utcDateKey(round.marketPeriodStartAt)))).sort((a, b) => b.localeCompare(a));
         const requested = typeof window !== "undefined"
           ? new URLSearchParams(window.location.search).get("date")
           : null;
@@ -102,12 +102,12 @@ export default function ArchivePage() {
   }, []);
 
   const availableDates = useMemo(
-    () => Array.from(new Set(rounds.map((round) => utcDateKey(round.entryCloseAt)))).sort((a, b) => b.localeCompare(a)),
+    () => Array.from(new Set(rounds.map((round) => utcDateKey(round.marketPeriodStartAt)))).sort((a, b) => b.localeCompare(a)),
     [rounds],
   );
 
   const selectedRounds = useMemo(
-    () => rounds.filter((round) => utcDateKey(round.entryCloseAt) === selectedDateKey),
+    () => rounds.filter((round) => utcDateKey(round.marketPeriodStartAt) === selectedDateKey),
     [rounds, selectedDateKey],
   );
 
@@ -215,32 +215,30 @@ export default function ArchivePage() {
                 const hasUnclaimedWinner = round.winners.some((winner) => !winner.claimed);
 
                 return (
-                  <article className="ex-archive-row" data-status={round.contractStatus} key={round.slug + ":" + round.roundId}>
+                  <article className="ex-archive-row" data-status={round.contractStatus} key={round.slug + ":" + round.marketPeriodStartAt}>
                     <div className="ex-archive-row__identity">
                       <span className="ex-archive-row__asset">
                         <img src={asset.brandSrc} alt="" />
                         <strong>{round.asset}</strong>
                       </span>
                       <p>{cadenceLabel(round.cadence, locale)} · {directionLabel(round.direction, locale)}</p>
-                      <span className="ex-num">#{round.roundId}</span>
+                      <span className="ex-num">{round.roundId !== null ? "#" + round.roundId : "—"}</span>
                     </div>
 
                     <div className="ex-archive-row__result">
                       <span>{locale === "tr" ? "SONUÇ" : "OUTCOME"}</span>
                       <strong className={settled ? "ex-num" : undefined}>
-                        {settled && round.resolvedPrice
-                          ? formatUsd(round.resolvedPrice, locale)
-                          : cancelled
-                            ? (locale === "tr" ? "İptal edildi" : "Cancelled")
-                            : humanRoundStatus(round.contractStatus, locale)}
+                        {formatUsd(round.marketResult, locale)}
                       </strong>
-                      <small>{humanRoundStatus(round.contractStatus, locale)}</small>
+                      <small>{round.contractStatus === "NO_ROUND"
+                        ? (locale === "tr" ? "Piyasa sonucu" : "Market result")
+                        : humanRoundStatus(round.contractStatus, locale)}</small>
                     </div>
 
                     <dl className="ex-archive-row__stats">
                       <div><dt>{locale === "tr" ? "KATILIM" : "ENTRIES"}</dt><dd className="ex-num">{round.entryCount}</dd></div>
                       <div><dt>{locale === "tr" ? "HAVUZ" : "POOL"}</dt><dd className="ex-num">{round.totalStakeUsdc} USDC</dd></div>
-                      <div><dt>{locale === "tr" ? "KAPANIŞ" : "CLOSED"}</dt><dd className="ex-num">{formatUtcDateTime(round.entryCloseAt, locale)}</dd></div>
+                      <div><dt>{locale === "tr" ? "DÖNEM" : "PERIOD"}</dt><dd className="ex-num">{formatUtcDateTime(round.marketPeriodStartAt, locale)} → {formatUtcDateTime(round.marketPeriodEndAt, locale)}</dd></div>
                     </dl>
 
                     <div className="ex-archive-row__winners">
@@ -262,9 +260,13 @@ export default function ArchivePage() {
                     </div>
 
                     <div className="ex-archive-row__actions">
-                      <Link href={"/results/" + round.slug + "/" + round.roundId}>
-                        {locale === "tr" ? "Sonucu aç" : "Open result"} →
-                      </Link>
+                      {round.roundId !== null ? (
+                        <Link href={"/results/" + round.slug + "/" + round.roundId}>
+                          {locale === "tr" ? "Sonucu aç" : "Open result"} →
+                        </Link>
+                      ) : (
+                        <span className="ex-num">{locale === "tr" ? "Piyasa sonucu" : "Market result"}</span>
+                      )}
                       {hasUnclaimedWinner && (
                         <Link href="/tickets">{locale === "tr" ? "Bilete git" : "Go to ticket"} →</Link>
                       )}
