@@ -159,4 +159,139 @@ assert.match(
   /EXTREMA_MARKETPLACE_ADDRESS:\s*z\.string\(\)\.default\("0x0C50FE3edD739B7268d58E1414F973e9A55dd037"\)/,
 );
 
+// ---------------------------------------------------------------------------
+// Duplicate-listing preflight. A ticket that already has an active listing
+// must be rejected by a direct, uncached chain read before any action
+// authorization or WebAuthn challenge is ever created -- not only at the
+// final list() revert. Regression coverage for the bug where /tickets kept
+// offering "List for sale" after a listing had already gone through.
+// ---------------------------------------------------------------------------
+const marketplaceServiceSource = read('../src/services/marketplaceService.js');
+
+assert.match(
+  marketplaceServiceSource,
+  /'function activeListingId\(address ticket,uint256 tokenId\) view returns \(uint256\)'/,
+  'activeListingId must be declared in the marketplace ABI',
+);
+assert.match(
+  marketplaceServiceSource,
+  /async function readActiveListingForTicket/,
+  'readActiveListingForTicket preflight reader is missing',
+);
+
+const activeListingReaderSection = marketplaceServiceSource.slice(
+  marketplaceServiceSource.indexOf('async function readActiveListingForTicket'),
+  marketplaceServiceSource.indexOf('async function readUsdcAllowance'),
+);
+assert.match(
+  activeListingReaderSection,
+  /marketplace\.activeListingId\(/,
+  'the preflight must call activeListingId directly on the contract',
+);
+assert.ok(
+  !activeListingReaderSection.includes('getMarketplaceListingsState')
+    && !activeListingReaderSection.includes('marketplaceListingsCache'),
+  'the duplicate-listing preflight must never read through the cached board',
+);
+
+// --- active listing blocks /marketplace-list/start before WebAuthn -------
+const startRouteSection = routesSource.slice(
+  routesSource.indexOf("router.post('/marketplace-list/start'"),
+  routesSource.indexOf("router.post('/marketplace-list/finish'"),
+);
+assert.match(
+  startRouteSection,
+  /readActiveListingForTicket/,
+  '/marketplace-list/start must perform the fresh active-listing preflight',
+);
+assert.ok(
+  !startRouteSection.includes('getMarketplaceListingsState'),
+  '/marketplace-list/start must not rely on the cached board for its preflight',
+);
+{
+  const preflightIndex = startRouteSection.indexOf('activeListing.activeListingId');
+  const actionCreatedIndex = startRouteSection.indexOf('createMarketplaceListRequest');
+  assert.ok(
+    preflightIndex >= 0 && actionCreatedIndex >= 0 && preflightIndex < actionCreatedIndex,
+    'the active-listing check must reject before createMarketplaceListRequest (and therefore before the WebAuthn challenge)',
+  );
+}
+
+// --- stale client cannot trigger a second valid list flow -----------------
+// The same fresh check runs again on both execution paths, immediately
+// before a list() transaction is ever built -- closing the window between
+// /start and /finish where another client's listing could have landed.
+const listSection = executionSource.slice(
+  executionSource.indexOf('// List'),
+  executionSource.indexOf('// Update price'),
+);
+const assertNotListedCallCount = [...listSection.matchAll(/assertTicketNotAlreadyListed\(/g)].length;
+assert.ok(
+  assertNotListedCallCount >= 2,
+  `expected the not-already-listed guard on both the bundled and external list paths, found ${assertNotListedCallCount}`,
+);
+
+// --- successful list refreshes current listing state deterministically ---
+// The cache refresh is awaited at every write-action call site, never left
+// running in the background, so the board is already correct by the time
+// the HTTP response goes out.
+{
+  const declarationIndex = executionSource.indexOf('async function refreshMarketplaceCaches');
+  assert.ok(declarationIndex >= 0, 'refreshMarketplaceCaches must be an async function');
+
+  const afterDeclaration = executionSource.slice(declarationIndex);
+  const bodyEnd = afterDeclaration.indexOf('\n}\n');
+  const refreshBody = afterDeclaration.slice(0, bodyEnd);
+  assert.match(
+    refreshBody,
+    /await marketplaceService\.refreshMarketplaceListingsCache\(\)/,
+    'refreshMarketplaceCaches must itself await the cache refresh, not fire it in the background',
+  );
+
+  const restOfFile = afterDeclaration.slice(bodyEnd);
+  const callSites = [...restOfFile.matchAll(/refreshMarketplaceCaches\(/g)];
+  assert.ok(
+    callSites.length >= 8,
+    `expected at least 8 refreshMarketplaceCaches call sites (one per write action), found ${callSites.length}`,
+  );
+  for (const match of callSites) {
+    const precedingText = restOfFile.slice(Math.max(0, match.index - 10), match.index);
+    assert.match(
+      precedingText,
+      /await\s*$/,
+      'every refreshMarketplaceCaches call site must be awaited, never fire-and-forget',
+    );
+  }
+}
+
+// The frontend must force a fresh, uncached read immediately after its own
+// list, price change, or cancel action -- belt and suspenders alongside the
+// server-side await above, so the ticket page cannot show stale state
+// regardless of timing.
+const backendApiSource = read('../../app/lib/backend-api.ts');
+assert.match(
+  backendApiSource,
+  /options\?\.forceFresh \? "\?fresh=1" : ""/,
+  'the marketplace listings client must support a forced fresh read',
+);
+
+const ticketsPageSource = read('../../app/tickets/page.tsx');
+const forceFreshRefreshCount = [...ticketsPageSource.matchAll(/loadMarketplaceListings\(true\)/g)].length;
+assert.ok(
+  forceFreshRefreshCount >= 3,
+  `expected list, price change, and cancel to force a fresh listings read, found ${forceFreshRefreshCount}`,
+);
+
+// --- contract ActiveListingExists behavior remains intact -----------------
+assert.match(
+  executionSource,
+  /error ActiveListingExists\(\)/,
+  'the contract-level ActiveListingExists safeguard must remain declared in the ABI',
+);
+assert.match(
+  executionSource,
+  /ActiveListingExists:\s*'marketplace_already_listed'/,
+  'ActiveListingExists must still map to marketplace_already_listed as the final safeguard',
+);
+
 console.log('marketplace-actions: PASS');

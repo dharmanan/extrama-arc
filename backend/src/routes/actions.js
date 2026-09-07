@@ -601,13 +601,22 @@ router.post('/marketplace-list/start', startLimiter, async (req, res, next) => {
     const input = marketplaceListStartSchema.parse(req.body);
     const ticketAddress = ethers.getAddress(input.ticketAddress);
 
-    const [wallet, approval] = await Promise.all([
+    const [wallet, approval, activeListing] = await Promise.all([
       walletService.getWalletForUser(req.auth.userId),
       marketplaceService.readTicketApprovalState({ ticketAddress, tokenId: input.tokenId }),
+      // Direct, uncached chain read -- never the board cache -- so a ticket
+      // that already has an active listing is rejected before any action
+      // authorization or WebAuthn challenge is created, not only at the
+      // final list() revert.
+      marketplaceService.readActiveListingForTicket({ ticketAddress, tokenId: input.tokenId }),
     ]);
 
     if (!wallet?.address) {
       return res.status(404).json({ error: 'wallet_not_found' });
+    }
+
+    if (activeListing.activeListingId) {
+      return res.status(409).json({ error: 'marketplace_already_listed' });
     }
 
     const provider = arcService.getArcProvider();

@@ -22,6 +22,7 @@ const MARKETPLACE_ABI = [
   'function nextListingId() view returns (uint256)',
   'function getListing(uint256 listingId) view returns (tuple(address seller,address ticket,uint256 tokenId,uint256 askUsdc,uint256 roundId,uint64 createdAt,uint8 status))',
   'function isListingBuyable(uint256 listingId) view returns (bool)',
+  'function activeListingId(address ticket,uint256 tokenId) view returns (uint256)',
 ];
 
 const TICKET_ABI = [
@@ -514,6 +515,56 @@ async function readTicketApprovalState({ ticketAddress, tokenId }) {
   };
 }
 
+// Direct, always fresh chain read of the contract's own duplicate-listing
+// guard -- deliberately bypasses the cached board entirely. Used as the
+// preflight for the list action, before any action authorization or
+// WebAuthn challenge is created, so a ticket that already has an active
+// listing is rejected up front rather than only at the final `list()`
+// revert (ActiveListingExists, which remains the last-resort safeguard for
+// the unavoidable race between this read and a transaction landing).
+async function readActiveListingForTicket({ ticketAddress, tokenId }) {
+  if (!ethers.isAddress(ticketAddress)) {
+    throw new Error('marketplace_approval_request_invalid');
+  }
+  if (typeof tokenId !== 'string' || !/^[1-9][0-9]*$/.test(tokenId)) {
+    throw new Error('marketplace_approval_request_invalid');
+  }
+
+  const topology = findTopologyByTicket(ticketAddress);
+  if (!topology) {
+    throw new Error('marketplace_approval_unsupported_ticket');
+  }
+
+  const provider = getArcProvider();
+  const marketplaceAddress = ethers.getAddress(config.EXTREMA_MARKETPLACE_ADDRESS);
+  const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, provider);
+
+  const activeListingIdRaw = await rpcRead(() => marketplace.activeListingId(topology.ticketAddress, tokenId));
+  if (activeListingIdRaw === 0n) {
+    return { activeListingId: null, seller: null, askUsdcRaw: null };
+  }
+
+  let listing;
+  try {
+    listing = await rpcRead(() => marketplace.getListing(activeListingIdRaw));
+  } catch {
+    // The mapping pointed at a listing that no longer reads cleanly -- treat
+    // as no confirmed active listing rather than blocking on a bad read.
+    return { activeListingId: null, seller: null, askUsdcRaw: null };
+  }
+
+  const onchainStatus = LISTING_STATUSES[Number(listing.status)] ?? null;
+  if (onchainStatus !== 'ACTIVE') {
+    return { activeListingId: null, seller: null, askUsdcRaw: null };
+  }
+
+  return {
+    activeListingId: activeListingIdRaw.toString(),
+    seller: ethers.getAddress(listing.seller),
+    askUsdcRaw: listing.askUsdc.toString(),
+  };
+}
+
 // Live USDC allowance from a wallet to the marketplace contract -- used
 // before a buyer confirms a purchase, so the frontend can offer the exact
 // USDC approve step only when the current allowance is insufficient for the
@@ -542,5 +593,6 @@ module.exports = {
   refreshMarketplaceListingsCache,
   readMarketplaceListing,
   readTicketApprovalState,
+  readActiveListingForTicket,
   readUsdcAllowance,
 };

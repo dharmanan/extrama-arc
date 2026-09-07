@@ -980,8 +980,9 @@ export const backendApi = {
     },
   },
   marketplace: {
-    listings() {
-      return request<MarketplaceListingsResponse>("/marketplace/listings");
+    listings(options?: { forceFresh?: boolean }) {
+      const query = options?.forceFresh ? "?fresh=1" : "";
+      return request<MarketplaceListingsResponse>(`/marketplace/listings${query}`);
     },
     listing(listingId: string | number) {
       return request<MarketplaceListingResponse>(

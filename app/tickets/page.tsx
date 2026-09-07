@@ -227,9 +227,13 @@ export default function TicketsPage() {
   // Independent of loadTickets: a marketplace read failure must never block
   // or degrade the ticket list itself, so it fails silently into an empty
   // lookup rather than surfacing its own error state on this page.
-  const loadMarketplaceListings = useCallback(async () => {
+  // forceFresh bypasses the backend's board cache entirely -- used right
+  // after this client's own list, price change, or cancel, so the ticket
+  // that was just acted on is guaranteed correct on the very next render
+  // regardless of the cache's normal refresh timing.
+  const loadMarketplaceListings = useCallback(async (forceFresh = false) => {
     try {
-      const result = await backendApi.marketplace.listings();
+      const result = await backendApi.marketplace.listings({ forceFresh });
       setMarketplaceListings(result.listings);
     } catch {
       setMarketplaceListings([]);
@@ -614,7 +618,7 @@ export default function TicketsPage() {
 
       setMarketSuccess({ mode: "list", explorerUrl });
       closeMarketDrawer();
-      await Promise.all([loadTickets(), loadMarketplaceListings()]);
+      await Promise.all([loadTickets(), loadMarketplaceListings(true)]);
     } catch (cause) {
       if (isAuthSessionError(cause)) {
         setAuthRequired(true);
@@ -674,7 +678,7 @@ export default function TicketsPage() {
 
       setMarketSuccess({ mode: "changePrice", explorerUrl });
       closeMarketDrawer();
-      await Promise.all([loadTickets(), loadMarketplaceListings()]);
+      await Promise.all([loadTickets(), loadMarketplaceListings(true)]);
     } catch (cause) {
       if (isAuthSessionError(cause)) {
         setAuthRequired(true);
@@ -728,7 +732,7 @@ export default function TicketsPage() {
 
       setMarketSuccess({ mode: "cancel", explorerUrl });
       closeMarketDrawer();
-      await Promise.all([loadTickets(), loadMarketplaceListings()]);
+      await Promise.all([loadTickets(), loadMarketplaceListings(true)]);
     } catch (cause) {
       if (isAuthSessionError(cause)) {
         setAuthRequired(true);

@@ -177,13 +177,31 @@ function requireTradable(round) {
   if (Math.floor(Date.now() / 1000) >= cutoff) throw new Error('marketplace_trading_window_closed');
 }
 
-function refreshMarketplaceCaches(...addresses) {
+// Awaited at every call site before its caller returns a success result, so
+// the shared board cache is already correct by the time the HTTP response
+// goes out -- the very next listings read (this client's or any other tab's)
+// can never observe the pre-action board. Never left to run in the
+// background: that gap is exactly what let /tickets keep offering "List for
+// sale" after a listing had already gone through.
+async function refreshMarketplaceCaches(...addresses) {
   addresses.forEach((address) => {
     if (address) arcService.invalidateArcWalletStateCache(address);
   });
-  marketplaceService.refreshMarketplaceListingsCache().catch((error) => {
+  try {
+    await marketplaceService.refreshMarketplaceListingsCache();
+  } catch (error) {
     console.error('[marketplace-cache] post-action refresh failed', error.message);
-  });
+  }
+}
+
+// Direct, always fresh chain read, used immediately before ever building or
+// sending a list() transaction -- the last check before spending gas. A
+// second, independent layer from the /marketplace-list/start preflight:
+// this one runs right at the moment of action, closing the race window
+// where another client's list could have landed in between.
+async function assertTicketNotAlreadyListed(ticketAddress, tokenId) {
+  const active = await marketplaceService.readActiveListingForTicket({ ticketAddress, tokenId });
+  if (active.activeListingId) throw new Error('marketplace_already_listed');
 }
 
 // =============================================================================
@@ -239,6 +257,7 @@ async function executeBackendList(userId, payload) {
 
   const { round } = await resolveRoundForTicket(ticketAddress, payload.tokenId, provider);
   requireTradable(round);
+  await assertTicketNotAlreadyListed(ticketAddress, payload.tokenId);
 
   const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, signer);
 
@@ -284,7 +303,7 @@ async function executeBackendList(userId, payload) {
   });
   if (!listed) throw new Error('marketplace_listed_event_missing');
 
-  refreshMarketplaceCaches(signerAddress);
+  await refreshMarketplaceCaches(signerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -318,6 +337,7 @@ async function buildExternalListTransactionRequest(payload) {
 
   const { round } = await resolveRoundForTicket(ticketAddress, payload.tokenId, provider);
   requireTradable(round);
+  await assertTicketNotAlreadyListed(ticketAddress, payload.tokenId);
 
   const approval = await marketplaceService.readTicketApprovalState({
     ticketAddress,
@@ -388,7 +408,7 @@ async function verifyExternalListReceipt(payload, txHash) {
   });
   if (!listed) throw new Error('marketplace_listed_event_missing');
 
-  refreshMarketplaceCaches(sellerAddress);
+  await refreshMarketplaceCaches(sellerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -504,7 +524,7 @@ async function executeBackendUpdatePrice(userId, payload) {
   });
   if (!updated) throw new Error('marketplace_price_updated_event_missing');
 
-  refreshMarketplaceCaches(signerAddress);
+  await refreshMarketplaceCaches(signerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -589,7 +609,7 @@ async function verifyExternalUpdatePriceReceipt(payload, txHash) {
   });
   if (!updated) throw new Error('marketplace_price_updated_event_missing');
 
-  refreshMarketplaceCaches(sellerAddress);
+  await refreshMarketplaceCaches(sellerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -683,7 +703,7 @@ async function executeBackendCancel(userId, payload) {
   });
   if (!cancelled) throw new Error('marketplace_cancelled_event_missing');
 
-  refreshMarketplaceCaches(signerAddress);
+  await refreshMarketplaceCaches(signerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -764,7 +784,7 @@ async function verifyExternalCancelReceipt(payload, txHash) {
   });
   if (!cancelled) throw new Error('marketplace_cancelled_event_missing');
 
-  refreshMarketplaceCaches(sellerAddress);
+  await refreshMarketplaceCaches(sellerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -895,7 +915,7 @@ async function executeBackendBuy(userId, payload) {
   });
   if (!sold) throw new Error('marketplace_sold_event_missing');
 
-  refreshMarketplaceCaches(buyerAddress, sellerAddress);
+  await refreshMarketplaceCaches(buyerAddress, sellerAddress);
 
   return {
     chainId: Number(network.chainId),
@@ -995,7 +1015,7 @@ async function verifyExternalBuyReceipt(payload, txHash) {
   });
   if (!sold) throw new Error('marketplace_sold_event_missing');
 
-  refreshMarketplaceCaches(buyerAddress, sellerAddress);
+  await refreshMarketplaceCaches(buyerAddress, sellerAddress);
 
   return {
     chainId: Number(network.chainId),
