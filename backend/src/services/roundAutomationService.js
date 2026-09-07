@@ -8,11 +8,13 @@ const arcService = require('./arcService');
 const { resolveExtremaWindow } = require('./binanceResolverService');
 const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
+const marketOutcomeService = require('./marketOutcomeService');
 const {
   currentDailySchedule,
   currentWeeklySchedule,
   currentQuarterlySchedule,
   isCanonicalV2Round,
+  SECONDS_PER_DAY,
 } = require('./canonicalMarketSchedule');
 
 const ARC_CHAIN_ID = 5042002n;
@@ -205,6 +207,77 @@ function slugOf(topology) {
 function oldestScannedRoundId(nextRoundId) {
   const floor = nextRoundId - ROUND_SCAN_DEPTH;
   return floor > 1n ? floor : 1n;
+}
+
+function completedPeriodsForAutomation(now) {
+  const dailyCurrent = currentDailySchedule(now);
+  const daily = [1n, 2n].map((daysBack) => ({
+    cadence: 'DAILY',
+    marketPeriodStartAt: dailyCurrent.marketPeriodStartAt - daysBack * SECONDS_PER_DAY,
+    marketPeriodEndAt: dailyCurrent.marketPeriodEndAt - daysBack * SECONDS_PER_DAY,
+  }));
+
+  const weeklyCurrent = currentWeeklySchedule(now);
+  const weekly = [{
+    cadence: 'WEEKLY',
+    marketPeriodStartAt: weeklyCurrent.marketPeriodStartAt - 7n * SECONDS_PER_DAY,
+    marketPeriodEndAt: weeklyCurrent.marketPeriodStartAt,
+  }];
+
+  const quarterlyCurrent = currentQuarterlySchedule(now);
+  const currentStart = new Date(Number(quarterlyCurrent.marketPeriodStartAt) * 1000);
+  let year = currentStart.getUTCFullYear();
+  let quarterIndex = Math.floor(currentStart.getUTCMonth() / 3) - 1;
+  if (quarterIndex < 0) {
+    quarterIndex = 3;
+    year -= 1;
+  }
+  const previousQuarterStart = BigInt(
+    Math.floor(Date.UTC(year, quarterIndex * 3, 1, 0, 0, 0) / 1000),
+  );
+  const quarterly = [{
+    cadence: 'QUARTERLY',
+    marketPeriodStartAt: previousQuarterStart,
+    marketPeriodEndAt: quarterlyCurrent.marketPeriodStartAt,
+  }];
+
+  return [...daily, ...weekly, ...quarterly];
+}
+
+async function ensureCompletedMarketOutcomes(now) {
+  const executed = [];
+  const failures = [];
+  const periods = completedPeriodsForAutomation(now);
+  for (const period of periods) {
+    for (const asset of Object.keys(RESOLVER_SYMBOLS)) {
+      try {
+        const outcome = await marketOutcomeService.ensureMarketOutcome({
+          asset,
+          cadence: period.cadence,
+          marketPeriodStartAt: period.marketPeriodStartAt,
+          marketPeriodEndAt: period.marketPeriodEndAt,
+        });
+        if (outcome.created) {
+          executed.push({
+            asset,
+            cadence: period.cadence,
+            marketPeriodStartAt: new Date(Number(period.marketPeriodStartAt) * 1000).toISOString(),
+            marketPeriodEndAt: new Date(Number(period.marketPeriodEndAt) * 1000).toISOString(),
+            evidenceSha256: outcome.record.evidenceSha256,
+          });
+        }
+      } catch (error) {
+        failures.push({
+          asset,
+          cadence: period.cadence,
+          marketPeriodStartAt: new Date(Number(period.marketPeriodStartAt) * 1000).toISOString(),
+          marketPeriodEndAt: new Date(Number(period.marketPeriodEndAt) * 1000).toISOString(),
+          reason: error.message,
+        });
+      }
+    }
+  }
+  return { executed, failures };
 }
 
 // Walks the recent rounds of every pool and classifies what each one is owed.
@@ -759,69 +832,27 @@ async function collectResolverActionsInternal(dueCancel, dueSettle) {
 // Canonical Binance historical evidence for one round. Any gap or validation
 // failure in the source window raises resolver_data_incomplete, which must
 // prevent settlement rather than settle on partial data.
-async function buildSettlementEvidence(item) {
-  const { topology, round } = item;
-  const observationStartAt = new Date(Number(round.observationStartAt) * 1000).toISOString();
-  const observationEndAt = new Date(Number(round.observationEndAt) * 1000).toISOString();
-
-  let resolved;
-  try {
-    resolved = await resolveExtremaWindow({
-      symbol: RESOLVER_SYMBOLS[topology.asset],
-      cadence: topology.cadence,
-      observationStartAt,
-      observationEndAt,
-    });
-  } catch (error) {
-    const reason = new Error('resolver_data_incomplete');
-    reason.detail = error.message;
-    throw reason;
-  }
-
-  const side = topology.direction === 'HIGH' ? resolved.high : resolved.low;
-  if (!side || !/^[1-9][0-9]*$/.test(String(side.resolvedPriceCents))) {
-    throw new Error('resolver_data_incomplete');
-  }
-
+async function buildSettlementEvidence(item, marketOutcome) {
+  const round = item.round;
+  const side = item.topology.direction === 'HIGH' ? marketOutcome.high : marketOutcome.low;
   return {
-    slug: slugOf(topology),
-    poolAddress: topology.poolAddress,
+    poolAddress: item.topology.poolAddress,
     roundId: Number(item.roundId),
-    asset: topology.asset,
-    symbol: RESOLVER_SYMBOLS[topology.asset],
-    cadence: topology.cadence,
-    direction: topology.direction,
-    observationStartAt,
-    observationEndAt,
-    interval: resolved.interval,
-    resolvedPriceCents: String(side.resolvedPriceCents),
-    evidenceSha256: resolved.evidenceSha256,
-    sourceDataSha256: resolved.sourceDataSha256,
-    // Used exactly as returned by resolveExtremaWindow() -- never
-    // re-JSON.stringify'd here -- so the persisted hash always matches
-    // the exact bytes that were originally hashed.
-    canonicalEvidenceJson: resolved.canonicalEvidenceJson,
+    slug: slugOf(item.topology),
+    asset: item.topology.asset,
+    direction: item.topology.direction,
+    cadence: item.topology.cadence,
+    symbol: marketOutcome.symbol,
+    interval: marketOutcome.interval,
+    observationStartAt: marketOutcome.marketPeriodStartAt,
+    observationEndAt: marketOutcome.marketPeriodEndAt,
+    resolvedPriceCents: side.resolvedPriceCents,
+    evidenceSha256: marketOutcome.evidenceSha256,
+    sourceDataSha256: marketOutcome.sourceDataSha256,
+    canonicalEvidenceJson: marketOutcome.canonicalEvidenceJson,
   };
 }
 
-// A send is never repeated. If the broadcast outcome is uncertain, onchain
-// state decides whether the transition already landed.
-async function sendOnceWithReconciliation({ send, hasLanded, label }) {
-  try {
-    const tx = await send();
-    const receipt = await tx.wait();
-    if (!receipt || receipt.status !== 1) throw new Error(`${label}_transaction_failed`);
-    return { txHash: tx.hash, reconciled: false };
-  } catch (error) {
-    const landed = await hasLanded().catch(() => false);
-    if (landed) return { txHash: null, reconciled: true };
-    throw error;
-  }
-}
-
-// Executes one resolver-authorized transition. Every call re-reads the live
-// resolver role and the live round immediately before writing, so a stale scan
-// can never cause a premature or duplicate transition.
 async function executeResolverAction(provider, now, item, signer) {
   const context = { provider, address: item.topology.poolAddress };
   const slug = slugOf(item.topology);
@@ -874,7 +905,7 @@ async function executeResolverAction(provider, now, item, signer) {
   }
 
   // Settlement evidence is built before the write and must be complete.
-  const evidence = await buildSettlementEvidence(item);
+  const evidence = await buildSettlementEvidence(item, marketOutcome);
 
   // Mandatory: durably persist the evidence, or, if evidence for this exact
   // (poolAddress, roundId) already exists from a prior attempt, load and
@@ -1046,6 +1077,7 @@ async function runLifecycleInternal() {
 
   const provider = getAutomationProvider();
   const now = await readChainNow(provider);
+  const marketOutcomes = await ensureCompletedMarketOutcomes(now);
   const { dueLock, dueCancel, dueSettle, readFailures } = await scanLifecycle(provider, now);
 
   const lock = await lockDueRoundsInternal(provider, now, dueLock);
@@ -1062,6 +1094,7 @@ async function runLifecycleInternal() {
   return {
     chainTimestamp: Number(now),
     created,
+    marketOutcomes,
     lock,
     resolver,
     readFailures,
@@ -1181,6 +1214,13 @@ function runAndLog() {
           '[round-automation] quarterly round creation failures',
           JSON.stringify(result.created.quarterly.failures),
         );
+      }
+
+      for (const item of result.marketOutcomes?.executed || []) {
+        console.log('[market-outcome] published', JSON.stringify(item));
+      }
+      for (const failure of result.marketOutcomes?.failures || []) {
+        console.error('[market-outcome] failed', JSON.stringify(failure));
       }
 
       if (result.lock?.locked?.length) {
