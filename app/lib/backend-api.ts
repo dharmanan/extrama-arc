@@ -87,12 +87,16 @@ export type ArchiveRound = {
   asset: Asset;
   direction: "HIGH" | "LOW";
   cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
-  roundId: number;
-  contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
-  entryCloseAt: string;
-  observationEndAt: string;
-  resolvedPriceCents: string;
-  resolvedPrice: string | null;
+  roundId: number | null;
+  contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED" | "NO_ROUND";
+  marketPeriodStartAt: string;
+  marketPeriodEndAt: string;
+  marketResultCents: string;
+  marketResult: string;
+  marketResultExact: string;
+  evidenceSha256: string;
+  entryCloseAt: string | null;
+  settlementEligibleAt: string;
   entryCount: number;
   totalStakeRaw: string;
   totalStakeUsdc: string;
@@ -147,8 +151,8 @@ export type RoundEntriesResponse = {
 export type RoundVerificationIntegrity = {
   evidenceHashValid: boolean;
   poolIdentityMatches: boolean;
-  observationWindowMatches: boolean;
-  resolvedPriceMatchesOnchain: boolean;
+  marketPeriodMatches: boolean;
+  resolvedPriceMatchesOnchain: boolean | null;
 };
 
 export type RoundVerificationSelected = {
@@ -171,7 +175,7 @@ export type RoundVerification =
       cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
       direction: "HIGH" | "LOW";
       interval: string;
-      observationWindow: { startInclusive: string; endExclusive: string };
+      marketPeriod: { startInclusive: string; endExclusive: string };
       candleCount: number;
       sourceDataSha256: string;
       rounding: string;
@@ -199,8 +203,9 @@ export type RoundVerificationResponse = {
   round: {
     roundId: number;
     contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
-    observationStartAt: string;
-    observationEndAt: string;
+    marketPeriodStartAt: string | null;
+    marketPeriodEndAt: string | null;
+    settlementEligibleAt: string;
     resolvedPriceCents: string;
     resolvedPrice: string | null;
   };
