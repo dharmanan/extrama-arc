@@ -16,6 +16,8 @@ export type LiveResult = {
   round: {
     roundId: number; contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
     entryOpenAt: string; entryCloseAt: string; observationStartAt: string; observationEndAt: string;
+    marketPeriodStartAt: string | null; marketPeriodEndAt: string | null;
+    marketResultCents: string | null; marketResult: string | null; marketResultExact: string | null; marketEvidenceSha256: string | null;
     entryCount: number; totalStakeRaw: string; totalStakeUsdc: string; escrowRemainingRaw: string;
     escrowRemainingUsdc: string; resolvedPriceCents: string; resolvedPrice: string | null; winnerTicketIds: string[];
   };
@@ -104,11 +106,11 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
             </span>
             <h1 className="ex-display ex-display--xl">{title}</h1>
             <p className="ex-result__market">{cadenceLabel(pool.cadence, locale)} · {directionLabel(pool.direction, locale)} · {pool.sourceSymbol}</p>
-            {settled && round.resolvedPrice ? (
+            {round.marketResult ? (
               <div className="ex-result__price">
                 <span>{t.result.resolvedPrice}</span>
-                <strong className="ex-num">{formatUsd(round.resolvedPrice, locale)}</strong>
-                <small>{directionLabel(pool.direction, locale)}</small>
+                <strong className="ex-num">{formatUsd(round.marketResult, locale)}</strong>
+                <small>{directionLabel(pool.direction, locale)} · Binance</small>
               </div>
             ) : (
               <p className="ex-result__state" data-cancelled={cancelled}>{cancelled ? t.result.cancelledBody : t.result.pendingBody}</p>
@@ -119,7 +121,7 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
             <div><dt>{t.result.round}</dt><dd className="ex-num">#{round.roundId}</dd></div>
             <div><dt>{t.result.entries}</dt><dd className="ex-num">{round.entryCount}</dd></div>
             <div><dt>{t.result.stake}</dt><dd className="ex-num">{formatUsdc(round.totalStakeUsdc, locale)}</dd></div>
-            <div><dt>{t.result.window}</dt><dd><span suppressHydrationWarning>{formatUtcDateTime(round.observationStartAt, locale)} → {formatUtcDateTime(round.observationEndAt, locale)}</span></dd></div>
+            <div><dt>{t.result.window}</dt><dd><span suppressHydrationWarning>{round.marketPeriodStartAt && round.marketPeriodEndAt ? `${formatUtcDateTime(round.marketPeriodStartAt, locale)} → ${formatUtcDateTime(round.marketPeriodEndAt, locale)}` : "Legacy V1"}</span></dd></div>
             <div><dt>{t.result.source}</dt><dd>{pool.source} · {pool.sourceSymbol}</dd></div>
             <div><dt>{t.result.status}</dt><dd>{humanRoundStatus(round.contractStatus, locale)}</dd></div>
           </dl>
@@ -162,7 +164,7 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
             </div>
             <ol className="ex-progress-rail">
               <li><span className="ex-progress-rail__number">01</span><div><h3>{t.result.progressEntry}</h3><p>{t.result.progressEntryBody}</p></div></li>
-              <li><span className="ex-progress-rail__number">02</span><div><h3>{t.result.progressObservation}</h3><p className="ex-num">{formatUtcDateTime(round.observationStartAt, locale)}<br />→ {formatUtcDateTime(round.observationEndAt, locale)}</p></div></li>
+              <li><span className="ex-progress-rail__number">02</span><div><h3>{t.result.progressObservation}</h3><p className="ex-num">{round.marketPeriodStartAt && round.marketPeriodEndAt ? <>{formatUtcDateTime(round.marketPeriodStartAt, locale)}<br />→ {formatUtcDateTime(round.marketPeriodEndAt, locale)}</> : "Legacy V1"}</p></div></li>
               <li><span className="ex-progress-rail__number">03</span><div><h3>{t.result.progressSettlement}</h3><p>{t.result.progressSettlementBody}</p></div></li>
               <li><span className="ex-progress-rail__number">04</span><div><h3>{t.result.progressResult}</h3><p>{t.result.progressResultBody}</p></div></li>
             </ol>
@@ -171,7 +173,7 @@ export function ResultClient({ result, invalid = false }: { result: LiveResult |
 
         <div className="ex-result__actions">
           <a className="ex-btn ex-btn--ghost" href={`${chain.explorerUrl}/address/${pool.poolAddress}`} target="_blank" rel="noreferrer">{t.result.viewPoolOnArc}</a>
-          {settled && <Link className="ex-btn ex-btn--ink" href={`/verify/${pool.slug}/${round.roundId}`}>{t.result.verifySettlement}</Link>}
+          {(settled || cancelled) && round.marketResult && <Link className="ex-btn ex-btn--ink" href={`/verify/${pool.slug}/${round.roundId}`}>{t.result.verifySettlement}</Link>}
           {cancelled ? <Link className="ex-btn ex-btn--ghost" href="/tickets">{t.result.refunds}</Link> : <Link className="ex-btn ex-btn--ghost" href="/tickets">{t.result.viewTickets}</Link>}
         </div>
       </div>
