@@ -1,42 +1,123 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
-import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
+import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { arcTestnet } from "../lib/web3";
 import { shortAddress, useWalletSession } from "../wallet-session";
 import { backendApi, isAuthSessionError } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
-import { useCopy } from "../i18n";
+import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
+import { useConnectModal } from "@rainbow-me/rainbowkit";
+import { assetConfigs } from "../lib/asset-config";
+import { readBinanceLiveMarket } from "../lib/live-market";
 
 type Step = "owner" | "choice" | "create" | "recovery" | "ready";
 
-function connectorDisplayName(name: string) {
-  const normalized = name.toLowerCase();
-  if (normalized.includes("metamask")) return "MetaMask";
-  if (normalized.includes("rabby")) return "Rabby";
-  if (normalized.includes("phantom")) return "Phantom";
-  if (normalized.includes("coinbase")) return "Coinbase Wallet";
-  if (normalized.includes("walletconnect")) return "WalletConnect";
-  if (normalized === "injected") return "Browser wallet";
-  return name;
+
+const WALLET_MARKET_ASSETS = ["BTC", "ETH", "SOL", "HYPE"] as const;
+
+type WalletMarketPrice = {
+  markPrice: string;
+  source: string;
+};
+
+function formatWalletMarketPrice(value: string, locale: "en" | "tr") {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "···";
+
+  return new Intl.NumberFormat(locale === "tr" ? "tr-TR" : "en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: numeric < 100 ? 2 : 0,
+    minimumFractionDigits: numeric < 100 ? 2 : 0,
+  }).format(numeric);
 }
 
-function connectorPriority(name: string) {
-  const normalized = connectorDisplayName(name).toLowerCase();
-  if (normalized === "metamask") return 0;
-  if (normalized === "rabby") return 1;
-  if (normalized === "phantom") return 2;
-  if (normalized === "coinbase wallet") return 3;
-  if (normalized === "walletconnect") return 4;
-  if (normalized === "browser wallet") return 90;
-  return 20;
+function WalletLiveMarket() {
+  const { locale } = useLocale();
+  const [prices, setPrices] = useState<Record<string, WalletMarketPrice>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const live = await readBinanceLiveMarket();
+        if (cancelled) return;
+
+        const next: Record<string, WalletMarketPrice> = {};
+
+        for (const symbol of WALLET_MARKET_ASSETS) {
+          const config = assetConfigs[symbol];
+          const price = live.prices[config.sourceSymbol];
+
+          if (price) {
+            next[symbol] = {
+              markPrice: price.markPrice,
+              source: price.source,
+            };
+          }
+        }
+
+        setPrices(next);
+      } catch {
+        if (!cancelled) setPrices({});
+      }
+    }
+
+    void load();
+    const timer = window.setInterval(load, 60_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const sources = Array.from(
+    new Set(Object.values(prices).map((item) => item.source)),
+  );
+
+  return (
+    <section className="ex-wallet-market" aria-label="Live market prices">
+      {WALLET_MARKET_ASSETS.map((symbol) => {
+        const price = prices[symbol];
+
+        return (
+          <div className="ex-wallet-market__item" key={symbol}>
+            <div className="ex-wallet-market__asset">
+              <img src={assetConfigs[symbol].brandSrc} alt="" />
+              <span>{symbol}</span>
+            </div>
+
+            <span
+              className="ex-wallet-market__price"
+              data-pending={price ? "false" : "true"}
+            >
+              {price
+                ? formatWalletMarketPrice(price.markPrice, locale)
+                : "···"}
+            </span>
+          </div>
+        );
+      })}
+
+      <div className="ex-wallet-market__meta">
+        <span>{locale === "tr" ? "CANLI PİYASA" : "LIVE MARKET"}</span>
+        <small>
+          {sources.length ? sources.join(" · ") : "—"} · 60s
+        </small>
+      </div>
+    </section>
+  );
 }
 
 export default function WalletPage() {
   const t = useCopy();
+  const { openConnectModal } = useConnectModal();
 
   const {
     address: walletAddress,
@@ -47,23 +128,8 @@ export default function WalletPage() {
   } = useWalletSession();
 
   const { address: connectedAddress, isConnected, chain } = useAccount();
-  const { connectors, connectAsync } = useConnect();
   const { disconnect } = useDisconnect();
 
-  const walletConnectors = useMemo(() => {
-    const unique = new Map<string, (typeof connectors)[number]>();
-
-    for (const connector of connectors) {
-      const key = connectorDisplayName(connector.name).toLowerCase();
-      if (!unique.has(key)) unique.set(key, connector);
-    }
-
-    return [...unique.values()].sort((left, right) => {
-      const rank = connectorPriority(left.name) - connectorPriority(right.name);
-      if (rank !== 0) return rank;
-      return connectorDisplayName(left.name).localeCompare(connectorDisplayName(right.name));
-    });
-  }, [connectors]);
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
 
@@ -80,7 +146,6 @@ export default function WalletPage() {
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
   const [walletNotice, setWalletNotice] = useState("");
-  const [connectingUid, setConnectingUid] = useState<string | null>(null);
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -104,20 +169,6 @@ export default function WalletPage() {
     }
   }, [walletStatus, walletAddress, step]);
 
-
-  async function handleConnect(connector: (typeof connectors)[number]) {
-    setError("");
-    setConnectingUid(connector.uid);
-    setBusy("Connecting wallet...");
-    try {
-      await connectAsync({ connector });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
-    } finally {
-      setConnectingUid(null);
-      setBusy("");
-    }
-  }
 
   async function handleExternalWalletLogin() {
     if (!connectedAddress) return;
@@ -405,28 +456,21 @@ export default function WalletPage() {
                   </button>
                 </div>
               ) : chainState ? (
-                <dl className="ex-pool__facts">
-                  <div>
-                    <dt>{t.wallet.chainNetwork}</dt>
-                    <dd className="ex-num">{chainState.chain.name} · {t.wallet.chainId} {chainState.chain.id}</dd>
+                <div className="ex-wallet-summary">
+                  <div className="ex-wallet-summary__item">
+                    <span>Network</span>
+                    <strong className="ex-num">
+                      {chainState.chain.name} · {chainState.chain.id}
+                    </strong>
                   </div>
-                  <div>
-                    <dt>{t.wallet.blockNumber}</dt>
-                    <dd className="ex-num">{chainState.chain.blockNumber}</dd>
+
+                  <div className="ex-wallet-summary__item">
+                    <span>USDC balance</span>
+                    <strong className="ex-num">
+                      {chainState.usdc.balanceFormatted} {chainState.usdc.symbol}
+                    </strong>
                   </div>
-                  <div>
-                    <dt>{t.wallet.nativeGasBalance}</dt>
-                    <dd className="ex-num">{chainState.native.balanceFormatted} {chainState.native.symbol}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.wallet.usdcContract}</dt>
-                    <dd className="ex-num">{chainState.usdc.address}</dd>
-                  </div>
-                  <div>
-                    <dt>{t.wallet.usdcBalance}</dt>
-                    <dd className="ex-num">{chainState.usdc.balanceFormatted} {chainState.usdc.symbol}</dd>
-                  </div>
-                </dl>
+                </div>
               ) : (
                 <p className="ex-wallet-ledger__pending">{chainBusy || t.wallet.balanceNotLoaded}</p>
               )}
@@ -472,72 +516,94 @@ export default function WalletPage() {
     );
   }
 
+
   if (step === "owner") {
     return (
       <main className="ex-wallet-page">
         <ProductHeader />
+
         <div className="ex-shell">
           <div className="ex-wallet-strip">
             <div className="ex-wallet-strip__item">
               <span className="ex-wallet-strip__key">{t.wallet.ownerWallet}</span>
               <span className="ex-wallet-strip__val ex-num">
-                {isConnected && connectedAddress ? shortAddress(connectedAddress) : t.wallet.notConnected}
+                {isConnected && connectedAddress
+                  ? shortAddress(connectedAddress)
+                  : t.wallet.notConnected}
               </span>
             </div>
+
             <div className="ex-wallet-strip__item">
               <span className="ex-wallet-strip__key">{t.wallet.network}</span>
-              <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
+              <span className="ex-wallet-strip__val ex-num">
+                {chain ? `${chain.name} · ${chain.id}` : "—"}
+              </span>
             </div>
-            {isConnected && (
-              <div className="ex-wallet-strip__actions">
-                <button className="ex-btn ex-btn--ghost" type="button" onClick={() => disconnect()}>
-                  {t.wallet.disconnect}
-                </button>
+          </div>
+
+          <div className="ex-wallet-entry-grid">
+            <section className="ex-wallet-hero ex-wallet-hero--entry">
+              <p className="ex-eyebrow">{t.wallet.getStarted}</p>
+
+              <h1 className="ex-display ex-display--xl">
+                {t.wallet.entranceTitle}
+              </h1>
+
+              <p className="ex-lede">
+                Continue with Google or email using a Circle user controlled
+                wallet, or connect an existing EVM wallet.
+              </p>
+            </section>
+
+            <section className="ex-wallet-access">
+              <p className="ex-eyebrow">Access</p>
+
+              <CircleWalletOnboarding
+                onReady={(session) => {
+                  setWalletReady(
+                    session.walletAddress,
+                    "CIRCLE_USER_WALLET",
+                  );
+                  setOwnerAddress(session.ownerAddress);
+                  setWalletNotice(
+                    "Circle wallet session ready. Every transaction remains user approved.",
+                  );
+                  setStep("ready");
+                }}
+              />
+
+              <div className="ex-wallet-access__divider">
+                <span>OR</span>
               </div>
-            )}
+
+              <button
+                className="ex-btn ex-btn--ink ex-wallet-access__wallet"
+                type="button"
+                disabled={!openConnectModal}
+                onClick={() => openConnectModal?.()}
+              >
+                Connect wallet
+              </button>
+
+              <p className="ex-wallet-panel__note">
+                MetaMask, Rabby, Phantom, Coinbase Wallet or another detected
+                EVM wallet.
+              </p>
+
+              {error && (
+                <p className="ex-entry__msg" data-tone="error">
+                  {error}
+                </p>
+              )}
+            </section>
           </div>
 
-          <div className="ex-wallet-hero">
-            <p className="ex-eyebrow">{t.wallet.getStarted}</p>
-            <h1 className="ex-display ex-display--xl">{t.wallet.entranceTitle}</h1>
-            <p className="ex-lede">{t.wallet.entranceLede}</p>
-          </div>
-
-          <div className="ex-wallet-panel">
-            <CircleWalletOnboarding
-              onReady={(session) => {
-                setWalletReady(session.walletAddress, "CIRCLE_USER_WALLET");
-                setOwnerAddress(session.ownerAddress);
-                setWalletNotice("Circle wallet session ready. Every transaction remains user approved.");
-                setStep("ready");
-              }}
-            />
-            <p className="ex-eyebrow">{t.wallet.orConnectWallet}</p>
-            <div className="ex-wallet-connectors">
-              {walletConnectors.map((connector) => (
-                <button
-                  className="ex-wallet-connector"
-                  type="button"
-                  key={connector.uid}
-                  onClick={() => handleConnect(connector)}
-                  disabled={Boolean(busy)}
-                >
-                  <span>{connectorDisplayName(connector.name)}</span>
-                  <small>
-                    {connectingUid === connector.uid
-                      ? (busy || connectorDisplayName(connector.name))
-                      : t.wallet.connectWalletAction}
-                  </small>
-                </button>
-              ))}
-            </div>
-            <p className="ex-wallet-panel__note">{t.wallet.supportedWallets}</p>
-            {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
-          </div>
+          <WalletLiveMarket />
         </div>
       </main>
     );
   }
+
 
   if (step === "create" && ownerAddress) {
     return (
@@ -551,7 +617,7 @@ export default function WalletPage() {
             </div>
             <div className="ex-wallet-strip__item">
               <span className="ex-wallet-strip__key">{t.wallet.network}</span>
-              <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
+              <span className="ex-wallet-strip__val ex-num">{chain ? `${chain.name} · ${chain.id}` : "—"}</span>
             </div>
             <div className="ex-wallet-strip__actions">
               {chain?.id !== arcTestnet.id && (
@@ -597,62 +663,118 @@ export default function WalletPage() {
     );
   }
 
+
   return (
     <main className="ex-wallet-page">
       <ProductHeader />
+
       <div className="ex-shell">
         <div className="ex-wallet-strip">
           <div className="ex-wallet-strip__item">
-            <span className="ex-wallet-strip__key">{t.wallet.ownerWallet}</span>
-            <span className="ex-wallet-strip__val ex-num">{connectedAddress ? shortAddress(connectedAddress) : t.wallet.notConnected}</span>
+            <span className="ex-wallet-strip__key">Wallet</span>
+            <span className="ex-wallet-strip__val ex-num">
+              {connectedAddress
+                ? shortAddress(connectedAddress)
+                : t.wallet.notConnected}
+            </span>
           </div>
+
           <div className="ex-wallet-strip__item">
             <span className="ex-wallet-strip__key">{t.wallet.network}</span>
-            <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
+            <span className="ex-wallet-strip__val ex-num">
+              {chain ? `${chain.name} · ${chain.id}` : "—"}
+            </span>
           </div>
+
           <div className="ex-wallet-strip__actions">
-            {chain?.id !== arcTestnet.id && (
-              <button className="ex-btn ex-btn--ghost" type="button" onClick={() => switchChainAsync({ chainId: arcTestnet.id })}>
-                {t.wallet.switchToArc}
+            <button
+              className="ex-btn ex-btn--ghost"
+              type="button"
+              onClick={() => {
+                disconnect();
+                setOwnerAddress(null);
+                setStep("owner");
+              }}
+            >
+              Disconnect
+            </button>
+          </div>
+        </div>
+
+        <div className="ex-wallet-entry-grid">
+          <section className="ex-wallet-hero ex-wallet-hero--entry">
+            <p className="ex-eyebrow">{t.wallet.getStarted}</p>
+
+            <h1 className="ex-display ex-display--xl">
+              {t.wallet.entranceTitle}
+            </h1>
+
+            <p className="ex-lede">
+              Continue with Google or email using a Circle user controlled
+              wallet, or connect an existing EVM wallet.
+            </p>
+          </section>
+
+          <section className="ex-wallet-access">
+            <p className="ex-eyebrow">Wallet connected</p>
+
+            <div className="ex-wallet-verify">
+              <div className="ex-wallet-verify__identity">
+                <strong className="ex-num">
+                  {connectedAddress
+                    ? shortAddress(connectedAddress)
+                    : "—"}
+                </strong>
+
+                <span className="ex-num">
+                  {chain ? `${chain.name} · ${chain.id}` : "—"}
+                </span>
+              </div>
+
+              <div className="ex-wallet-verify__copy">
+                <p>
+                  Sign one message to verify this wallet.
+                </p>
+                <p>
+                  This is not a transaction and costs no gas.
+                </p>
+              </div>
+
+              <button
+                className="ex-btn ex-btn--ink ex-wallet-access__wallet"
+                type="button"
+                onClick={handleExternalWalletLogin}
+                disabled={Boolean(busy)}
+              >
+                {busy || "Sign to continue"}
               </button>
-            )}
-            <button className="ex-btn ex-btn--ghost" type="button" onClick={() => disconnect()}>{t.wallet.disconnect}</button>
-          </div>
+
+              <button
+                className="ex-wallet-change"
+                type="button"
+                disabled={Boolean(busy)}
+                onClick={() => {
+                  disconnect();
+                  setOwnerAddress(null);
+                  setStep("owner");
+                  window.setTimeout(() => openConnectModal?.(), 0);
+                }}
+              >
+                Choose another wallet
+              </button>
+
+              {error && (
+                <p className="ex-entry__msg" data-tone="error">
+                  {error}
+                </p>
+              )}
+            </div>
+          </section>
         </div>
 
-        <div className="ex-wallet-hero">
-          <p className="ex-eyebrow">{t.wallet.choiceEyebrow}</p>
-          <h1 className="ex-display ex-display--lg">{t.wallet.choiceTitle}</h1>
-          <p className="ex-lede">{t.wallet.choiceLede}</p>
-        </div>
-
-        <div className="ex-wallet-choice">
-          <div className="ex-wallet-choice__block">
-            <p className="ex-eyebrow">{t.wallet.externalChoiceEyebrow}</p>
-            <p className="ex-wallet-choice__body">{t.wallet.externalChoiceBody}</p>
-            <button className="ex-btn ex-btn--ink ex-wallet-choice__cta" type="button" onClick={handleExternalWalletLogin} disabled={Boolean(busy)}>
-              {busy || t.wallet.externalChoiceCta}
-            </button>
-          </div>
-          <div className="ex-wallet-choice__block">
-            <p className="ex-eyebrow">{t.wallet.reconnectTitle}</p>
-            <p className="ex-wallet-choice__body">{t.wallet.reconnectBody}</p>
-            <button className="ex-btn ex-btn--ghost ex-wallet-choice__cta" type="button" onClick={handleReconnect} disabled={Boolean(busy)}>
-              {busy || t.wallet.reconnectCta}
-            </button>
-          </div>
-        </div>
-
-        {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
-
-        <button className="ex-wallet-change" type="button" onClick={() => {
-          disconnect();
-          setOwnerAddress(null);
-          setStep("owner");
-        }}>
-          {t.wallet.changeOwner}
-        </button>
+        <WalletLiveMarket />
       </div>
     </main>
   );
+
 }

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "@rainbow-me/rainbowkit/styles.css";
 import "./globals.css";
 import "./wireframe.css";
 import { WalletSessionProvider } from "./wallet-session";

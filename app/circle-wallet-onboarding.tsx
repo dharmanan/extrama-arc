@@ -206,7 +206,34 @@ export function CircleWalletOnboarding({
   }
 
   if (!appId) {
-    return <p className="ex-wallet-panel__note">Circle wallet onboarding is not configured yet.</p>;
+    return (
+      <div className="ex-circle-onboarding">
+        <div className="ex-wallet-panel__actions">
+          <button className="ex-btn ex-btn--ghost" type="button" disabled>
+            Continue with Google
+          </button>
+        </div>
+
+        <label className="ex-entry__field">
+          <span className="ex-entry__label">Email</span>
+          <input
+            type="email"
+            disabled
+            placeholder="you@example.com"
+          />
+        </label>
+
+        <div className="ex-wallet-panel__actions">
+          <button className="ex-btn ex-btn--ghost" type="button" disabled>
+            Continue with email
+          </button>
+        </div>
+
+        <p className="ex-wallet-panel__note">
+          Circle sign in will become available when configuration is enabled.
+        </p>
+      </div>
+    );
   }
 
   return (
