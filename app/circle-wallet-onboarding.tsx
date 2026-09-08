@@ -138,6 +138,7 @@ export function CircleWalletOnboarding({
         if (!sdk) throw new Error("Circle wallet is not ready.");
         await bindExtremaSession(result, sdk);
       } catch (cause) {
+        clearCircleTransientState();
         setError(cause instanceof Error ? cause.message : "Circle wallet setup failed.");
       } finally {
         setBusy("");
@@ -178,8 +179,19 @@ export function CircleWalletOnboarding({
     let cancelled = false;
     void (async () => {
       const pending = readPendingLogin();
-      const sdk = await setupSdk(pending);
-      if (!cancelled && sdk && pending) setBusy("Completing Circle sign-in...");
+      const hasOAuthResponse =
+        window.location.hash.includes("id_token=") ||
+        window.location.hash.includes("access_token=") ||
+        window.location.hash.includes("error=");
+
+      if (pending && !hasOAuthResponse) {
+        clearCircleTransientState();
+      }
+
+      const sdk = await setupSdk(hasOAuthResponse ? pending : null);
+      if (!cancelled && sdk && pending && hasOAuthResponse) {
+        setBusy("Completing Circle sign-in...");
+      }
     })().catch(() => {
       if (!cancelled) setError("Circle wallet could not be initialized.");
     });
