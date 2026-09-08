@@ -17,6 +17,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@circle-fin/user-controlled-wallets": "10.8.0",
     "@simplewebauthn/server": "^13.2.2",
     "cors": "^2.8.5",
     "ethers": "^6.15.0",
