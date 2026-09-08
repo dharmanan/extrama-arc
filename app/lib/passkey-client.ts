@@ -146,13 +146,36 @@ function addressesEqual(a: string, b: string) {
   return a.toLowerCase() === b.toLowerCase();
 }
 
+async function authorizeAction(
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null | undefined,
+  authorization?: "EXTERNAL_WALLET_SESSION",
+) {
+  if (!publicKey) {
+    if (authorization === "EXTERNAL_WALLET_SESSION") return undefined;
+    throw new Error("Action authorization details were missing.");
+  }
+  ensurePasskeySupport();
+  const credential = await navigator.credentials.get({
+    publicKey: decodeRequestOptions(publicKey),
+  });
+  if (!credential || !(credential instanceof PublicKeyCredential)) {
+    throw new Error("Confirmation was cancelled.");
+  }
+  return encodeCredential(credential);
+}
+
 export async function confirmEntryWithPasskey(input: {
   poolAddress: string;
   roundId: number;
   predictionPriceCents: number;
+  sendExternalTransaction?: (request: {
+    chainId: 5042002;
+    to: string;
+    data: string;
+    value: string;
+    from: string;
+  }) => Promise<string>;
 }) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startEntry(input);
 
   const actionMatches =
@@ -171,17 +194,44 @@ export async function confirmEntryWithPasskey(input: {
     throw new Error("Entry confirmation details did not match the requested prediction.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
+  if (start.executionMode === "EXTERNAL_WALLET") {
+    if (!input.sendExternalTransaction) {
+      throw new Error("Connected wallet transaction support is unavailable.");
+    }
+    let entryRequest = start.transactionRequest;
+    let approvalTxHash: string | null = null;
+    if (start.step === "APPROVAL_REQUIRED") {
+      approvalTxHash = await input.sendExternalTransaction(start.transactionRequest);
+      const approval = await backendApi.actions.verifyEntryApproval(start.actionId, approvalTxHash);
+      if (
+        approval.confirmed !== true ||
+        approval.actionId !== start.actionId ||
+        approval.payloadHash !== start.payloadHash ||
+        approval.step !== "ENTRY_READY"
+      ) {
+        throw new Error("Approval receipt verification failed.");
+      }
+      entryRequest = approval.transactionRequest;
+    }
+    const entryTxHash = await input.sendExternalTransaction(entryRequest);
+    const verified = await backendApi.actions.verifyEntry(start.actionId, entryTxHash);
+    if (
+      verified.confirmed !== true ||
+      verified.actionId !== start.actionId ||
+      verified.payloadHash !== start.payloadHash ||
+      verified.result.entryTxHash.toLowerCase() !== entryTxHash.toLowerCase() ||
+      verified.result.ticketOwner.toLowerCase() !== start.action.walletAddress.toLowerCase()
+    ) {
+      throw new Error("Entry receipt verification failed.");
+    }
+    return { ...verified.result, approvalTxHash };
   }
+
+  const credential = await authorizeAction(start.publicKey);
 
   const finished = await backendApi.actions.finishEntry(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (
@@ -205,8 +255,6 @@ export async function confirmTicketTransferWithPasskey(input: {
   tokenId: string;
   destinationAddress: string;
 }) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startTicketTransfer(input);
 
   const actionMatches =
@@ -224,18 +272,20 @@ export async function confirmTicketTransferWithPasskey(input: {
     throw new Error("Transfer confirmation details did not match the requested NFT transfer.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishTicketTransfer(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
+
+  if (finished.executionMode === "EXTERNAL_WALLET") {
+    return {
+      executionMode: "EXTERNAL_WALLET" as const,
+      actionId: start.actionId,
+      transactionRequest: finished.transactionRequest,
+    };
+  }
 
   if (
     finished.confirmed !== true ||
@@ -261,8 +311,6 @@ export type RefundStartInput = {
 };
 
 export async function confirmRefundWithPasskey(input: RefundStartInput) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startRefund(input);
 
   const actionMatches =
@@ -284,17 +332,11 @@ export async function confirmRefundWithPasskey(input: RefundStartInput) {
     throw new Error("Refund confirmation details did not match the requested ticket.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishRefund(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (
@@ -360,8 +402,6 @@ export type ClaimStartInput = {
 };
 
 export async function confirmClaimWithPasskey(input: ClaimStartInput) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startClaim(input);
 
   const actionMatches =
@@ -383,17 +423,11 @@ export async function confirmClaimWithPasskey(input: ClaimStartInput) {
     throw new Error("Reward confirmation details did not match the requested ticket.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishClaim(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (
@@ -468,8 +502,6 @@ export type MarketplaceListStartInput = {
 };
 
 export async function confirmMarketplaceListWithPasskey(input: MarketplaceListStartInput) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startMarketplaceList(input);
 
   const actionMatches =
@@ -487,17 +519,11 @@ export async function confirmMarketplaceListWithPasskey(input: MarketplaceListSt
     throw new Error("Listing confirmation details did not match the requested ticket.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishMarketplaceList(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (
@@ -559,8 +585,6 @@ export type MarketplaceUpdatePriceStartInput = {
 };
 
 export async function confirmMarketplaceUpdatePriceWithPasskey(input: MarketplaceUpdatePriceStartInput) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startMarketplaceUpdatePrice(input);
 
   const actionMatches =
@@ -577,17 +601,11 @@ export async function confirmMarketplaceUpdatePriceWithPasskey(input: Marketplac
     throw new Error("Price change confirmation details did not match the requested listing.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishMarketplaceUpdatePrice(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (
@@ -647,8 +665,6 @@ export type MarketplaceCancelStartInput = {
 };
 
 export async function confirmMarketplaceCancelWithPasskey(input: MarketplaceCancelStartInput) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startMarketplaceCancel(input);
 
   const actionMatches =
@@ -664,17 +680,11 @@ export async function confirmMarketplaceCancelWithPasskey(input: MarketplaceCanc
     throw new Error("Cancellation confirmation details did not match the requested listing.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishMarketplaceCancel(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (
@@ -732,8 +742,6 @@ export type MarketplaceBuyStartInput = {
 };
 
 export async function confirmMarketplaceBuyWithPasskey(input: MarketplaceBuyStartInput) {
-  ensurePasskeySupport();
-
   const start = await backendApi.actions.startMarketplaceBuy(input);
 
   const actionMatches =
@@ -750,17 +758,11 @@ export async function confirmMarketplaceBuyWithPasskey(input: MarketplaceBuyStar
     throw new Error("Purchase confirmation details did not match the requested listing.");
   }
 
-  const credential = await navigator.credentials.get({
-    publicKey: decodeRequestOptions(start.publicKey),
-  });
-
-  if (!credential || !(credential instanceof PublicKeyCredential)) {
-    throw new Error("Confirmation was cancelled.");
-  }
+  const credential = await authorizeAction(start.publicKey, start.authorization);
 
   const finished = await backendApi.actions.finishMarketplaceBuy(
     start.actionId,
-    encodeCredential(credential),
+    credential,
   );
 
   if (

@@ -12,6 +12,7 @@ import {
 } from "../../lib/backend-api";
 import { assetConfigs } from "../../lib/asset-config";
 import { confirmEntryWithPasskey } from "../../lib/passkey-client";
+import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 import { useCopy, useLocale } from "../../i18n";
 import { useWalletSession } from "../../wallet-session";
 import { applyBinanceLiveMarketToPool, readBinanceLiveMarket } from "../../lib/live-market";
@@ -221,7 +222,10 @@ export default function PoolDetailPage() {
   const params = useParams<{ slug: string }>();
   const { locale } = useLocale();
   const t = useCopy();
-  const { address } = useWalletSession();
+  const { address, executionMode } = useWalletSession();
+  const { address: connectedAddress, chainId: connectedChainId } = useAccount();
+  const publicClient = usePublicClient({ chainId: 5042002 });
+  const { sendTransactionAsync } = useSendTransaction();
 
   const [state, setState] = useState<LiveRoundResponse | null>(null);
   const [entriesState, setEntriesState] = useState<RoundEntriesResponse | null>(null);
@@ -345,6 +349,28 @@ export default function PoolDetailPage() {
         poolAddress: state.pool.poolAddress,
         roundId: state.pool.round.roundId,
         predictionPriceCents,
+        sendExternalTransaction: async (request) => {
+          if (
+            !connectedAddress ||
+            connectedAddress.toLowerCase() !== request.from.toLowerCase()
+          ) {
+            throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+          }
+          if (connectedChainId !== request.chainId) {
+            throw new Error("Switch your connected wallet to Arc Testnet.");
+          }
+          if (!publicClient) throw new Error("Arc Testnet receipt service is unavailable.");
+          const hash = await sendTransactionAsync({
+            account: connectedAddress,
+            chainId: request.chainId,
+            to: request.to as `0x${string}`,
+            data: request.data as `0x${string}`,
+            value: BigInt(request.value),
+          });
+          const receipt = await publicClient.waitForTransactionReceipt({ hash });
+          if (receipt.status !== "success") throw new Error("Wallet transaction failed.");
+          return hash;
+        },
       });
 
       setState((current) => current ? {
@@ -612,7 +638,13 @@ export default function PoolDetailPage() {
                 {entryBusy || t.confirmPrediction}
               </button>
 
-              <p className="ex-entry__note">{t.confirmBiometric}</p>
+              <p className="ex-entry__note">
+                {executionMode === "EXTERNAL_WALLET"
+                  ? locale === "tr"
+                    ? "Bağlı cüzdanın her gerekli zincir üstü işlemi ayrı olarak onaylar."
+                    : "Your connected wallet approves each required onchain transaction separately."
+                  : t.confirmBiometric}
+              </p>
 
               {!canSubmit && (
                 <p className="ex-entry__msg">{t.roundClosed}</p>

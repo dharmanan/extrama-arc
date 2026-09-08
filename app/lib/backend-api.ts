@@ -323,7 +323,8 @@ export type MarketplaceListActionStartResponse = {
   action: MarketplaceListActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type MarketplaceListExecutionResult = {
@@ -385,7 +386,8 @@ export type MarketplaceUpdatePriceActionStartResponse = {
   action: MarketplaceUpdatePriceActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type MarketplaceUpdatePriceExecutionResult = {
@@ -445,7 +447,8 @@ export type MarketplaceCancelActionStartResponse = {
   action: MarketplaceCancelActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type MarketplaceCancelExecutionResult = {
@@ -505,7 +508,8 @@ export type MarketplaceBuyActionStartResponse = {
   action: MarketplaceBuyActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type MarketplaceBuyExecutionResult = {
@@ -584,6 +588,7 @@ export type WalletTicketsState = {
 export type OwnedTicketsResponse = {
   backendWallet: WalletTicketsState;
   ownerWallet: WalletTicketsState | null;
+  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
 };
 
 export type EntryActionPayload = {
@@ -593,10 +598,19 @@ export type EntryActionPayload = {
   roundId: number;
   amountRaw: "1000000";
   predictionPriceCents: number;
+  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET";
   destination: string;
   walletAddress: string;
   nonce: string;
   expiresAt: string;
+};
+
+export type TransactionRequest = {
+  chainId: 5042002;
+  to: string;
+  data: string;
+  value: string;
+  from: string;
 };
 
 export type EntryActionStartResponse = {
@@ -604,8 +618,20 @@ export type EntryActionStartResponse = {
   action: EntryActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
-};
+} & (
+  | {
+      executionMode?: "BACKEND_WALLET";
+      publicKey: PublicKeyCredentialRequestOptionsJSON;
+      authorization?: never;
+    }
+  | {
+      executionMode: "EXTERNAL_WALLET";
+      authorization: "EXTERNAL_WALLET_SESSION";
+      step: "APPROVAL_REQUIRED" | "ENTRY_READY";
+      transactionRequest: TransactionRequest;
+      publicKey?: never;
+    }
+);
 
 export type EntryExecutionResult = {
   chainId: 5042002;
@@ -622,7 +648,7 @@ export type EntryExecutionResult = {
   ticketId: string;
   entrySequence: string;
   ticketOwner: string;
-  before: {
+  before?: {
     walletUsdcRaw: string;
     walletUsdc: string;
     poolUsdcRaw: string;
@@ -651,6 +677,24 @@ export type EntryActionFinishResponse = {
   result: EntryExecutionResult;
 };
 
+export type ExternalEntryApprovalVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_WALLET";
+  approvalTxHash: string;
+  step: "ENTRY_READY";
+  transactionRequest: TransactionRequest;
+};
+
+export type ExternalEntryVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_WALLET";
+  result: EntryExecutionResult & { executionMode: "EXTERNAL_WALLET" };
+};
+
 export type TicketTransferActionPayload = {
   action: "TRANSFER_TICKET";
   chainId: 5042002;
@@ -659,6 +703,7 @@ export type TicketTransferActionPayload = {
   from: string;
   destination: string;
   walletAddress: string;
+  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET";
   nonce: string;
   expiresAt: string;
 };
@@ -668,7 +713,8 @@ export type TicketTransferActionStartResponse = {
   action: TicketTransferActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type TicketTransferExecutionResult = {
@@ -683,10 +729,27 @@ export type TicketTransferExecutionResult = {
   explorerUrl: string;
 };
 
-export type TicketTransferActionFinishResponse = {
+export type TicketTransferActionFinishResponse =
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "BACKEND_WALLET";
+      result: TicketTransferExecutionResult;
+    }
+  | {
+      confirmed: true;
+      actionId: string;
+      payloadHash: string;
+      executionMode: "EXTERNAL_WALLET";
+      transactionRequest: TransactionRequest;
+    };
+
+export type TicketTransferVerifyResponse = {
   confirmed: true;
   actionId: string;
   payloadHash: string;
+  executionMode: "EXTERNAL_WALLET";
   result: TicketTransferExecutionResult;
 };
 
@@ -714,7 +777,8 @@ export type RefundActionStartResponse = {
   action: RefundActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type RefundAccountingProof =
@@ -809,7 +873,8 @@ export type ClaimActionStartResponse = {
   action: ClaimActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON;
+  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
+  authorization?: "EXTERNAL_WALLET_SESSION";
 };
 
 export type ClaimAccountingProof =
@@ -954,6 +1019,19 @@ export const backendApi = {
         credential,
       });
     },
+    walletLoginChallenge(ownerAddress: string) {
+      return post<{ challengeId: string; message: string; expiresInSeconds: number }>(
+        "/auth/wallet-login/challenge",
+        { ownerAddress },
+      );
+    },
+    finishWalletLogin(ownerAddress: string, challengeId: string, signature: string) {
+      return post<{
+        ownerAddress: string;
+        walletAddress: string;
+        executionMode: "EXTERNAL_WALLET";
+      }>("/auth/wallet-login/finish", { ownerAddress, challengeId, signature });
+    },
     logout() {
       return post<{ ok: true }>("/auth/logout", {});
     },
@@ -1014,6 +1092,15 @@ export const backendApi = {
         credential,
       });
     },
+    verifyEntryApproval(actionId: string, txHash: string) {
+      return post<ExternalEntryApprovalVerifyResponse>("/actions/entry/approval/verify", {
+        actionId,
+        txHash,
+      });
+    },
+    verifyEntry(actionId: string, txHash: string) {
+      return post<ExternalEntryVerifyResponse>("/actions/entry/verify", { actionId, txHash });
+    },
     startTicketTransfer(input: {
       ticketAddress: string;
       tokenId: string;
@@ -1021,10 +1108,16 @@ export const backendApi = {
     }) {
       return post<TicketTransferActionStartResponse>("/actions/ticket-transfer/start", input);
     },
-    finishTicketTransfer(actionId: string, credential: unknown) {
+    finishTicketTransfer(actionId: string, credential?: unknown) {
       return post<TicketTransferActionFinishResponse>("/actions/ticket-transfer/finish", {
         actionId,
         credential,
+      });
+    },
+    verifyTicketTransfer(actionId: string, txHash: string) {
+      return post<TicketTransferVerifyResponse>("/actions/ticket-transfer/verify", {
+        actionId,
+        txHash,
       });
     },
     startRefund(input: {
@@ -1134,7 +1227,15 @@ export const backendApi = {
   },
   wallet: {
     get() {
-      return request<{ wallet: { id: string; address: string; createdAt: string } | null }>("/wallet");
+      return request<{
+        executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+        wallet: {
+          id: string | null;
+          address: string;
+          createdAt: string | null;
+          executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET";
+        } | null;
+      }>("/wallet");
     },
     tickets() {
       return request<OwnedTicketsResponse>("/wallet/tickets");

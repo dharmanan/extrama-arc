@@ -4,21 +4,40 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 const config = require('../config');
+const {
+  EXECUTION_MODES,
+  createSessionIdentity,
+} = require('./executionIdentityService');
 
-async function createSession(userId, ownerAddress) {
+async function createSession(userId, ownerAddress, options = {}) {
+  const identity = createSessionIdentity({
+    executionMode: options.executionMode || EXECUTION_MODES.BACKEND_WALLET,
+    ownerAddress,
+    walletAddress: options.walletAddress ?? null,
+  });
   const jti = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + config.JWT_TTL_SECONDS * 1000);
 
   await db.query(
-    `INSERT INTO auth_sessions (jti, user_id, owner_address, expires_at)
-     VALUES ($1, $2, $3, $4)`,
-    [jti, userId, ownerAddress.toLowerCase(), expiresAt],
+    `INSERT INTO auth_sessions
+      (jti, user_id, owner_address, execution_mode, wallet_address, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      jti,
+      userId,
+      identity.ownerAddress,
+      identity.executionMode,
+      identity.walletAddress,
+      expiresAt,
+    ],
   );
 
   return jwt.sign(
     {
       sub: userId,
-      ownerAddress: ownerAddress.toLowerCase(),
+      ownerAddress: identity.ownerAddress,
+      executionMode: identity.executionMode,
+      walletAddress: identity.walletAddress,
       jti,
     },
     config.JWT_SECRET,
@@ -39,9 +58,9 @@ function verifyToken(token) {
   });
 }
 
-async function isSessionActive(jti) {
+async function getActiveSession(jti) {
   const { rows } = await db.query(
-    `SELECT 1
+    `SELECT user_id, owner_address, execution_mode, wallet_address
        FROM auth_sessions
       WHERE jti = $1
         AND revoked_at IS NULL
@@ -49,7 +68,17 @@ async function isSessionActive(jti) {
       LIMIT 1`,
     [jti],
   );
-  return rows.length > 0;
+  if (!rows.length) return null;
+  return {
+    userId: rows[0].user_id,
+    ownerAddress: rows[0].owner_address,
+    executionMode: rows[0].execution_mode,
+    walletAddress: rows[0].wallet_address,
+  };
+}
+
+async function isSessionActive(jti) {
+  return Boolean(await getActiveSession(jti));
 }
 
 async function revokeSession(jti) {
@@ -62,6 +91,7 @@ async function revokeSession(jti) {
 module.exports = {
   createSession,
   verifyToken,
+  getActiveSession,
   isSessionActive,
   revokeSession,
 };

@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   jti UUID PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   owner_address VARCHAR(42) NOT NULL,
+  execution_mode VARCHAR(32) NOT NULL DEFAULT 'BACKEND_WALLET',
+  wallet_address VARCHAR(42),
   expires_at TIMESTAMPTZ NOT NULL,
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -52,6 +54,25 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 
 CREATE INDEX IF NOT EXISTS auth_sessions_user_idx
   ON auth_sessions(user_id);
+
+-- Migration-safe execution identity. Existing rows remain legacy backend
+-- wallet sessions; new external-wallet sessions persist their economic wallet
+-- address explicitly instead of overloading owner_address.
+ALTER TABLE auth_sessions
+  ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(32) NOT NULL DEFAULT 'BACKEND_WALLET';
+
+ALTER TABLE auth_sessions
+  ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(42);
+
+DO $$
+BEGIN
+  ALTER TABLE auth_sessions
+    ADD CONSTRAINT auth_sessions_execution_mode_check CHECK (
+      execution_mode IN ('BACKEND_WALLET', 'EXTERNAL_WALLET', 'CIRCLE_USER_WALLET')
+    );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE IF NOT EXISTS action_authorizations (
   id UUID PRIMARY KEY,

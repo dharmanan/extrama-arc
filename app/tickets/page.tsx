@@ -13,10 +13,10 @@ import {
   type OwnedTicketsResponse,
   type RefundExecutionMode,
   type ClaimExecutionMode,
+  type TicketTransferExecutionResult,
 } from "../lib/backend-api";
 import { formatUsdc, humanRoundStatus, parseUsdcToRaw } from "../lib/display";
 import {
-  authenticatePasskey,
   confirmClaimWithPasskey,
   confirmExternalClaimReceipt,
   confirmExternalMarketplaceCancelReceipt,
@@ -29,13 +29,8 @@ import {
   confirmRefundWithPasskey,
   confirmTicketTransferWithPasskey,
 } from "../lib/passkey-client";
-import {
-  getOwnerChainId,
-  sendOwnerTransaction,
-  waitForOwnerTransactionReceipt,
-} from "../lib/owner-wallet";
 import { encodeApproveCalldata } from "../lib/erc-approve";
-import { useAccount } from "wagmi";
+import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 
 function titleCase(value: string) {
   return value.charAt(0) + value.slice(1).toLowerCase();
@@ -159,13 +154,14 @@ const ARC_TESTNET_CHAIN_ID = 5042002;
 export default function TicketsPage() {
   const { locale } = useLocale();
   const t = useCopy();
-  const { address: ownerAddress, isConnected } = useAccount();
+  const { address: ownerAddress, isConnected, chainId: connectedChainId } = useAccount();
+  const publicClient = usePublicClient({ chainId: ARC_TESTNET_CHAIN_ID });
+  const { sendTransactionAsync } = useSendTransaction();
   const [state, setState] = useState<OwnedTicketsResponse | null>(null);
   const [marketplaceListings, setMarketplaceListings] = useState<MarketplaceListing[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [authRequired, setAuthRequired] = useState(false);
-  const [authBusy, setAuthBusy] = useState("");
   const [transferTicketKey, setTransferTicketKey] = useState<string | null>(null);
   const [transferAddress, setTransferAddress] = useState("");
   const [transferBusy, setTransferBusy] = useState("");
@@ -198,6 +194,31 @@ export default function TicketsPage() {
   const [marketBusy, setMarketBusy] = useState("");
   const [marketStatusText, setMarketStatusText] = useState("");
   const [marketSuccess, setMarketSuccess] = useState<{ mode: MarketDrawerMode; explorerUrl: string } | null>(null);
+
+  async function sendConnectedTransaction(request: {
+    to: string;
+    data: string;
+    value: string;
+    from: string;
+  }) {
+    if (!ownerAddress || ownerAddress.toLowerCase() !== request.from.toLowerCase()) {
+      throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+    }
+    if (connectedChainId !== ARC_TESTNET_CHAIN_ID) {
+      throw new Error("Switch your connected wallet to Arc Testnet.");
+    }
+    if (!publicClient) throw new Error("Arc Testnet receipt service is unavailable.");
+    const hash = await sendTransactionAsync({
+      account: ownerAddress,
+      chainId: ARC_TESTNET_CHAIN_ID,
+      to: request.to as `0x${string}`,
+      data: request.data as `0x${string}`,
+      value: BigInt(request.value),
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") throw new Error("Wallet transaction failed.");
+    return hash;
+  }
 
   const loadTickets = useCallback(async () => {
     setLoading(true);
@@ -259,26 +280,6 @@ export default function TicketsPage() {
     return map;
   }, [marketplaceListings]);
 
-  async function handleAuthenticate() {
-    if (!ownerAddress) return;
-
-    setAuthBusy("Authenticating with passkey...");
-    setError("");
-    try {
-      await authenticatePasskey(ownerAddress);
-      await loadTickets();
-    } catch (cause) {
-      if (isAuthSessionError(cause)) {
-        setAuthRequired(true);
-        setError("");
-      } else {
-        setError(cause instanceof Error ? cause.message : "Passkey authentication failed.");
-      }
-    } finally {
-      setAuthBusy("");
-    }
-  }
-
   function openTransfer(ticket: OwnedTicket) {
     setTransferTicketKey(ticketKey(ticket));
     setTransferAddress(ownerAddress ?? "");
@@ -312,11 +313,26 @@ export default function TicketsPage() {
     setError("");
 
     try {
-      const result = await confirmTicketTransferWithPasskey({
+      const outcome = await confirmTicketTransferWithPasskey({
         ticketAddress: ticket.ticketAddress,
         tokenId: ticket.tokenId,
         destinationAddress,
       });
+
+      let result: TicketTransferExecutionResult;
+      if ("executionMode" in outcome && outcome.executionMode === "EXTERNAL_WALLET") {
+        if (
+          !isConnected ||
+          !ownerAddress ||
+          ownerAddress.toLowerCase() !== outcome.transactionRequest.from.toLowerCase()
+        ) {
+          throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+        }
+        const txHash = await sendConnectedTransaction(outcome.transactionRequest);
+        result = (await backendApi.actions.verifyTicketTransfer(outcome.actionId, txHash)).result;
+      } else {
+        result = outcome as TicketTransferExecutionResult;
+      }
 
       setTransferSuccess({
         destinationAddress: result.destinationAddress,
@@ -353,7 +369,7 @@ export default function TicketsPage() {
     const key = ticketKey(ticket);
     setRefundBusy(key);
     setError("");
-    setRefundStatusText("Confirming with passkey...");
+    setRefundStatusText(state?.executionMode === "EXTERNAL_WALLET" ? "Preparing wallet transaction..." : "Confirming with passkey...");
 
     try {
       const outcome = await confirmRefundWithPasskey({
@@ -379,21 +395,13 @@ export default function TicketsPage() {
           );
         }
 
-        const chainIdHex = await getOwnerChainId();
-        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error("Switch your connected wallet to Arc Testnet (chain 5042002).");
-        }
-
         setRefundStatusText("Waiting for wallet transaction...");
-        const txHash = await sendOwnerTransaction({
+        const txHash = await sendConnectedTransaction({
           to: outcome.transactionRequest.to,
           data: outcome.transactionRequest.data,
           value: outcome.transactionRequest.value,
           from: outcome.transactionRequest.from,
         });
-
-        setRefundStatusText("Waiting for transaction confirmation...");
-        await waitForOwnerTransactionReceipt(txHash);
 
         setRefundStatusText("Verifying refund receipt...");
         const result = await confirmExternalRefundReceipt(outcome.actionId, txHash);
@@ -436,7 +444,7 @@ export default function TicketsPage() {
     const key = ticketKey(ticket);
     setClaimBusy(key);
     setError("");
-    setClaimStatusText("Confirming with passkey...");
+    setClaimStatusText(state?.executionMode === "EXTERNAL_WALLET" ? "Preparing wallet transaction..." : "Confirming with passkey...");
 
     try {
       const outcome = await confirmClaimWithPasskey({
@@ -463,21 +471,13 @@ export default function TicketsPage() {
           );
         }
 
-        const chainIdHex = await getOwnerChainId();
-        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error("Switch your connected wallet to Arc Testnet (chain 5042002).");
-        }
-
         setClaimStatusText("Waiting for wallet transaction...");
-        const txHash = await sendOwnerTransaction({
+        const txHash = await sendConnectedTransaction({
           to: outcome.transactionRequest.to,
           data: outcome.transactionRequest.data,
           value: outcome.transactionRequest.value,
           from: outcome.transactionRequest.from,
         });
-
-        setClaimStatusText("Waiting for transaction confirmation...");
-        await waitForOwnerTransactionReceipt(txHash);
 
         setClaimStatusText("Verifying reward receipt...");
         const result = await confirmExternalClaimReceipt(outcome.actionId, txHash);
@@ -544,21 +544,14 @@ export default function TicketsPage() {
     setError("");
 
     try {
-      const chainIdHex = await getOwnerChainId();
-      if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-        throw new Error(t.marketplacePage.switchToArcTestnet);
-      }
-
       const approval = marketApproval ?? (await backendApi.marketplace.approval(ticket.ticketAddress, ticket.tokenId));
       const data = encodeApproveCalldata(approval.marketplaceAddress, ticket.tokenId);
-      const txHash = await sendOwnerTransaction({
+      await sendConnectedTransaction({
         to: ticket.ticketAddress,
         data,
         value: "0x0",
         from: ownerAddress,
       });
-      await waitForOwnerTransactionReceipt(txHash);
-
       const refreshed = await backendApi.marketplace.approval(ticket.ticketAddress, ticket.tokenId);
       setMarketApproval(refreshed);
     } catch (cause) {
@@ -578,7 +571,7 @@ export default function TicketsPage() {
 
     setMarketBusy(key);
     setError("");
-    setMarketStatusText(t.marketplacePage.confirmingWithPasskey);
+    setMarketStatusText(state?.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
 
     try {
       const outcome = await confirmMarketplaceListWithPasskey({
@@ -595,21 +588,13 @@ export default function TicketsPage() {
           throw new Error(t.marketplacePage.connectMatchingWallet);
         }
 
-        const chainIdHex = await getOwnerChainId();
-        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error(t.marketplacePage.switchToArcTestnet);
-        }
-
         setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendOwnerTransaction({
+        const txHash = await sendConnectedTransaction({
           to: outcome.transactionRequest.to,
           data: outcome.transactionRequest.data,
           value: outcome.transactionRequest.value,
           from: outcome.transactionRequest.from,
         });
-
-        setMarketStatusText(t.marketplacePage.waitingForConfirmation);
-        await waitForOwnerTransactionReceipt(txHash);
 
         setMarketStatusText(t.marketplacePage.verifyingListing);
         const result = await confirmExternalMarketplaceListReceipt(outcome.actionId, txHash);
@@ -642,7 +627,7 @@ export default function TicketsPage() {
 
     setMarketBusy(key);
     setError("");
-    setMarketStatusText(t.marketplacePage.confirmingWithPasskey);
+    setMarketStatusText(state?.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
 
     try {
       const outcome = await confirmMarketplaceUpdatePriceWithPasskey({ listingId, newAskUsdcRaw });
@@ -655,21 +640,13 @@ export default function TicketsPage() {
           throw new Error(t.marketplacePage.connectMatchingWallet);
         }
 
-        const chainIdHex = await getOwnerChainId();
-        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error(t.marketplacePage.switchToArcTestnet);
-        }
-
         setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendOwnerTransaction({
+        const txHash = await sendConnectedTransaction({
           to: outcome.transactionRequest.to,
           data: outcome.transactionRequest.data,
           value: outcome.transactionRequest.value,
           from: outcome.transactionRequest.from,
         });
-
-        setMarketStatusText(t.marketplacePage.waitingForConfirmation);
-        await waitForOwnerTransactionReceipt(txHash);
 
         setMarketStatusText(t.marketplacePage.verifyingPriceChange);
         const result = await confirmExternalMarketplaceUpdatePriceReceipt(outcome.actionId, txHash);
@@ -696,7 +673,7 @@ export default function TicketsPage() {
     const key = ticketKey(ticket);
     setMarketBusy(key);
     setError("");
-    setMarketStatusText(t.marketplacePage.confirmingWithPasskey);
+    setMarketStatusText(state?.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
 
     try {
       const outcome = await confirmMarketplaceCancelWithPasskey({ listingId });
@@ -709,21 +686,13 @@ export default function TicketsPage() {
           throw new Error(t.marketplacePage.connectMatchingWallet);
         }
 
-        const chainIdHex = await getOwnerChainId();
-        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error(t.marketplacePage.switchToArcTestnet);
-        }
-
         setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendOwnerTransaction({
+        const txHash = await sendConnectedTransaction({
           to: outcome.transactionRequest.to,
           data: outcome.transactionRequest.data,
           value: outcome.transactionRequest.value,
           from: outcome.transactionRequest.from,
         });
-
-        setMarketStatusText(t.marketplacePage.waitingForConfirmation);
-        await waitForOwnerTransactionReceipt(txHash);
 
         setMarketStatusText(t.marketplacePage.verifyingCancellation);
         const result = await confirmExternalMarketplaceCancelReceipt(outcome.actionId, txHash);
@@ -999,7 +968,7 @@ export default function TicketsPage() {
           </div>
 
           <dl className="ex-tickets__summary">
-            <div><dt>{locale === "tr" ? "EXTREMA CÜZDANI" : "EXTREMA WALLET"}</dt><dd className="ex-num">{state?.backendWallet.ticketCount ?? "—"}</dd></div>
+            <div><dt>{state?.executionMode === "EXTERNAL_WALLET" ? (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET") : (locale === "tr" ? "EXTREMA CÜZDANI" : "EXTREMA WALLET")}</dt><dd className="ex-num">{state?.backendWallet.ticketCount ?? "—"}</dd></div>
             <div><dt>{locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET"}</dt><dd className="ex-num">{state?.ownerWallet?.ticketCount ?? 0}</dd></div>
             <div><dt>Arc Testnet</dt><dd className="ex-num">{state?.backendWallet.chain.blockNumber ?? "—"}</dd></div>
           </dl>
@@ -1075,15 +1044,9 @@ export default function TicketsPage() {
             <div>
               <p className="ex-eyebrow">{locale === "tr" ? "OTURUM" : "SESSION"}</p>
               <h2 className="ex-display ex-display--md">{locale === "tr" ? "Oturum süresi doldu." : "Session expired."}</h2>
-              <p>{locale === "tr" ? "Zincir üstü biletlerini yüklemek için passkey ile doğrula." : "Authenticate with your passkey to load your onchain tickets."}</p>
+              <p>{locale === "tr" ? "Zincir üstü biletlerini yüklemek için cüzdan oturumunu yeniden aç." : "Reconnect your wallet session to load your onchain tickets."}</p>
             </div>
-            {isConnected && ownerAddress ? (
-              <button className="ex-btn ex-btn--ink" type="button" onClick={handleAuthenticate} disabled={Boolean(authBusy)}>
-                {authBusy || (locale === "tr" ? "Passkey ile doğrula" : "Authenticate with passkey")}
-              </button>
-            ) : (
-              <Link className="ex-btn ex-btn--ghost" href="/wallet">{locale === "tr" ? "Sahip cüzdanını bağla" : "Connect owner wallet"}</Link>
-            )}
+            <Link className="ex-btn ex-btn--ink" href="/wallet">{locale === "tr" ? "Cüzdan oturumunu aç" : "Reconnect wallet session"}</Link>
           </section>
         )}
 
@@ -1106,10 +1069,10 @@ export default function TicketsPage() {
         {!loading && state && state.backendWallet.ticketCount > 0 && (
           <section className="ex-ticket-group">
             <header className="ex-ticket-group__head">
-              <div><p className="ex-eyebrow">{locale === "tr" ? "YÖNETİLEN CÜZDAN" : "MANAGED WALLET"}</p><h2 className="ex-display ex-display--md">{state.backendWallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.backendWallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
+              <div><p className="ex-eyebrow">{state.executionMode === "EXTERNAL_WALLET" ? (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET") : (locale === "tr" ? "YÖNETİLEN CÜZDAN" : "MANAGED WALLET")}</p><h2 className="ex-display ex-display--md">{state.backendWallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.backendWallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
               <p className="ex-num">Arc Testnet · {state.backendWallet.chain.blockNumber}</p>
             </header>
-            <div className="ex-ticket-list">{state.backendWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isBackendWallet: true }))}</div>
+            <div className="ex-ticket-list">{state.backendWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isBackendWallet: state.executionMode === "BACKEND_WALLET" }))}</div>
           </section>
         )}
 

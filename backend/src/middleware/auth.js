@@ -11,15 +11,26 @@ async function requireAuth(req, res, next) {
 
     const token = authorization.slice('Bearer '.length).trim();
     const payload = sessionService.verifyToken(token);
-    const active = await sessionService.isSessionActive(payload.jti);
+    const active = await sessionService.getActiveSession(payload.jti);
 
     if (!active) {
       return res.status(401).json({ error: 'session_expired' });
     }
 
+    if (
+      active.userId !== payload.sub ||
+      active.ownerAddress !== payload.ownerAddress ||
+      active.executionMode !== (payload.executionMode || 'BACKEND_WALLET') ||
+      (active.walletAddress || null) !== (payload.walletAddress || null)
+    ) {
+      return res.status(401).json({ error: 'invalid_session' });
+    }
+
     req.auth = {
-      userId: payload.sub,
-      ownerAddress: payload.ownerAddress,
+      userId: active.userId,
+      ownerAddress: active.ownerAddress,
+      executionMode: active.executionMode,
+      walletAddress: active.walletAddress,
       jti: payload.jti,
     };
     next();

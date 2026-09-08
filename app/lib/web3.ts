@@ -1,5 +1,5 @@
 import { http, createConfig } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { coinbaseWallet, injected, walletConnect } from "wagmi/connectors";
 
 export const arcTestnet = {
   id: 5042002,
@@ -15,12 +15,18 @@ export const arcTestnet = {
   testnet: true,
 } as const;
 
+const walletConnectProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
+const connectors = [
+  injected({ shimDisconnect: true }),
+  coinbaseWallet({ appName: "EXTREMA" }),
+];
+
+if (walletConnectProjectId) {
+  connectors.push(walletConnect({ projectId: walletConnectProjectId }));
+}
+
 export const wagmiConfig = createConfig({
-  connectors: [
-    injected({
-      shimDisconnect: true,
-    }),
-  ],
+  connectors,
   chains: [arcTestnet],
   transports: {
     [arcTestnet.id]: http("https://rpc.testnet.arc.network"),

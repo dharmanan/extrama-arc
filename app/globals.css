@@ -1551,14 +1551,14 @@ img{max-width:100%}
 .ex-wallet-alt__title{margin:0;font-size:.95rem;font-weight:600;color:var(--ink)}
 .ex-wallet-alt__body{margin:0;font-size:.88rem;color:var(--muted)}
 
-/* ---- Choice section: two equal paths, first time vs returning ------------
+/* ---- Choice section: equal wallet paths ---------------------------------
    Replaces a single oversized primary bar sitting above a visually weaker
    secondary row. Both paths get the same block treatment -- eyebrow, one
    explanatory line, one natural-width button -- so neither reads as the
    "real" action and the other as an afterthought. */
 .ex-wallet-choice{
   display:grid;
-  grid-template-columns:1fr 1fr;
+  grid-template-columns:repeat(3,minmax(0,1fr));
   padding-top:clamp(22px,2.8vw,32px);
   margin-bottom:clamp(24px,3vw,36px);
   border-top:1px solid var(--line-strong);

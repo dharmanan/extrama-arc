@@ -17,6 +17,7 @@ export default function WalletPage() {
 
   const {
     address: walletAddress,
+    executionMode,
     status: walletStatus,
     setWalletReady,
     lockWallet,
@@ -65,15 +66,43 @@ export default function WalletPage() {
   }, [walletStatus, walletAddress, step]);
 
 
-  async function handleConnectInjected() {
+  async function handleConnect(connector: (typeof connectors)[number]) {
     setError("");
     setBusy("Connecting wallet...");
     try {
-      const connector = connectors[0];
-      if (!connector) throw new Error("No injected EVM wallet connector is available.");
       await connectAsync({ connector });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function handleExternalWalletLogin() {
+    if (!connectedAddress) return;
+    setError("");
+    setBusy("Waiting for wallet signature...");
+    try {
+      await ensureArcTestnet();
+      const challenge = await backendApi.auth.walletLoginChallenge(connectedAddress);
+      const signature = await signMessageAsync({ message: challenge.message });
+      const session = await backendApi.auth.finishWalletLogin(
+        connectedAddress,
+        challenge.challengeId,
+        signature,
+      );
+      if (
+        session.executionMode !== "EXTERNAL_WALLET" ||
+        session.walletAddress.toLowerCase() !== connectedAddress.toLowerCase()
+      ) {
+        throw new Error("Wallet session identity did not match the connected wallet.");
+      }
+      setWalletReady(session.walletAddress, "EXTERNAL_WALLET");
+      setOwnerAddress(session.ownerAddress);
+      setWalletNotice("Connected wallet session ready. Every transaction remains wallet approved.");
+      setStep("ready");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Wallet sign in failed.");
     } finally {
       setBusy("");
     }
@@ -293,7 +322,7 @@ export default function WalletPage() {
         <ProductHeader />
         <div className="ex-shell">
           <div className="ex-wallet-hero">
-            <p className="ex-eyebrow">{t.wallet.readyEyebrow}</p>
+            <p className="ex-eyebrow">{executionMode === "EXTERNAL_WALLET" ? t.wallet.externalReadyEyebrow : t.wallet.readyEyebrow}</p>
             <h1 className="ex-display ex-display--lg">{t.wallet.readyTitle}</h1>
           </div>
 
@@ -302,14 +331,14 @@ export default function WalletPage() {
           <div className="ex-wallet-ready">
             <section className="ex-wallet-ready__main">
               <div className="ex-wallet-ready__marks">
-                {ownerAddress && (
+                {ownerAddress && executionMode !== "EXTERNAL_WALLET" && (
                   <div className="ex-wallet-mark">
                     <span className="ex-wallet-mark__key">{t.wallet.ownerWallet}</span>
                     <span className="ex-wallet-mark__val ex-num">{shortAddress(ownerAddress)}</span>
                   </div>
                 )}
                 <div className="ex-wallet-mark">
-                  <span className="ex-wallet-mark__key">{t.wallet.extremaWallet}</span>
+                    <span className="ex-wallet-mark__key">{executionMode === "EXTERNAL_WALLET" ? t.wallet.connectedWallet : t.wallet.extremaWallet}</span>
                   <span className="ex-wallet-mark__val ex-num">{shortAddress(walletAddress)}</span>
                 </div>
               </div>
@@ -324,14 +353,14 @@ export default function WalletPage() {
               {sessionNeedsAuth ? (
                 <div className="ex-wallet-ledger ex-wallet-ledger--prompt">
                   <p className="ex-wallet-ledger__prompt-title">{t.wallet.sessionExpiredTitle}</p>
-                  <p className="ex-wallet-ledger__prompt-body">{t.wallet.sessionExpiredBody}</p>
+                  <p className="ex-wallet-ledger__prompt-body">{executionMode === "EXTERNAL_WALLET" ? t.wallet.externalChoiceBody : t.wallet.sessionExpiredBody}</p>
                   <button
                     className="ex-btn ex-btn--ink"
                     type="button"
-                    onClick={handleResumeSession}
+                    onClick={executionMode === "EXTERNAL_WALLET" ? handleExternalWalletLogin : handleResumeSession}
                     disabled={Boolean(busy)}
                   >
-                    {busy || t.wallet.authenticateWithPasskey}
+                    {busy || (executionMode === "EXTERNAL_WALLET" ? t.wallet.externalChoiceCta : t.wallet.authenticateWithPasskey)}
                   </button>
                 </div>
               ) : chainState ? (
@@ -391,7 +420,7 @@ export default function WalletPage() {
 
             <section className="ex-entry ex-wallet-session">
               <h3 className="ex-entry__title">{t.wallet.sessionTitle}</h3>
-              <p className="ex-entry__note">{t.wallet.sessionBody}</p>
+              <p className="ex-entry__note">{executionMode === "EXTERNAL_WALLET" ? t.wallet.externalSessionBody : t.wallet.sessionBody}</p>
               <button className="ex-btn ex-btn--ghost" type="button" onClick={handleLock}>
                 {t.wallet.disconnectSession}
               </button>
@@ -419,34 +448,39 @@ export default function WalletPage() {
               <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
             </div>
             <div className="ex-wallet-strip__actions">
-              <button className="ex-btn ex-btn--ghost" type="button" onClick={isConnected ? () => disconnect() : handleConnectInjected}>
+              <button className="ex-btn ex-btn--ghost" type="button" onClick={isConnected ? () => disconnect() : () => connectors[0] && handleConnect(connectors[0])}>
                 {isConnected ? t.wallet.disconnect : t.wallet.connectOwnerWallet}
               </button>
             </div>
           </div>
 
           <div className="ex-wallet-hero">
-            <p className="ex-eyebrow">{t.wallet.entranceEyebrow}</p>
+            <p className="ex-eyebrow">{t.wallet.getStarted}</p>
             <h1 className="ex-display ex-display--xl">{t.wallet.entranceTitle}</h1>
             <p className="ex-lede">{t.wallet.entranceLede}</p>
           </div>
 
-          <div className="ex-band-split ex-band-split--2">
-            <div>
-              <p className="ex-wallet-explain__key">{t.wallet.ownerExplainKey}</p>
-              <p className="ex-wallet-explain__body">{t.wallet.ownerExplainBody}</p>
-            </div>
-            <div>
-              <p className="ex-wallet-explain__key">{t.wallet.extremaExplainKey}</p>
-              <p className="ex-wallet-explain__body">{t.wallet.extremaExplainBody}</p>
-            </div>
-          </div>
-
           <div className="ex-wallet-panel">
-            <button className="ex-btn ex-btn--ink" type="button" onClick={handleConnectInjected} disabled={Boolean(busy)}>
-              {busy || t.wallet.connectCta}
-            </button>
-            <p className="ex-wallet-panel__note">{t.wallet.requirementNote}</p>
+            <div className="ex-wallet-panel__actions">
+              <button className="ex-btn ex-btn--ghost" type="button" disabled>{t.wallet.continueGoogle}</button>
+              <button className="ex-btn ex-btn--ghost" type="button" disabled>{t.wallet.continueEmail}</button>
+            </div>
+            <p className="ex-wallet-panel__note">{t.wallet.circleComingSoon}</p>
+            <p className="ex-eyebrow">{t.wallet.orConnectWallet}</p>
+            <div className="ex-wallet-panel__actions">
+              {connectors.map((connector) => (
+                <button
+                  className="ex-btn ex-btn--ink"
+                  type="button"
+                  key={connector.uid}
+                  onClick={() => handleConnect(connector)}
+                  disabled={Boolean(busy)}
+                >
+                  {busy || connector.name}
+                </button>
+              ))}
+            </div>
+            <p className="ex-wallet-panel__note">{t.wallet.supportedWallets}</p>
             {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
           </div>
         </div>
@@ -542,6 +576,13 @@ export default function WalletPage() {
         </div>
 
         <div className="ex-wallet-choice">
+          <div className="ex-wallet-choice__block">
+            <p className="ex-eyebrow">{t.wallet.externalChoiceEyebrow}</p>
+            <p className="ex-wallet-choice__body">{t.wallet.externalChoiceBody}</p>
+            <button className="ex-btn ex-btn--ink ex-wallet-choice__cta" type="button" onClick={handleExternalWalletLogin} disabled={Boolean(busy)}>
+              {busy || t.wallet.externalChoiceCta}
+            </button>
+          </div>
           <div className="ex-wallet-choice__block">
             <p className="ex-eyebrow">{t.wallet.choiceBlockEyebrow}</p>
             <p className="ex-wallet-choice__body">{t.wallet.choiceBlockBody}</p>

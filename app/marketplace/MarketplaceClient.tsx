@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useAccount } from "wagmi";
+import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 import {
   backendApi,
   isAuthSessionError,
@@ -19,11 +19,6 @@ import {
   confirmExternalMarketplaceBuyReceipt,
   confirmMarketplaceBuyWithPasskey,
 } from "../lib/passkey-client";
-import {
-  getOwnerChainId,
-  sendOwnerTransaction,
-  waitForOwnerTransactionReceipt,
-} from "../lib/owner-wallet";
 import { encodeApproveCalldata } from "../lib/erc-approve";
 
 const ARC_TESTNET_CHAIN_ID = 5042002;
@@ -204,7 +199,9 @@ export default function MarketplaceClient() {
   const { locale } = useLocale();
   const t = useCopy();
   const walletSession = useWalletSession();
-  const { address: ownerAddress, isConnected } = useAccount();
+  const { address: ownerAddress, isConnected, chainId: connectedChainId } = useAccount();
+  const publicClient = usePublicClient({ chainId: ARC_TESTNET_CHAIN_ID });
+  const { sendTransactionAsync } = useSendTransaction();
 
   const [asset, setAsset] = useState<"All" | Asset>("All");
   const [cadence, setCadence] = useState<"All" | "Daily" | "Weekly" | "Quarterly">("All");
@@ -226,6 +223,31 @@ export default function MarketplaceClient() {
   const [buyError, setBuyError] = useState("");
   const [buyAuthRequired, setBuyAuthRequired] = useState(false);
   const [buySuccess, setBuySuccess] = useState<{ explorerUrl: string } | null>(null);
+
+  async function sendConnectedTransaction(request: {
+    to: string;
+    data: string;
+    value: string;
+    from: string;
+  }) {
+    if (!ownerAddress || ownerAddress.toLowerCase() !== request.from.toLowerCase()) {
+      throw new Error(t.marketplacePage.connectMatchingWallet);
+    }
+    if (connectedChainId !== ARC_TESTNET_CHAIN_ID) {
+      throw new Error(t.marketplacePage.switchToArcTestnet);
+    }
+    if (!publicClient) throw new Error(t.marketplacePage.errorGeneric);
+    const hash = await sendTransactionAsync({
+      account: ownerAddress,
+      chainId: ARC_TESTNET_CHAIN_ID,
+      to: request.to as `0x${string}`,
+      data: request.data as `0x${string}`,
+      value: BigInt(request.value),
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") throw new Error(t.marketplacePage.errorGeneric);
+    return hash;
+  }
 
   const refreshListings = useCallback(async () => {
     try {
@@ -251,7 +273,7 @@ export default function MarketplaceClient() {
 
   async function openBuyDrawer(listing: MarketplaceListing) {
     setBuyListing(listing);
-    setBuyWalletChoice(null);
+    setBuyWalletChoice(walletSession.executionMode === "EXTERNAL_WALLET" ? "EXTERNAL_OWNER" : null);
     setBuyAllowance(null);
     setBuyError("");
     setBuyAuthRequired(false);
@@ -308,21 +330,14 @@ export default function MarketplaceClient() {
     setBuyError("");
 
     try {
-      const chainIdHex = await getOwnerChainId();
-      if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-        throw new Error(t.marketplacePage.switchToArcTestnet);
-      }
-
       const allowance = buyAllowance ?? (await backendApi.marketplace.usdcAllowance(ownerAddress));
       const data = encodeApproveCalldata(allowance.marketplaceAddress, buyListing.askUsdcRaw);
-      const txHash = await sendOwnerTransaction({
+      await sendConnectedTransaction({
         to: allowance.usdcAddress,
         data,
         value: "0x0",
         from: ownerAddress,
       });
-      await waitForOwnerTransactionReceipt(txHash);
-
       const refreshed = await backendApi.marketplace.usdcAllowance(ownerAddress);
       setBuyAllowance(refreshed);
     } catch (cause) {
@@ -337,7 +352,7 @@ export default function MarketplaceClient() {
 
     setBuyBusy(true);
     setBuyError("");
-    setBuyStatusText(t.marketplacePage.confirmingWithPasskey);
+    setBuyStatusText(walletSession.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
 
     try {
       const outcome = await confirmMarketplaceBuyWithPasskey({
@@ -354,21 +369,13 @@ export default function MarketplaceClient() {
           throw new Error(t.marketplacePage.connectMatchingWallet);
         }
 
-        const chainIdHex = await getOwnerChainId();
-        if (parseInt(chainIdHex, 16) !== ARC_TESTNET_CHAIN_ID) {
-          throw new Error(t.marketplacePage.switchToArcTestnet);
-        }
-
         setBuyStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendOwnerTransaction({
+        const txHash = await sendConnectedTransaction({
           to: outcome.transactionRequest.to,
           data: outcome.transactionRequest.data,
           value: outcome.transactionRequest.value,
           from: outcome.transactionRequest.from,
         });
-
-        setBuyStatusText(t.marketplacePage.waitingForConfirmation);
-        await waitForOwnerTransactionReceipt(txHash);
 
         setBuyStatusText(t.marketplacePage.verifyingPurchase);
         const result = await confirmExternalMarketplaceBuyReceipt(outcome.actionId, txHash);
@@ -554,14 +561,14 @@ export default function MarketplaceClient() {
                             ) : (
                               <>
                                 <div className="ex-market-drawer__wallets">
-                                  <button
+                                  {walletSession.executionMode !== "EXTERNAL_WALLET" && <button
                                     type="button"
                                     data-active={buyWalletChoice === "BACKEND_WALLET"}
                                     onClick={() => void selectBuyWallet("BACKEND_WALLET")}
                                     disabled={walletSession.status !== "ready"}
                                   >
                                     {t.marketplacePage.buyWalletBackend}
-                                  </button>
+                                  </button>}
                                   <button
                                     type="button"
                                     data-active={buyWalletChoice === "EXTERNAL_OWNER"}

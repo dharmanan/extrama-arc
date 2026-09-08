@@ -17,6 +17,12 @@ const refundExecutionService = require('../services/refundExecutionService');
 const claimExecutionService = require('../services/claimExecutionService');
 const marketplaceService = require('../services/marketplaceService');
 const marketplaceExecutionService = require('../services/marketplaceExecutionService');
+const externalEntryExecutionService = require('../services/externalEntryExecutionService');
+const {
+  EXECUTION_MODES,
+  assertExternalSessionAddress,
+  isExternalActionMode,
+} = require('../services/executionIdentityService');
 
 const router = express.Router();
 
@@ -50,7 +56,12 @@ const ticketTransferStartSchema = z.object({
 
 const finishSchema = z.object({
   actionId: z.string().uuid(),
-  credential: credentialSchema,
+  credential: credentialSchema.optional(),
+});
+
+const entryVerifySchema = z.object({
+  actionId: z.string().uuid(),
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
 });
 
 const refundStartSchema = z.object({
@@ -106,6 +117,24 @@ const marketplaceVerifySchema = z.object({
 router.use(requireAuth);
 
 async function startPasskeyStepUp(req, action) {
+  if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+    throw new Error('circle_wallet_not_configured');
+  }
+  if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+    assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    if (!isExternalActionMode(action.payload.executionMode)) {
+      throw new Error('wallet_execution_mode_mismatch');
+    }
+    return {
+      actionId: action.id,
+      action: action.payload,
+      payloadHash: action.payloadHash,
+      expiresInSeconds: action.expiresInSeconds,
+      authorization: 'EXTERNAL_WALLET_SESSION',
+      publicKey: null,
+    };
+  }
+
   const { options, context } = await passkeyService.startStepUpAuthentication(
     req.auth.userId,
     req.get('x-extrema-origin') || req.get('origin'),
@@ -127,19 +156,37 @@ async function startPasskeyStepUp(req, action) {
   };
 }
 
+async function consumeActionAuthorization(req, actionId, credential, actionType) {
+  if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+    const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
+    return actionAuthorizationService.consumeExternalAction(
+      req.auth.userId,
+      actionId,
+      actionType,
+      walletAddress,
+    );
+  }
+
+  if (!credential) throw new Error('passkey_authentication_failed');
+  const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
+    req.auth.userId,
+    actionId,
+  );
+  await passkeyService.finishStepUpAuthentication(req.auth.userId, credential, saved);
+  return actionAuthorizationService.consumeVerifiedAction(
+    req.auth.userId,
+    actionId,
+    saved.payloadHash,
+    actionType,
+  );
+}
+
 router.post('/entry/start', startLimiter, async (req, res, next) => {
   try {
     const input = entryStartSchema.parse(req.body);
     const poolAddress = ethers.getAddress(input.poolAddress);
 
-    const [wallet, rounds] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
-      arcService.getStandardRoundsState({ forceFresh: true }),
-    ]);
-
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
+    const rounds = await arcService.getStandardRoundsState({ forceFresh: true });
 
     const pool = rounds.pools.find(
       (item) => item.poolAddress.toLowerCase() === poolAddress.toLowerCase(),
@@ -149,12 +196,41 @@ router.post('/entry/start', startLimiter, async (req, res, next) => {
       return res.status(409).json({ error: 'entry_round_not_available' });
     }
 
+    if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      throw new Error('circle_wallet_not_configured');
+    }
+
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
+      const action = await actionAuthorizationService.createEntryRequest({
+        userId: req.auth.userId,
+        walletAddress,
+        poolAddress,
+        roundId: input.roundId,
+        predictionPriceCents: input.predictionPriceCents,
+        executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+      });
+      const prepared = await externalEntryExecutionService.prepareExternalEntry(action.payload);
+      return res.json({
+        actionId: action.id,
+        action: action.payload,
+        payloadHash: action.payloadHash,
+        expiresInSeconds: action.expiresInSeconds,
+        authorization: 'EXTERNAL_WALLET_SESSION',
+        executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+        ...prepared,
+      });
+    }
+
+    const wallet = await walletService.getWalletForUser(req.auth.userId);
+    if (!wallet?.address) return res.status(404).json({ error: 'wallet_not_found' });
     const action = await actionAuthorizationService.createEntryRequest({
       userId: req.auth.userId,
       walletAddress: ethers.getAddress(wallet.address),
       poolAddress,
       roundId: input.roundId,
       predictionPriceCents: input.predictionPriceCents,
+      executionMode: EXECUTION_MODES.BACKEND_WALLET,
     });
 
     res.json(await startPasskeyStepUp(req, action));
@@ -166,23 +242,10 @@ router.post('/entry/start', startLimiter, async (req, res, next) => {
 router.post('/entry/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
-      req.auth.userId,
-      actionId,
-    );
-
-    await passkeyService.finishStepUpAuthentication(
-      req.auth.userId,
-      credential,
-      saved,
-    );
-
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
-      actionId,
-      saved.payloadHash,
-      'ENTRY',
-    );
+    if (req.auth.executionMode !== EXECUTION_MODES.BACKEND_WALLET) {
+      return res.status(409).json({ error: 'entry_execution_mode_mismatch' });
+    }
+    const action = await consumeActionAuthorization(req, actionId, credential, 'ENTRY');
 
     const result = await entryExecutionService.executeEntry(
       req.auth.userId,
@@ -200,6 +263,69 @@ router.post('/entry/finish', finishLimiter, async (req, res, next) => {
   }
 });
 
+router.post('/entry/approval/verify', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, txHash } = entryVerifySchema.parse(req.body);
+    const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
+    const action = await actionAuthorizationService.getPendingExternalAction(
+      req.auth.userId,
+      actionId,
+      'ENTRY',
+      walletAddress,
+    );
+    const result = await externalEntryExecutionService.verifyExternalApprovalReceipt(
+      action.payload,
+      txHash,
+    );
+    await actionAuthorizationService.markExternalApprovalVerified(
+      req.auth.userId,
+      actionId,
+      walletAddress,
+    );
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+      ...result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/entry/verify', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, txHash } = entryVerifySchema.parse(req.body);
+    const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
+    const action = await actionAuthorizationService.getPendingExternalAction(
+      req.auth.userId,
+      actionId,
+      'ENTRY',
+      walletAddress,
+    );
+    const result = await externalEntryExecutionService.verifyExternalEntryReceipt(
+      action.payload,
+      txHash,
+    );
+    await actionAuthorizationService.consumeExternalAction(
+      req.auth.userId,
+      actionId,
+      'ENTRY',
+      walletAddress,
+    );
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+      result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/ticket-transfer/start', startLimiter, async (req, res, next) => {
   try {
     const input = ticketTransferStartSchema.parse(req.body);
@@ -207,15 +333,19 @@ router.post('/ticket-transfer/start', startLimiter, async (req, res, next) => {
     const destinationAddress = ethers.getAddress(input.destinationAddress);
 
     const [wallet, rounds] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       arcService.getStandardRoundsState({ forceFresh: true }),
     ]);
-
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
+    if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      throw new Error('circle_wallet_not_configured');
     }
-
-    const walletAddress = ethers.getAddress(wallet.address);
+    const executionMode = req.auth.executionMode;
+    const walletAddress = executionMode === EXECUTION_MODES.EXTERNAL_WALLET
+      ? assertExternalSessionAddress(req.auth, req.auth.walletAddress)
+      : wallet?.address ? ethers.getAddress(wallet.address) : null;
+    if (!walletAddress) return res.status(404).json({ error: 'wallet_not_found' });
     if (destinationAddress.toLowerCase() === walletAddress.toLowerCase()) {
       return res.status(409).json({ error: 'transfer_destination_same' });
     }
@@ -250,6 +380,7 @@ router.post('/ticket-transfer/start', startLimiter, async (req, res, next) => {
       ticketAddress,
       tokenId: input.tokenId,
       destinationAddress,
+      executionMode,
     });
 
     res.json(await startPasskeyStepUp(req, action));
@@ -261,23 +392,24 @@ router.post('/ticket-transfer/start', startLimiter, async (req, res, next) => {
 router.post('/ticket-transfer/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-    );
-
-    await passkeyService.finishStepUpAuthentication(
-      req.auth.userId,
       credential,
-      saved,
-    );
-
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
-      actionId,
-      saved.payloadHash,
       'TRANSFER_TICKET',
     );
+
+    if (isExternalActionMode(action.payload.executionMode)) {
+      const transactionRequest = await ticketTransferExecutionService
+        .buildExternalTransferTransactionRequest(action.payload);
+      return res.json({
+        confirmed: true,
+        actionId,
+        payloadHash: action.payloadHash,
+        executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+        transactionRequest,
+      });
+    }
 
     const result = await ticketTransferExecutionService.executeTicketTransfer(
       req.auth.userId,
@@ -288,6 +420,37 @@ router.post('/ticket-transfer/finish', finishLimiter, async (req, res, next) => 
       confirmed: true,
       actionId,
       payloadHash: action.payloadHash,
+      executionMode: EXECUTION_MODES.BACKEND_WALLET,
+      result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/ticket-transfer/verify', finishLimiter, async (req, res, next) => {
+  try {
+    const { actionId, txHash } = entryVerifySchema.parse(req.body);
+    const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
+    const action = await actionAuthorizationService.getConsumedAction(
+      req.auth.userId,
+      actionId,
+      'TRANSFER_TICKET',
+    );
+    if (!isExternalActionMode(action.payload.executionMode)) {
+      return res.status(409).json({ error: 'transfer_execution_mode_mismatch' });
+    }
+    assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    const result = await ticketTransferExecutionService.verifyExternalTransferReceipt(
+      action.payload,
+      txHash,
+    );
+    res.json({
+      confirmed: true,
+      actionId,
+      payloadHash: action.payloadHash,
+      executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+      walletAddress,
       result,
     });
   } catch (error) {
@@ -302,7 +465,9 @@ router.post('/refund/start', startLimiter, async (req, res, next) => {
     const ticketAddress = ethers.getAddress(input.ticketAddress);
 
     const [wallet, state] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       arcService.readRefundAuthorizationState({
         poolAddress,
         ticketAddress,
@@ -311,10 +476,6 @@ router.post('/refund/start', startLimiter, async (req, res, next) => {
       }),
     ]);
 
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
-
     if (state.roundStatus !== 'CANCELLED') {
       return res.status(409).json({ error: 'refund_round_not_cancelled' });
     }
@@ -322,15 +483,17 @@ router.post('/refund/start', startLimiter, async (req, res, next) => {
       return res.status(409).json({ error: 'refund_already_refunded' });
     }
 
-    const backendWalletAddress = ethers.getAddress(wallet.address);
-    const ownerAddress = req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
-      ? ethers.getAddress(req.auth.ownerAddress)
-      : null;
+    const backendWalletAddress = wallet?.address ? ethers.getAddress(wallet.address) : null;
+    const ownerAddress = req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET
+      ? assertExternalSessionAddress(req.auth, req.auth.walletAddress)
+      : req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
+        ? ethers.getAddress(req.auth.ownerAddress)
+        : null;
 
     let executionMode;
     let refundWalletAddress;
 
-    if (state.currentOwner.toLowerCase() === backendWalletAddress.toLowerCase()) {
+    if (backendWalletAddress && state.currentOwner.toLowerCase() === backendWalletAddress.toLowerCase()) {
       executionMode = 'BACKEND_WALLET';
       refundWalletAddress = backendWalletAddress;
     } else if (ownerAddress && state.currentOwner.toLowerCase() === ownerAddress.toLowerCase()) {
@@ -360,21 +523,10 @@ router.post('/refund/start', startLimiter, async (req, res, next) => {
 router.post('/refund/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-    );
-
-    await passkeyService.finishStepUpAuthentication(
-      req.auth.userId,
       credential,
-      saved,
-    );
-
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
-      actionId,
-      saved.payloadHash,
       'REFUND_TICKET',
     );
 
@@ -422,6 +574,9 @@ router.post('/refund/verify', finishLimiter, async (req, res, next) => {
     if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
       return res.status(409).json({ error: 'refund_execution_mode_mismatch' });
     }
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    }
 
     const result = await refundExecutionService.verifyExternalRefundReceipt(
       action.payload,
@@ -448,7 +603,9 @@ router.post('/claim/start', startLimiter, async (req, res, next) => {
     const ticketAddress = ethers.getAddress(input.ticketAddress);
 
     const [wallet, state] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       arcService.readClaimAuthorizationState({
         poolAddress,
         ticketAddress,
@@ -456,10 +613,6 @@ router.post('/claim/start', startLimiter, async (req, res, next) => {
         roundId: input.roundId,
       }),
     ]);
-
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
 
     if (state.roundStatus !== 'SETTLED') {
       return res.status(409).json({ error: 'claim_round_not_settled' });
@@ -471,15 +624,17 @@ router.post('/claim/start', startLimiter, async (req, res, next) => {
       return res.status(409).json({ error: 'claim_nothing_to_claim' });
     }
 
-    const backendWalletAddress = ethers.getAddress(wallet.address);
-    const ownerAddress = req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
-      ? ethers.getAddress(req.auth.ownerAddress)
-      : null;
+    const backendWalletAddress = wallet?.address ? ethers.getAddress(wallet.address) : null;
+    const ownerAddress = req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET
+      ? assertExternalSessionAddress(req.auth, req.auth.walletAddress)
+      : req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
+        ? ethers.getAddress(req.auth.ownerAddress)
+        : null;
 
     let executionMode;
     let claimWalletAddress;
 
-    if (state.currentOwner.toLowerCase() === backendWalletAddress.toLowerCase()) {
+    if (backendWalletAddress && state.currentOwner.toLowerCase() === backendWalletAddress.toLowerCase()) {
       executionMode = 'BACKEND_WALLET';
       claimWalletAddress = backendWalletAddress;
     } else if (ownerAddress && state.currentOwner.toLowerCase() === ownerAddress.toLowerCase()) {
@@ -510,21 +665,10 @@ router.post('/claim/start', startLimiter, async (req, res, next) => {
 router.post('/claim/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-    );
-
-    await passkeyService.finishStepUpAuthentication(
-      req.auth.userId,
       credential,
-      saved,
-    );
-
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
-      actionId,
-      saved.payloadHash,
       'CLAIM_REWARD',
     );
 
@@ -572,6 +716,9 @@ router.post('/claim/verify', finishLimiter, async (req, res, next) => {
     if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
       return res.status(409).json({ error: 'claim_execution_mode_mismatch' });
     }
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    }
 
     const result = await claimExecutionService.verifyExternalClaimReceipt(
       action.payload,
@@ -591,6 +738,9 @@ router.post('/claim/verify', finishLimiter, async (req, res, next) => {
 });
 
 function resolveOwnerAddress(req) {
+  if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+    return assertExternalSessionAddress(req.auth, req.auth.walletAddress);
+  }
   return req.auth.ownerAddress && ethers.isAddress(req.auth.ownerAddress)
     ? ethers.getAddress(req.auth.ownerAddress)
     : null;
@@ -602,7 +752,9 @@ router.post('/marketplace-list/start', startLimiter, async (req, res, next) => {
     const ticketAddress = ethers.getAddress(input.ticketAddress);
 
     const [wallet, approval, activeListing] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       marketplaceService.readTicketApprovalState({ ticketAddress, tokenId: input.tokenId }),
       // Direct, uncached chain read -- never the board cache -- so a ticket
       // that already has an active listing is rejected before any action
@@ -610,10 +762,6 @@ router.post('/marketplace-list/start', startLimiter, async (req, res, next) => {
       // final list() revert.
       marketplaceService.readActiveListingForTicket({ ticketAddress, tokenId: input.tokenId }),
     ]);
-
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
 
     if (activeListing.activeListingId) {
       return res.status(409).json({ error: 'marketplace_already_listed' });
@@ -631,13 +779,13 @@ router.post('/marketplace-list/start', startLimiter, async (req, res, next) => {
       return res.status(409).json({ error: error.message });
     }
 
-    const backendWalletAddress = ethers.getAddress(wallet.address);
+    const backendWalletAddress = wallet?.address ? ethers.getAddress(wallet.address) : null;
     const ownerAddress = resolveOwnerAddress(req);
 
     let executionMode;
     let sellerWalletAddress;
 
-    if (approval.owner.toLowerCase() === backendWalletAddress.toLowerCase()) {
+    if (backendWalletAddress && approval.owner.toLowerCase() === backendWalletAddress.toLowerCase()) {
       executionMode = 'BACKEND_WALLET';
       sellerWalletAddress = backendWalletAddress;
     } else if (ownerAddress && approval.owner.toLowerCase() === ownerAddress.toLowerCase()) {
@@ -671,12 +819,10 @@ router.post('/marketplace-list/start', startLimiter, async (req, res, next) => {
 router.post('/marketplace-list/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(req.auth.userId, actionId);
-    await passkeyService.finishStepUpAuthentication(req.auth.userId, credential, saved);
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-      saved.payloadHash,
+      credential,
       'MARKETPLACE_LIST',
     );
 
@@ -713,6 +859,9 @@ router.post('/marketplace-list/verify', finishLimiter, async (req, res, next) =>
     if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
       return res.status(409).json({ error: 'marketplace_execution_mode_mismatch' });
     }
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    }
     const result = await marketplaceExecutionService.verifyExternalListReceipt(action.payload, txHash);
     res.json({
       confirmed: true,
@@ -732,13 +881,12 @@ router.post('/marketplace-update-price/start', startLimiter, async (req, res, ne
     const listingId = Number(input.listingId);
 
     const [wallet, { listing }] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       marketplaceService.readMarketplaceListing(listingId),
     ]);
 
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
     if (listing.onchainStatus !== 'ACTIVE') {
       return res.status(409).json({ error: 'marketplace_listing_not_active' });
     }
@@ -746,13 +894,15 @@ router.post('/marketplace-update-price/start', startLimiter, async (req, res, ne
       return res.status(409).json({ error: 'marketplace_trading_window_closed' });
     }
 
-    const backendWalletAddress = ethers.getAddress(wallet.address);
+    const backendWalletAddress = wallet?.address ? ethers.getAddress(wallet.address) : null;
     const ownerAddress = resolveOwnerAddress(req);
 
     let executionMode;
     let sellerWalletAddress;
 
-    const sellerIsBackend = listing.seller.toLowerCase() === backendWalletAddress.toLowerCase();
+    const sellerIsBackend = Boolean(
+      backendWalletAddress && listing.seller.toLowerCase() === backendWalletAddress.toLowerCase(),
+    );
     const sellerIsOwner = ownerAddress && listing.seller.toLowerCase() === ownerAddress.toLowerCase();
 
     if (sellerIsBackend) {
@@ -788,12 +938,10 @@ router.post('/marketplace-update-price/start', startLimiter, async (req, res, ne
 router.post('/marketplace-update-price/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(req.auth.userId, actionId);
-    await passkeyService.finishStepUpAuthentication(req.auth.userId, credential, saved);
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-      saved.payloadHash,
+      credential,
       'MARKETPLACE_UPDATE_PRICE',
     );
 
@@ -834,6 +982,9 @@ router.post('/marketplace-update-price/verify', finishLimiter, async (req, res, 
     if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
       return res.status(409).json({ error: 'marketplace_execution_mode_mismatch' });
     }
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    }
     const result = await marketplaceExecutionService.verifyExternalUpdatePriceReceipt(action.payload, txHash);
     res.json({
       confirmed: true,
@@ -853,13 +1004,12 @@ router.post('/marketplace-cancel/start', startLimiter, async (req, res, next) =>
     const listingId = Number(input.listingId);
 
     const [wallet, { listing }] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       marketplaceService.readMarketplaceListing(listingId),
     ]);
 
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
     if (listing.onchainStatus !== 'ACTIVE') {
       return res.status(409).json({ error: 'marketplace_listing_not_active' });
     }
@@ -867,13 +1017,13 @@ router.post('/marketplace-cancel/start', startLimiter, async (req, res, next) =>
       return res.status(409).json({ error: 'marketplace_trading_window_closed' });
     }
 
-    const backendWalletAddress = ethers.getAddress(wallet.address);
+    const backendWalletAddress = wallet?.address ? ethers.getAddress(wallet.address) : null;
     const ownerAddress = resolveOwnerAddress(req);
 
     let executionMode;
     let sellerWalletAddress;
 
-    if (listing.seller.toLowerCase() === backendWalletAddress.toLowerCase()) {
+    if (backendWalletAddress && listing.seller.toLowerCase() === backendWalletAddress.toLowerCase()) {
       executionMode = 'BACKEND_WALLET';
       sellerWalletAddress = backendWalletAddress;
     } else if (ownerAddress && listing.seller.toLowerCase() === ownerAddress.toLowerCase()) {
@@ -903,12 +1053,10 @@ router.post('/marketplace-cancel/start', startLimiter, async (req, res, next) =>
 router.post('/marketplace-cancel/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(req.auth.userId, actionId);
-    await passkeyService.finishStepUpAuthentication(req.auth.userId, credential, saved);
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-      saved.payloadHash,
+      credential,
       'MARKETPLACE_CANCEL',
     );
 
@@ -945,6 +1093,9 @@ router.post('/marketplace-cancel/verify', finishLimiter, async (req, res, next) 
     if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
       return res.status(409).json({ error: 'marketplace_execution_mode_mismatch' });
     }
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      assertExternalSessionAddress(req.auth, action.payload.walletAddress);
+    }
     const result = await marketplaceExecutionService.verifyExternalCancelReceipt(action.payload, txHash);
     res.json({
       confirmed: true,
@@ -964,7 +1115,9 @@ router.post('/marketplace-buy/start', startLimiter, async (req, res, next) => {
     const listingId = Number(input.listingId);
 
     const [wallet, { listing }] = await Promise.all([
-      walletService.getWalletForUser(req.auth.userId),
+      req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+        ? walletService.getWalletForUser(req.auth.userId)
+        : null,
       marketplaceService.readMarketplaceListing(listingId),
     ]);
 
@@ -981,6 +1134,13 @@ router.post('/marketplace-buy/start', startLimiter, async (req, res, next) => {
       return res.status(409).json({
         error: listing.state === 'EXPIRED' ? 'marketplace_trading_window_closed' : 'marketplace_listing_not_buyable',
       });
+    }
+
+    if (
+      req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET &&
+      input.executionMode !== 'EXTERNAL_OWNER'
+    ) {
+      return res.status(409).json({ error: 'marketplace_execution_mode_mismatch' });
     }
 
     // Buying has no pre-existing asset to infer a wallet from -- the buyer
@@ -1022,12 +1182,10 @@ router.post('/marketplace-buy/start', startLimiter, async (req, res, next) => {
 router.post('/marketplace-buy/finish', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, credential } = finishSchema.parse(req.body);
-    const saved = await actionAuthorizationService.consumeWebAuthnChallenge(req.auth.userId, actionId);
-    await passkeyService.finishStepUpAuthentication(req.auth.userId, credential, saved);
-    const action = await actionAuthorizationService.consumeVerifiedAction(
-      req.auth.userId,
+    const action = await consumeActionAuthorization(
+      req,
       actionId,
-      saved.payloadHash,
+      credential,
       'MARKETPLACE_BUY',
     );
 
@@ -1061,6 +1219,9 @@ router.post('/marketplace-buy/verify', finishLimiter, async (req, res, next) => 
     const action = await actionAuthorizationService.getConsumedAction(req.auth.userId, actionId, 'MARKETPLACE_BUY');
     if (action.payload.executionMode !== 'EXTERNAL_OWNER') {
       return res.status(409).json({ error: 'marketplace_execution_mode_mismatch' });
+    }
+    if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+      assertExternalSessionAddress(req.auth, action.payload.walletAddress);
     }
     const result = await marketplaceExecutionService.verifyExternalBuyReceipt(action.payload, txHash);
     res.json({

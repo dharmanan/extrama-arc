@@ -4,11 +4,13 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { backendApi } from "./lib/backend-api";
 
 export type WalletSessionStatus = "disconnected" | "ready";
+export type WalletExecutionMode = "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
 
 type WalletSession = {
   address: string | null;
+  executionMode: WalletExecutionMode | null;
   status: WalletSessionStatus;
-  setWalletReady: (address: string) => void;
+  setWalletReady: (address: string, executionMode?: WalletExecutionMode) => void;
   lockWallet: () => void;
 };
 
@@ -23,6 +25,7 @@ const WalletSessionContext = createContext<WalletSession | null>(null);
 export function WalletSessionProvider({ children }: { children: React.ReactNode }) {
   const [address, setAddress] = useState<string | null>(null);
   const [status, setStatus] = useState<WalletSessionStatus>("disconnected");
+  const [executionMode, setExecutionMode] = useState<WalletExecutionMode | null>(null);
 
   useEffect(() => {
     try {
@@ -44,15 +47,18 @@ export function WalletSessionProvider({ children }: { children: React.ReactNode 
         if (cancelled) return;
         if (result.wallet?.address) {
           setAddress(result.wallet.address);
+          setExecutionMode(result.wallet.executionMode);
           setStatus("ready");
         } else {
           setAddress(null);
+          setExecutionMode(null);
           setStatus("disconnected");
         }
       })
       .catch(() => {
         if (cancelled) return;
         setAddress(null);
+        setExecutionMode(null);
         setStatus("disconnected");
       });
 
@@ -61,19 +67,24 @@ export function WalletSessionProvider({ children }: { children: React.ReactNode 
     };
   }, []);
 
-  function setWalletReady(nextAddress: string) {
+  function setWalletReady(
+    nextAddress: string,
+    nextExecutionMode: WalletExecutionMode = "BACKEND_WALLET",
+  ) {
     setAddress(nextAddress);
+    setExecutionMode(nextExecutionMode);
     setStatus("ready");
   }
 
   function lockWallet() {
     setAddress(null);
+    setExecutionMode(null);
     setStatus("disconnected");
   }
 
   const value = useMemo<WalletSession>(
-    () => ({ address, status, setWalletReady, lockWallet }),
-    [address, status],
+    () => ({ address, executionMode, status, setWalletReady, lockWallet }),
+    [address, executionMode, status],
   );
 
   return <WalletSessionContext.Provider value={value}>{children}</WalletSessionContext.Provider>;

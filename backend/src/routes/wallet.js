@@ -4,15 +4,32 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const walletService = require('../services/walletService');
 const arcService = require('../services/arcService');
+const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
 const router = express.Router();
 
 router.use(requireAuth);
 
+async function resolveSessionWallet(req) {
+  if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+    return {
+      id: null,
+      address: req.auth.walletAddress,
+      createdAt: null,
+      executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+    };
+  }
+  if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+    throw new Error('circle_wallet_not_configured');
+  }
+  const wallet = await walletService.getWalletForUser(req.auth.userId);
+  return wallet ? { ...wallet, executionMode: EXECUTION_MODES.BACKEND_WALLET } : null;
+}
+
 router.get('/', async (req, res, next) => {
   try {
-    const wallet = await walletService.getWalletForUser(req.auth.userId);
-    res.json({ wallet });
+    const wallet = await resolveSessionWallet(req);
+    res.json({ wallet, executionMode: req.auth.executionMode });
   } catch (error) {
     next(error);
   }
@@ -20,7 +37,7 @@ router.get('/', async (req, res, next) => {
 
 router.get('/chain-state', async (req, res, next) => {
   try {
-    const wallet = await walletService.getWalletForUser(req.auth.userId);
+    const wallet = await resolveSessionWallet(req);
     if (!wallet?.address) {
       return res.status(404).json({ error: 'wallet_not_found' });
     }
@@ -34,12 +51,14 @@ router.get('/chain-state', async (req, res, next) => {
 
 router.get('/tickets', async (req, res, next) => {
   try {
-    const wallet = await walletService.getWalletForUser(req.auth.userId);
+    const wallet = await resolveSessionWallet(req);
     if (!wallet?.address) {
       return res.status(404).json({ error: 'wallet_not_found' });
     }
 
-    const ownerAddress = req.auth.ownerAddress || null;
+    const ownerAddress = req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
+      ? req.auth.ownerAddress || null
+      : null;
     const sameAddress = Boolean(
       ownerAddress && ownerAddress.toLowerCase() === wallet.address.toLowerCase(),
     );
@@ -51,7 +70,11 @@ router.get('/tickets', async (req, res, next) => {
     ]);
 
     res.set('Server-Timing', `wallet-tickets;dur=${Date.now() - startedAt}`);
-    res.json({ backendWallet, ownerWallet });
+    res.json({
+      backendWallet,
+      ownerWallet,
+      executionMode: req.auth.executionMode,
+    });
   } catch (error) {
     next(error);
   }
@@ -59,6 +82,9 @@ router.get('/tickets', async (req, res, next) => {
 
 router.post('/create', async (req, res, next) => {
   try {
+    if (req.auth.executionMode !== EXECUTION_MODES.BACKEND_WALLET) {
+      return res.status(409).json({ error: 'wallet_execution_mode_mismatch' });
+    }
     const result = await walletService.createWalletForUser(req.auth.userId);
 
     res.status(result.created ? 201 : 200).json({

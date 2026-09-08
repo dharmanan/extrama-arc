@@ -30,6 +30,7 @@ function assertEntryPayload(payload) {
   if (
     !payload ||
     payload.action !== 'ENTRY' ||
+    payload.executionMode !== 'BACKEND_WALLET' ||
     payload.chainId !== 5042002 ||
     payload.amountRaw !== '1000000' ||
     payload.destination?.toLowerCase() !== payload.contract?.toLowerCase() ||

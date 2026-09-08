@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const db = require('../db');
 
 const ACTION_TTL_MS = 2 * 60 * 1000;
+const EXTERNAL_ENTRY_TTL_MS = 10 * 60 * 1000;
 
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -14,6 +15,7 @@ function canonicalEntryPayload({
   poolAddress,
   roundId,
   predictionPriceCents,
+  executionMode = 'BACKEND_WALLET',
   nonce,
   expiresAt,
 }) {
@@ -24,6 +26,7 @@ function canonicalEntryPayload({
     roundId,
     amountRaw: '1000000',
     predictionPriceCents,
+    executionMode,
     destination: poolAddress,
     walletAddress,
     nonce,
@@ -36,6 +39,7 @@ function canonicalTicketTransferPayload({
   ticketAddress,
   tokenId,
   destinationAddress,
+  executionMode = 'BACKEND_WALLET',
   nonce,
   expiresAt,
 }) {
@@ -47,6 +51,7 @@ function canonicalTicketTransferPayload({
     from: walletAddress,
     destination: destinationAddress,
     walletAddress,
+    executionMode,
     nonce,
     expiresAt: expiresAt.toISOString(),
   };
@@ -229,14 +234,23 @@ async function insertActionRequest(params, actionType, payload) {
     payload,
     payloadHash,
     expiresAt: params.expiresAt,
-    expiresInSeconds: Math.floor(ACTION_TTL_MS / 1000),
+    expiresInSeconds: Math.max(
+      0,
+      Math.floor((params.expiresAt.getTime() - Date.now()) / 1000),
+    ),
   };
 }
 
 async function createEntryRequest(params) {
   const id = crypto.randomUUID();
   const nonce = crypto.randomBytes(24).toString('base64url');
-  const expiresAt = new Date(Date.now() + ACTION_TTL_MS);
+  const expiresAt = new Date(
+    Date.now() + (
+      params.executionMode === 'EXTERNAL_WALLET'
+        ? EXTERNAL_ENTRY_TTL_MS
+        : ACTION_TTL_MS
+    ),
+  );
   const payload = canonicalEntryPayload({
     ...params,
     nonce,
@@ -463,6 +477,71 @@ async function getConsumedAction(userId, actionId, expectedActionType) {
   };
 }
 
+async function getPendingExternalAction(userId, actionId, expectedActionType, walletAddress) {
+  const { rows } = await db.query(
+    `SELECT id, action_type, payload_hash, payload_json, verified_at, expires_at
+       FROM action_authorizations
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = $3
+        AND LOWER(payload_json->>'walletAddress') = LOWER($4)
+        AND payload_json->>'executionMode' IN ('EXTERNAL_WALLET', 'EXTERNAL_OWNER')
+        AND consumed_at IS NULL
+        AND expires_at > NOW()
+      LIMIT 1`,
+    [actionId, userId, expectedActionType, walletAddress],
+  );
+  if (!rows.length) throw new Error('action_authorization_invalid');
+  return {
+    id: rows[0].id,
+    actionType: rows[0].action_type,
+    payloadHash: rows[0].payload_hash,
+    payload: rows[0].payload_json,
+    verifiedAt: rows[0].verified_at,
+    expiresAt: rows[0].expires_at,
+  };
+}
+
+async function markExternalApprovalVerified(userId, actionId, walletAddress) {
+  const { rowCount } = await db.query(
+    `UPDATE action_authorizations
+        SET verified_at = NOW()
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND payload_json->>'executionMode' = 'EXTERNAL_WALLET'
+        AND consumed_at IS NULL
+        AND expires_at > NOW()`,
+    [actionId, userId, walletAddress],
+  );
+  if (rowCount !== 1) throw new Error('action_authorization_invalid');
+}
+
+async function consumeExternalAction(userId, actionId, expectedActionType, walletAddress) {
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET consumed_at = NOW()
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = $3
+        AND LOWER(payload_json->>'walletAddress') = LOWER($4)
+        AND payload_json->>'executionMode' IN ('EXTERNAL_WALLET', 'EXTERNAL_OWNER')
+        AND consumed_at IS NULL
+        AND expires_at > NOW()
+      RETURNING id, action_type, payload_hash, payload_json, consumed_at`,
+    [actionId, userId, expectedActionType, walletAddress],
+  );
+  if (!rows.length) throw new Error('action_authorization_invalid');
+  return {
+    id: rows[0].id,
+    actionType: rows[0].action_type,
+    payloadHash: rows[0].payload_hash,
+    payload: rows[0].payload_json,
+    consumedAt: rows[0].consumed_at,
+  };
+}
+
 module.exports = {
   createEntryRequest,
   createTicketTransferRequest,
@@ -476,4 +555,7 @@ module.exports = {
   consumeWebAuthnChallenge,
   consumeVerifiedAction,
   getConsumedAction,
+  getPendingExternalAction,
+  markExternalApprovalVerified,
+  consumeExternalAction,
 };
