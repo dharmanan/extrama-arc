@@ -406,6 +406,8 @@ export default function HomeClient() {
             <Link href="/how-it-works">{t.howItWorks}</Link>
             <Link href="/tickets">{t.myTickets}</Link>
             <Link href="/wallet">{t.createConnectWallet}</Link>
+            <Link href="/privacy">Privacy</Link>
+            <Link href="/terms">Terms</Link>
           </nav>
         </div>
       </footer>
