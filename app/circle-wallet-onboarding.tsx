@@ -55,6 +55,28 @@ function clearCircleTransientState() {
   }
 }
 
+const CIRCLE_SESSION_RETRY_DELAYS_MS = [500, 1000, 1500, 2000] as const;
+
+async function createCircleSessionWhenIndexed(userToken: string) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await backendApi.circle.session(userToken);
+    } catch (cause) {
+      const retryable =
+        cause instanceof Error &&
+        cause.message === "circle_arc_eoa_not_found";
+
+      if (!retryable || attempt >= CIRCLE_SESSION_RETRY_DELAYS_MS.length) {
+        throw cause;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, CIRCLE_SESSION_RETRY_DELAYS_MS[attempt]),
+      );
+    }
+  }
+}
+
 export function CircleWalletOnboarding({
   onReady,
 }: {
@@ -86,7 +108,7 @@ export function CircleWalletOnboarding({
     setBusy("Securing your EXTREMA session...");
     // The backend re-lists the Arc EOA using this Circle-authenticated token;
     // no address or Circle wallet ID is accepted from the browser.
-    const session = await backendApi.circle.session(auth.userToken);
+    const session = await createCircleSessionWhenIndexed(auth.userToken);
     clearCircleTransientState();
     try {
       // Required only to authorize future Circle hosted challenges. It is scoped
