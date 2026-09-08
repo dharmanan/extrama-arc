@@ -1366,7 +1366,20 @@ function scheduleOneShotMarketArchiveTest({
 let lastResolverSignature = '';
 
 function runAndLog() {
-  runLifecycle()
+  // runLifecycle() dedupes concurrent execution by returning the same
+  // in-flight promise, but a .then() attached to that promise still fires
+  // once per attachment. Without this check, every timer tick that lands
+  // while a run is still active would attach its own result logger, and a
+  // run spanning more than one interval would have its single result
+  // logged once per overlapping tick. Only the tick that actually starts
+  // the run (runPromise was null just before this call) may attach one;
+  // every other tick returns quietly.
+  const startedThisRun = runPromise === null;
+  const promise = runLifecycle();
+
+  if (!startedThisRun) return;
+
+  promise
     .then((result) => {
       if (result?.skipped) return;
 
