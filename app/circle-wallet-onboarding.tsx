@@ -90,6 +90,7 @@ export function CircleWalletOnboarding({
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const resendAllowedAtRef = useRef(0);
 
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
   const googleClientId = process.env.NEXT_PUBLIC_CIRCLE_GOOGLE_CLIENT_ID;
@@ -230,6 +231,16 @@ export function CircleWalletOnboarding({
   async function resendEmailOtp(pending: PendingLogin, sdk: CircleSdk) {
     if (!pending.email || !pending.deviceId) return;
 
+    const now = Date.now();
+    if (now < resendAllowedAtRef.current) {
+      const seconds = Math.ceil((resendAllowedAtRef.current - now) / 1000);
+      setBusy(`A new code was already sent. Try again in ${seconds}s.`);
+      return;
+    }
+
+    // Prevent repeated clicks while the request is in flight.
+    resendAllowedAtRef.current = now + 60_000;
+
     setError("");
     setBusy("Sending a new verification code...");
 
@@ -254,13 +265,13 @@ export function CircleWalletOnboarding({
         throw new Error("Circle wallet is not configured.");
       }
 
-      // The hosted OTP iframe still contains the previous otpToken.
-      // Re-open it so Circle receives the newly issued verification session.
-      document.getElementById("sdkIframe")?.remove();
-
-      setBusy("Enter the new verification code...");
+      // updateConfigs above already supplied the fresh Circle login tokens.
+      // Keep the existing hosted iframe mounted; verifyOtp reloads that same
+      // SDK iframe with the new verification session.
+      setBusy("Code sent. Enter the new verification code.");
       configuredSdk.verifyOtp();
     } catch (cause) {
+      resendAllowedAtRef.current = 0;
       setError(
         cause instanceof Error
           ? cause.message
