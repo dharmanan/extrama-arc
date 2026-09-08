@@ -138,6 +138,12 @@ export function CircleWalletOnboarding({
         },
       } : {}),
     };
+    if (sdkRef.current) {
+      sdkRef.current.updateConfigs(configs, loginCallback);
+      socialProviderRef.current = "Google";
+      return sdkRef.current;
+    }
+
     const sdk = new module.W3SSdk(configs, loginCallback) as unknown as CircleSdk;
     sdkRef.current = sdk;
     // v1.1.11 exports W3SSdk only; its installed runtime compares the provider
