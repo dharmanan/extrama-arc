@@ -11,16 +11,16 @@ const router = express.Router();
 router.use(requireAuth);
 
 async function resolveSessionWallet(req) {
-  if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
+  if (
+    req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET ||
+    req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET
+  ) {
     return {
-      id: null,
+      id: req.auth.circleWalletId || null,
       address: req.auth.walletAddress,
       createdAt: null,
-      executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
+      executionMode: req.auth.executionMode,
     };
-  }
-  if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
-    throw new Error('circle_wallet_not_configured');
   }
   const wallet = await walletService.getWalletForUser(req.auth.userId);
   return wallet ? { ...wallet, executionMode: EXECUTION_MODES.BACKEND_WALLET } : null;

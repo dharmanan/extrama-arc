@@ -21,7 +21,8 @@ async function requireAuth(req, res, next) {
       active.userId !== payload.sub ||
       active.ownerAddress !== payload.ownerAddress ||
       active.executionMode !== (payload.executionMode || 'BACKEND_WALLET') ||
-      (active.walletAddress || null) !== (payload.walletAddress || null)
+      (active.walletAddress || null) !== (payload.walletAddress || null) ||
+      (active.circleWalletId || null) !== (payload.circleWalletId || null)
     ) {
       return res.status(401).json({ error: 'invalid_session' });
     }
@@ -31,6 +32,7 @@ async function requireAuth(req, res, next) {
       ownerAddress: active.ownerAddress,
       executionMode: active.executionMode,
       walletAddress: active.walletAddress,
+      circleWalletId: active.circleWalletId,
       jti: payload.jti,
     };
     next();

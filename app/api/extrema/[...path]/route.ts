@@ -189,7 +189,8 @@ async function proxy(
   const isAuthFinish =
     pathname === "/auth/register/finish" ||
     pathname === "/auth/login/finish" ||
-    pathname === "/auth/wallet-login/finish";
+    pathname === "/auth/wallet-login/finish" ||
+    pathname === "/circle/session";
 
   let token: string | null = null;
   if (isAuthFinish && upstream.ok && typeof payload.token === "string") {

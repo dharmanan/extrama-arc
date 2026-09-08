@@ -9,6 +9,7 @@ import { shortAddress, useWalletSession } from "../wallet-session";
 import { backendApi, isAuthSessionError } from "../lib/backend-api";
 import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
 import { useCopy } from "../i18n";
+import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
 
 type Step = "owner" | "choice" | "create" | "recovery" | "ready";
 
@@ -503,11 +504,14 @@ export default function WalletPage() {
           </div>
 
           <div className="ex-wallet-panel">
-            <div className="ex-wallet-panel__actions">
-              <button className="ex-btn ex-btn--ghost" type="button" disabled>{t.wallet.continueGoogle}</button>
-              <button className="ex-btn ex-btn--ghost" type="button" disabled>{t.wallet.continueEmail}</button>
-            </div>
-            <p className="ex-wallet-panel__note">{t.wallet.circleComingSoon}</p>
+            <CircleWalletOnboarding
+              onReady={(session) => {
+                setWalletReady(session.walletAddress, "CIRCLE_USER_WALLET");
+                setOwnerAddress(session.ownerAddress);
+                setWalletNotice("Circle wallet session ready. Every transaction remains user approved.");
+                setStep("ready");
+              }}
+            />
             <p className="ex-eyebrow">{t.wallet.orConnectWallet}</p>
             <div className="ex-wallet-connectors">
               {walletConnectors.map((connector) => (

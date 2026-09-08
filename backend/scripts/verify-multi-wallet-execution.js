@@ -76,9 +76,23 @@ throwsCode(
   }),
   'external_wallet_session_mismatch',
 );
+assert.equal(
+  assertHumanExecutionMode(EXECUTION_MODES.CIRCLE_USER_WALLET),
+  EXECUTION_MODES.CIRCLE_USER_WALLET,
+);
+const circle = createSessionIdentity({
+  executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+  ownerAddress: owner,
+  walletAddress: owner,
+});
+assert.equal(circle.walletAddress, owner.toLowerCase());
 throwsCode(
-  () => assertHumanExecutionMode(EXECUTION_MODES.CIRCLE_USER_WALLET),
-  'circle_wallet_not_configured',
+  () => createSessionIdentity({
+    executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+    ownerAddress: owner,
+    walletAddress: other,
+  }),
+  'circle_wallet_session_mismatch',
 );
 throwsCode(
   () => assertHumanExecutionMode(EXECUTION_MODES.SYSTEM_SEED_WALLET),
@@ -102,6 +116,7 @@ const walletPage = read('../../app/wallet/page.tsx');
 
 assert.match(schema, /execution_mode VARCHAR\(32\) NOT NULL DEFAULT 'BACKEND_WALLET'/);
 assert.match(schema, /wallet_address VARCHAR\(42\)/);
+assert.match(schema, /circle_wallet_id UUID/);
 assert.match(sessions, /executionMode: options\.executionMode \|\| EXECUTION_MODES\.BACKEND_WALLET/);
 assert.match(middleware, /active\.executionMode !== \(payload\.executionMode \|\| 'BACKEND_WALLET'\)/);
 assert.match(middleware, /active\.walletAddress \|\| null/);

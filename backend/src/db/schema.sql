@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   owner_address VARCHAR(42) NOT NULL,
   execution_mode VARCHAR(32) NOT NULL DEFAULT 'BACKEND_WALLET',
   wallet_address VARCHAR(42),
+  circle_wallet_id UUID,
   expires_at TIMESTAMPTZ NOT NULL,
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -63,6 +64,9 @@ ALTER TABLE auth_sessions
 
 ALTER TABLE auth_sessions
   ADD COLUMN IF NOT EXISTS wallet_address VARCHAR(42);
+
+ALTER TABLE auth_sessions
+  ADD COLUMN IF NOT EXISTS circle_wallet_id UUID;
 
 DO $$
 BEGIN

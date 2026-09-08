@@ -27,9 +27,6 @@ function assertHumanExecutionMode(mode) {
   if (!HUMAN_EXECUTION_MODES.has(mode)) {
     throw new Error('wallet_execution_mode_invalid');
   }
-  if (mode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
-    throw new Error('circle_wallet_not_configured');
-  }
   return mode;
 }
 
@@ -40,6 +37,12 @@ function createSessionIdentity({ executionMode, ownerAddress, walletAddress }) {
   if (mode === EXECUTION_MODES.EXTERNAL_WALLET) {
     const wallet = normalizeAddress(walletAddress, 'external_wallet_address_invalid').toLowerCase();
     if (wallet !== owner) throw new Error('external_wallet_session_mismatch');
+    return { executionMode: mode, ownerAddress: owner, walletAddress: wallet };
+  }
+
+  if (mode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+    const wallet = normalizeAddress(walletAddress, 'circle_wallet_address_invalid').toLowerCase();
+    if (wallet !== owner) throw new Error('circle_wallet_session_mismatch');
     return { executionMode: mode, ownerAddress: owner, walletAddress: wallet };
   }
 

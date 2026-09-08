@@ -1036,6 +1036,42 @@ export const backendApi = {
       return post<{ ok: true }>("/auth/logout", {});
     },
   },
+  circle: {
+    readiness() {
+      return request<{
+        ok: boolean;
+        provider: "circle";
+        mode: "USER_CONTROLLED";
+        configured: boolean;
+        reachable: boolean;
+      }>("/circle/readiness");
+    },
+    socialDeviceToken(deviceId: string, idempotencyKey: string) {
+      return post<{ deviceToken: string; deviceEncryptionKey: string }>(
+        "/circle/device-token/social", { deviceId, idempotencyKey },
+      );
+    },
+    emailDeviceToken(deviceId: string, email: string, idempotencyKey: string) {
+      return post<{ deviceToken: string; deviceEncryptionKey: string; otpToken: string }>(
+        "/circle/device-token/email", { deviceId, email, idempotencyKey },
+      );
+    },
+    initializeWallet(userToken: string, idempotencyKey: string) {
+      return post<{
+        status: "EXISTING" | "CHALLENGE_REQUIRED";
+        wallet: { id: string; address: string; blockchain: "ARC-TESTNET"; accountType: "EOA" } | null;
+        challengeId: string | null;
+      }>("/circle/wallet/initialize", { userToken, idempotencyKey });
+    },
+    session(userToken: string) {
+      return post<{
+        ownerAddress: string;
+        walletAddress: string;
+        circleWalletId: string;
+        executionMode: "CIRCLE_USER_WALLET";
+      }>("/circle/session", { userToken });
+    },
+  },
   rounds: {
     list() {
       return request<LiveRoundsResponse>("/rounds");
@@ -1233,7 +1269,7 @@ export const backendApi = {
           id: string | null;
           address: string;
           createdAt: string | null;
-          executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET";
+          executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
         } | null;
       }>("/wallet");
     },

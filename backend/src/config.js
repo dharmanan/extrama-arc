@@ -13,9 +13,11 @@ const schema = z.object({
   WEBAUTHN_RP_ID: z.string().optional().default(''),
   WEBAUTHN_ORIGINS: z.string().default('http://localhost:3000'),
   JWT_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
+  // Optional during rollout. Circle routes fail closed until this server-only
+  // credential is configured; the browser never receives it.
+  CIRCLE_API_KEY: z.string().min(1).optional(),
   ALLOW_CODESPACE_ORIGINS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
-  CIRCLE_API_KEY: z.string().min(1).optional(),
   EXTREMA_FACTORY_ADDRESS: z.string().default("0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A"),
   // Canonical Arc Testnet deployment (deploy tx 0x9b35faa5a16d46056c833ac5b7cb6186f37200e0e3d5c0b8ce0f328914474304),
   // post-deploy verified: USDC()/FACTORY() match the canonical addresses above, nextListingId()==1.
