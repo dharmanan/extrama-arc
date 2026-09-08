@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
 import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
@@ -11,6 +11,28 @@ import { authenticatePasskey, registerPasskey } from "../lib/passkey-client";
 import { useCopy } from "../i18n";
 
 type Step = "owner" | "choice" | "create" | "recovery" | "ready";
+
+function connectorDisplayName(name: string) {
+  const normalized = name.toLowerCase();
+  if (normalized.includes("metamask")) return "MetaMask";
+  if (normalized.includes("rabby")) return "Rabby";
+  if (normalized.includes("phantom")) return "Phantom";
+  if (normalized.includes("coinbase")) return "Coinbase Wallet";
+  if (normalized.includes("walletconnect")) return "WalletConnect";
+  if (normalized === "injected") return "Browser wallet";
+  return name;
+}
+
+function connectorPriority(name: string) {
+  const normalized = connectorDisplayName(name).toLowerCase();
+  if (normalized === "metamask") return 0;
+  if (normalized === "rabby") return 1;
+  if (normalized === "phantom") return 2;
+  if (normalized === "coinbase wallet") return 3;
+  if (normalized === "walletconnect") return 4;
+  if (normalized === "browser wallet") return 90;
+  return 20;
+}
 
 export default function WalletPage() {
   const t = useCopy();
@@ -26,6 +48,21 @@ export default function WalletPage() {
   const { address: connectedAddress, isConnected, chain } = useAccount();
   const { connectors, connectAsync } = useConnect();
   const { disconnect } = useDisconnect();
+
+  const walletConnectors = useMemo(() => {
+    const unique = new Map<string, (typeof connectors)[number]>();
+
+    for (const connector of connectors) {
+      const key = connectorDisplayName(connector.name).toLowerCase();
+      if (!unique.has(key)) unique.set(key, connector);
+    }
+
+    return [...unique.values()].sort((left, right) => {
+      const rank = connectorPriority(left.name) - connectorPriority(right.name);
+      if (rank !== 0) return rank;
+      return connectorDisplayName(left.name).localeCompare(connectorDisplayName(right.name));
+    });
+  }, [connectors]);
   const { signMessageAsync } = useSignMessage();
   const { switchChainAsync } = useSwitchChain();
 
@@ -42,6 +79,7 @@ export default function WalletPage() {
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
   const [walletNotice, setWalletNotice] = useState("");
+  const [connectingUid, setConnectingUid] = useState<string | null>(null);
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -68,12 +106,14 @@ export default function WalletPage() {
 
   async function handleConnect(connector: (typeof connectors)[number]) {
     setError("");
+    setConnectingUid(connector.uid);
     setBusy("Connecting wallet...");
     try {
       await connectAsync({ connector });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
     } finally {
+      setConnectingUid(null);
       setBusy("");
     }
   }
@@ -447,11 +487,13 @@ export default function WalletPage() {
               <span className="ex-wallet-strip__key">{t.wallet.network}</span>
               <span className="ex-wallet-strip__val ex-num">{chain?.name || "—"}</span>
             </div>
-            <div className="ex-wallet-strip__actions">
-              <button className="ex-btn ex-btn--ghost" type="button" onClick={isConnected ? () => disconnect() : () => connectors[0] && handleConnect(connectors[0])}>
-                {isConnected ? t.wallet.disconnect : t.wallet.connectOwnerWallet}
-              </button>
-            </div>
+            {isConnected && (
+              <div className="ex-wallet-strip__actions">
+                <button className="ex-btn ex-btn--ghost" type="button" onClick={() => disconnect()}>
+                  {t.wallet.disconnect}
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="ex-wallet-hero">
@@ -467,16 +509,21 @@ export default function WalletPage() {
             </div>
             <p className="ex-wallet-panel__note">{t.wallet.circleComingSoon}</p>
             <p className="ex-eyebrow">{t.wallet.orConnectWallet}</p>
-            <div className="ex-wallet-panel__actions">
-              {connectors.map((connector) => (
+            <div className="ex-wallet-connectors">
+              {walletConnectors.map((connector) => (
                 <button
-                  className="ex-btn ex-btn--ink"
+                  className="ex-wallet-connector"
                   type="button"
                   key={connector.uid}
                   onClick={() => handleConnect(connector)}
                   disabled={Boolean(busy)}
                 >
-                  {busy || connector.name}
+                  <span>{connectorDisplayName(connector.name)}</span>
+                  <small>
+                    {connectingUid === connector.uid
+                      ? (busy || connectorDisplayName(connector.name))
+                      : t.wallet.connectWalletAction}
+                  </small>
                 </button>
               ))}
             </div>
@@ -583,17 +630,6 @@ export default function WalletPage() {
               {busy || t.wallet.externalChoiceCta}
             </button>
           </div>
-          <div className="ex-wallet-choice__block">
-            <p className="ex-eyebrow">{t.wallet.choiceBlockEyebrow}</p>
-            <p className="ex-wallet-choice__body">{t.wallet.choiceBlockBody}</p>
-            <button className="ex-btn ex-btn--ink ex-wallet-choice__cta" type="button" onClick={() => {
-              setError("");
-              setStep("create");
-            }}>
-              {t.wallet.choiceCta}
-            </button>
-          </div>
-
           <div className="ex-wallet-choice__block">
             <p className="ex-eyebrow">{t.wallet.reconnectTitle}</p>
             <p className="ex-wallet-choice__body">{t.wallet.reconnectBody}</p>

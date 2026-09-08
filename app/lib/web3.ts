@@ -27,6 +27,7 @@ if (walletConnectProjectId) {
 
 export const wagmiConfig = createConfig({
   connectors,
+  multiInjectedProviderDiscovery: true,
   chains: [arcTestnet],
   transports: {
     [arcTestnet.id]: http("https://rpc.testnet.arc.network"),
