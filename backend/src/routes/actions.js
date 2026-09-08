@@ -18,9 +18,11 @@ const claimExecutionService = require('../services/claimExecutionService');
 const marketplaceService = require('../services/marketplaceService');
 const marketplaceExecutionService = require('../services/marketplaceExecutionService');
 const externalEntryExecutionService = require('../services/externalEntryExecutionService');
+const circleEntryExecutionService = require('../services/circleEntryExecutionService');
 const {
   EXECUTION_MODES,
   assertExternalSessionAddress,
+  assertCircleSession,
   isExternalActionMode,
 } = require('../services/executionIdentityService');
 
@@ -46,6 +48,10 @@ const entryStartSchema = z.object({
   poolAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   roundId: z.number().int().positive(),
   predictionPriceCents: z.number().int().positive().max(1_000_000_000_000),
+  // Accepted only for a Circle session and used transiently to call Circle.
+  // It is intentionally never persisted or returned.
+  circleUserToken: z.string().min(16).optional(),
+  circleRequestId: z.string().uuid().optional(),
 });
 
 const ticketTransferStartSchema = z.object({
@@ -62,6 +68,11 @@ const finishSchema = z.object({
 const entryVerifySchema = z.object({
   actionId: z.string().uuid(),
   txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+});
+
+const circleEntryVerifySchema = z.object({
+  actionId: z.string().uuid(),
+  circleUserToken: z.string().min(16),
 });
 
 const refundStartSchema = z.object({
@@ -197,7 +208,33 @@ router.post('/entry/start', startLimiter, async (req, res, next) => {
     }
 
     if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
-      throw new Error('circle_wallet_not_configured');
+      const { walletAddress, circleWalletId } = assertCircleSession(
+        req.auth, req.auth.walletAddress, req.auth.circleWalletId,
+      );
+      if (!input.circleUserToken || !input.circleRequestId) {
+        return res.status(409).json({ error: 'circle_reauthentication_required' });
+      }
+      const action = await actionAuthorizationService.createOrGetCircleEntryRequest({
+        userId: req.auth.userId,
+        walletAddress,
+        circleWalletId,
+        poolAddress,
+        roundId: input.roundId,
+        predictionPriceCents: input.predictionPriceCents,
+        requestId: input.circleRequestId,
+      });
+      const challenge = await circleEntryExecutionService.startCircleEntry({
+        action,
+        auth: req.auth,
+        userToken: input.circleUserToken,
+      });
+      return res.json({
+        actionId: action.id,
+        payloadHash: action.payloadHash,
+        expiresInSeconds: action.expiresInSeconds,
+        executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+        ...challenge,
+      });
     }
 
     if (req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET) {
@@ -271,6 +308,23 @@ router.post('/entry/finish', finishLimiter, async (req, res, next) => {
 
 router.post('/entry/approval/verify', finishLimiter, async (req, res, next) => {
   try {
+    if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      const { actionId, circleUserToken } = circleEntryVerifySchema.parse(req.body);
+      assertCircleSession(req.auth, req.auth.walletAddress, req.auth.circleWalletId);
+      const result = await circleEntryExecutionService.verifyCircleApproval({
+        auth: req.auth, actionId, userToken: circleUserToken,
+      });
+      if (result.pending) return res.status(202).json({ pending: true, actionId, transactionObserved: Boolean(result.transactionObserved) });
+      return res.json({
+        confirmed: true,
+        actionId,
+        payloadHash: result.payloadHash,
+        executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+        approvalTxHash: result.approvalTxHash,
+        step: 'ENTRY_READY',
+        challengeId: result.challengeId,
+      });
+    }
     const { actionId, txHash } = entryVerifySchema.parse(req.body);
     const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
     const action = await actionAuthorizationService.getPendingExternalEntryAction(
@@ -302,6 +356,21 @@ router.post('/entry/approval/verify', finishLimiter, async (req, res, next) => {
 
 router.post('/entry/verify', finishLimiter, async (req, res, next) => {
   try {
+    if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      const { actionId, circleUserToken } = circleEntryVerifySchema.parse(req.body);
+      assertCircleSession(req.auth, req.auth.walletAddress, req.auth.circleWalletId);
+      const verified = await circleEntryExecutionService.verifyCircleEntry({
+        auth: req.auth, actionId, userToken: circleUserToken,
+      });
+      if (verified.pending) return res.status(202).json({ pending: true, actionId, transactionObserved: Boolean(verified.transactionObserved) });
+      return res.json({
+        confirmed: true,
+        actionId,
+        payloadHash: verified.action.payloadHash,
+        executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+        result: verified.result,
+      });
+    }
     const { actionId, txHash } = entryVerifySchema.parse(req.body);
     const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
     const action = await actionAuthorizationService.bindExternalEntryTransaction(

@@ -111,6 +111,38 @@ ALTER TABLE action_authorizations
 ALTER TABLE action_authorizations
   ADD COLUMN IF NOT EXISTS verified_tx_hash VARCHAR(66);
 
+-- Circle-hosted entry execution is deliberately separate from the legacy
+-- external-wallet state machine. These identifiers are durable evidence only;
+-- Circle user tokens and browser encryption keys are never stored here.
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_wallet_id UUID;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_state VARCHAR(32);
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_request_id UUID;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_approval_challenge_id TEXT;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_approval_idempotency_key UUID;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_approval_ref_id TEXT;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_approval_transaction_id UUID;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_approval_tx_hash VARCHAR(66);
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_entry_challenge_id TEXT;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_entry_idempotency_key UUID;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_entry_ref_id TEXT;
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS circle_entry_transaction_id UUID;
+
+CREATE UNIQUE INDEX IF NOT EXISTS action_authorizations_circle_entry_request_idx
+  ON action_authorizations(user_id, action_type, circle_request_id)
+  WHERE circle_request_id IS NOT NULL;
+
 -- Durable settlement evidence, written before settleRound is broadcast.
 -- canonical_evidence_json is TEXT, not JSONB, deliberately: PostgreSQL JSONB
 -- does not guarantee key ordering is preserved on storage/reload, and

@@ -23,11 +23,11 @@ const TICKET_ABI = ['function ownerOf(uint256 tokenId) view returns (address)'];
 const USDC_INTERFACE = new ethers.Interface(USDC_ABI);
 const POOL_INTERFACE = new ethers.Interface(POOL_ABI);
 
-function assertPayload(payload) {
+function assertPayload(payload, expectedExecutionMode = 'EXTERNAL_WALLET') {
   if (
     !payload ||
     payload.action !== 'ENTRY' ||
-    payload.executionMode !== 'EXTERNAL_WALLET' ||
+    payload.executionMode !== expectedExecutionMode ||
     payload.chainId !== Number(arcService.ARC_TESTNET_CHAIN_ID) ||
     payload.amountRaw !== STAKE_AMOUNT.toString() ||
     !ethers.isAddress(payload.contract) ||
@@ -45,6 +45,10 @@ function assertPayload(payload) {
   ) {
     throw new Error('action_authorization_invalid');
   }
+}
+
+function assertCirclePayload(payload) {
+  return assertPayload(payload, 'CIRCLE_USER_WALLET');
 }
 
 function assertPayloadFresh(payload) {
@@ -131,8 +135,8 @@ function transactionRequest({ from, to, data }) {
   };
 }
 
-async function prepareExternalEntry(payload, dependencies = {}) {
-  assertPayload(payload);
+async function prepareExecutionWalletEntry(payload, dependencies = {}, executionMode = 'EXTERNAL_WALLET') {
+  assertPayload(payload, executionMode);
   assertPayloadFresh(payload);
   const state = await (dependencies.readLiveState || readLiveState)(payload);
   assertEntryAvailable(payload, state);
@@ -159,6 +163,14 @@ async function prepareExternalEntry(payload, dependencies = {}) {
       ]),
     }),
   };
+}
+
+async function prepareExternalEntry(payload, dependencies = {}) {
+  return prepareExecutionWalletEntry(payload, dependencies, 'EXTERNAL_WALLET');
+}
+
+async function prepareCircleEntry(payload, dependencies = {}) {
+  return prepareExecutionWalletEntry(payload, dependencies, 'CIRCLE_USER_WALLET');
 }
 
 async function readTransaction(
@@ -201,9 +213,15 @@ function assertTransaction(tx, request) {
   }
 }
 
-async function verifyExternalApprovalReceipt(payload, txHash, dependencies = {}) {
-  assertPayload(payload);
-  assertPayloadFresh(payload);
+async function verifyExecutionWalletApprovalReceipt(
+  payload,
+  txHash,
+  dependencies = {},
+  executionMode = 'EXTERNAL_WALLET',
+  requirePayloadFresh = true,
+) {
+  assertPayload(payload, executionMode);
+  if (requirePayloadFresh) assertPayloadFresh(payload);
   if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     throw new Error('entry_txhash_invalid');
   }
@@ -239,8 +257,22 @@ async function verifyExternalApprovalReceipt(payload, txHash, dependencies = {})
   };
 }
 
-async function verifyExternalEntryReceipt(payload, txHash, dependencies = {}) {
-  assertPayload(payload);
+async function verifyExternalApprovalReceipt(payload, txHash, dependencies = {}) {
+  return verifyExecutionWalletApprovalReceipt(payload, txHash, dependencies, 'EXTERNAL_WALLET');
+}
+
+async function verifyCircleApprovalReceipt(payload, txHash, dependencies = {}) {
+  // A Circle challenge was durably reserved before expiry. Its receipt may be
+  // mined after that application window, so only this already-bound receipt
+  // path skips payload freshness. Creating a new Circle challenge still checks
+  // expiry in reserveCircleEntryChallenge().
+  return verifyExecutionWalletApprovalReceipt(
+    payload, txHash, dependencies, 'CIRCLE_USER_WALLET', false,
+  );
+}
+
+async function verifyExecutionWalletEntryReceipt(payload, txHash, dependencies = {}, executionMode = 'EXTERNAL_WALLET') {
+  assertPayload(payload, executionMode);
   if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     throw new Error('entry_txhash_invalid');
   }
@@ -298,7 +330,7 @@ async function verifyExternalEntryReceipt(payload, txHash, dependencies = {}) {
 
   return {
     chainId: Number(state.network.chainId),
-    executionMode: 'EXTERNAL_WALLET',
+    executionMode,
     walletAddress: state.walletAddress,
     poolAddress: state.poolAddress,
     ticketAddress: state.ticketAddress,
@@ -322,12 +354,24 @@ async function verifyExternalEntryReceipt(payload, txHash, dependencies = {}) {
   };
 }
 
+async function verifyExternalEntryReceipt(payload, txHash, dependencies = {}) {
+  return verifyExecutionWalletEntryReceipt(payload, txHash, dependencies, 'EXTERNAL_WALLET');
+}
+
+async function verifyCircleEntryReceipt(payload, txHash, dependencies = {}) {
+  return verifyExecutionWalletEntryReceipt(payload, txHash, dependencies, 'CIRCLE_USER_WALLET');
+}
+
 module.exports = {
   STAKE_AMOUNT,
   assertPayload,
+  assertCirclePayload,
   assertPayloadFresh,
   assertTransaction,
   prepareExternalEntry,
+  prepareCircleEntry,
   verifyExternalApprovalReceipt,
+  verifyCircleApprovalReceipt,
   verifyExternalEntryReceipt,
+  verifyCircleEntryReceipt,
 };

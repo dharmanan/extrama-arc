@@ -12,6 +12,7 @@ import {
 } from "../../lib/backend-api";
 import { assetConfigs } from "../../lib/asset-config";
 import { confirmEntryWithPasskey } from "../../lib/passkey-client";
+import { confirmCircleEntry } from "../../lib/circle-entry";
 import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 import { useCopy, useLocale } from "../../i18n";
 import { useWalletSession } from "../../wallet-session";
@@ -238,6 +239,7 @@ export default function PoolDetailPage() {
   const [entryBusy, setEntryBusy] = useState("");
   const [entryError, setEntryError] = useState("");
   const entriesRequestId = useRef(0);
+  const circleEntryRequestId = useRef<string | null>(null);
   const [entrySuccess, setEntrySuccess] = useState<{
     ticketId: string;
     entryTxHash: string;
@@ -345,11 +347,18 @@ export default function PoolDetailPage() {
 
     setEntryBusy("Confirming…");
     try {
-      const result = await confirmEntryWithPasskey({
-        poolAddress: state.pool.poolAddress,
-        roundId: state.pool.round.roundId,
-        predictionPriceCents,
-        sendExternalTransaction: async (request) => {
+      const result = executionMode === "CIRCLE_USER_WALLET"
+        ? await confirmCircleEntry({
+          poolAddress: state.pool.poolAddress,
+          roundId: state.pool.round.roundId,
+          predictionPriceCents,
+          requestId: circleEntryRequestId.current ||= crypto.randomUUID(),
+        })
+        : await confirmEntryWithPasskey({
+          poolAddress: state.pool.poolAddress,
+          roundId: state.pool.round.roundId,
+          predictionPriceCents,
+          sendExternalTransaction: async (request) => {
           if (
             !connectedAddress ||
             connectedAddress.toLowerCase() !== request.from.toLowerCase()
@@ -370,8 +379,9 @@ export default function PoolDetailPage() {
           const receipt = await publicClient.waitForTransactionReceipt({ hash });
           if (receipt.status !== "success") throw new Error("Wallet transaction failed.");
           return hash;
-        },
-      });
+          },
+        });
+      circleEntryRequestId.current = null;
 
       setState((current) => current ? {
         ...current,
@@ -398,13 +408,20 @@ export default function PoolDetailPage() {
       void refreshEntries(state.pool);
     } catch (cause) {
       const isExternalWallet = executionMode === "EXTERNAL_WALLET";
+      const isCircleWallet = executionMode === "CIRCLE_USER_WALLET";
       const message = cause instanceof Error
         ? cause.message
         : isExternalWallet
           ? "Wallet transaction verification failed."
+          : isCircleWallet
+            ? "Circle transaction verification failed."
           : "Passkey verification failed.";
       if (message === "authentication_required" || message === "invalid_session" || message === "session_expired") {
         setEntryError("Your EXTREMA session is locked or expired. Reconnect your wallet, then try again.");
+      } else if (message === "circle_reauthentication_required" || message === "circle_authentication_invalid") {
+        setEntryError("Your Circle authorization is no longer available in this tab. Reconnect your Circle wallet, then try again.");
+      } else if (message === "circle_transaction_pending") {
+        setEntryError("Circle accepted the request but Arc confirmation is still pending. Please wait before retrying.");
       } else if (message === "entry_insufficient_usdc") {
         setEntryError(isExternalWallet
           ? "You need at least 1 USDC in your connected wallet to enter."

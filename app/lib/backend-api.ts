@@ -598,7 +598,7 @@ export type EntryActionPayload = {
   roundId: number;
   amountRaw: "1000000";
   predictionPriceCents: number;
-  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET";
+  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
   destination: string;
   walletAddress: string;
   nonce: string;
@@ -693,6 +693,33 @@ export type ExternalEntryVerifyResponse = {
   payloadHash: string;
   executionMode: "EXTERNAL_WALLET";
   result: EntryExecutionResult & { executionMode: "EXTERNAL_WALLET" };
+};
+
+export type CircleEntryStartResponse = {
+  actionId: string;
+  payloadHash: string;
+  expiresInSeconds: number;
+  executionMode: "CIRCLE_USER_WALLET";
+  step: "APPROVAL_REQUIRED" | "ENTRY_READY";
+  challengeId: string;
+};
+
+export type CircleEntryApprovalVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "CIRCLE_USER_WALLET";
+  approvalTxHash: string;
+  step: "ENTRY_READY";
+  challengeId: string;
+};
+
+export type CircleEntryVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "CIRCLE_USER_WALLET";
+  result: EntryExecutionResult & { executionMode: "CIRCLE_USER_WALLET" };
 };
 
 export type TicketTransferActionPayload = {
@@ -1122,6 +1149,15 @@ export const backendApi = {
     }) {
       return post<EntryActionStartResponse>("/actions/entry/start", input);
     },
+    startCircleEntry(input: {
+      poolAddress: string;
+      roundId: number;
+      predictionPriceCents: number;
+      circleUserToken: string;
+      circleRequestId: string;
+    }) {
+      return post<CircleEntryStartResponse>("/actions/entry/start", input);
+    },
     finishEntry(actionId: string, credential: unknown) {
       return post<EntryActionFinishResponse>("/actions/entry/finish", {
         actionId,
@@ -1136,6 +1172,16 @@ export const backendApi = {
     },
     verifyEntry(actionId: string, txHash: string) {
       return post<ExternalEntryVerifyResponse>("/actions/entry/verify", { actionId, txHash });
+    },
+    verifyCircleEntryApproval(actionId: string, circleUserToken: string) {
+      return post<CircleEntryApprovalVerifyResponse | { pending: true; actionId: string; transactionObserved: boolean }>(
+        "/actions/entry/approval/verify", { actionId, circleUserToken },
+      );
+    },
+    verifyCircleEntry(actionId: string, circleUserToken: string) {
+      return post<CircleEntryVerifyResponse | { pending: true; actionId: string; transactionObserved: boolean }>(
+        "/actions/entry/verify", { actionId, circleUserToken },
+      );
     },
     startTicketTransfer(input: {
       ticketAddress: string;

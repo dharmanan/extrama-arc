@@ -65,6 +65,23 @@ function assertExternalSessionAddress(auth, expectedAddress) {
   return sessionWallet;
 }
 
+function assertCircleSession(auth, expectedAddress, expectedCircleWalletId) {
+  if (auth?.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
+    throw new Error('circle_wallet_session_required');
+  }
+  const sessionWallet = normalizeAddress(auth.walletAddress, 'circle_wallet_session_mismatch');
+  const expected = normalizeAddress(expectedAddress, 'circle_wallet_session_mismatch');
+  if (
+    sessionWallet.toLowerCase() !== expected.toLowerCase() ||
+    typeof auth.circleWalletId !== 'string' ||
+    !auth.circleWalletId ||
+    (expectedCircleWalletId && auth.circleWalletId !== expectedCircleWalletId)
+  ) {
+    throw new Error('circle_wallet_session_mismatch');
+  }
+  return { walletAddress: sessionWallet, circleWalletId: auth.circleWalletId };
+}
+
 function isExternalActionMode(mode) {
   return mode === EXECUTION_MODES.EXTERNAL_WALLET || mode === 'EXTERNAL_OWNER';
 }
@@ -74,5 +91,6 @@ module.exports = {
   assertHumanExecutionMode,
   createSessionIdentity,
   assertExternalSessionAddress,
+  assertCircleSession,
   isExternalActionMode,
 };

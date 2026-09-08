@@ -264,6 +264,263 @@ async function createEntryRequest(params) {
   );
 }
 
+function sameCircleEntryIntent(payload, params) {
+  return payload?.action === 'ENTRY' &&
+    payload.executionMode === 'CIRCLE_USER_WALLET' &&
+    payload.contract?.toLowerCase() === params.poolAddress.toLowerCase() &&
+    payload.walletAddress?.toLowerCase() === params.walletAddress.toLowerCase() &&
+    payload.roundId === params.roundId &&
+    payload.predictionPriceCents === params.predictionPriceCents;
+}
+
+function actionRow(row) {
+  return {
+    id: row.id,
+    actionType: row.action_type,
+    payloadHash: row.payload_hash,
+    payload: row.payload_json,
+    expiresAt: row.expires_at,
+    expiresInSeconds: Math.max(0, Math.floor((new Date(row.expires_at).getTime() - Date.now()) / 1000)),
+    circleWalletId: row.circle_wallet_id,
+    circleState: row.circle_state,
+    circleApprovalChallengeId: row.circle_approval_challenge_id,
+    circleApprovalIdempotencyKey: row.circle_approval_idempotency_key,
+    circleApprovalRefId: row.circle_approval_ref_id,
+    circleApprovalTransactionId: row.circle_approval_transaction_id,
+    circleApprovalTxHash: row.circle_approval_tx_hash,
+    circleEntryChallengeId: row.circle_entry_challenge_id,
+    circleEntryIdempotencyKey: row.circle_entry_idempotency_key,
+    circleEntryRefId: row.circle_entry_ref_id,
+    circleEntryTransactionId: row.circle_entry_transaction_id,
+    verifiedTxHash: row.verified_tx_hash,
+  };
+}
+
+async function createOrGetCircleEntryRequest(params) {
+  const requestId = params.requestId;
+  if (!/^[0-9a-f-]{36}$/i.test(requestId || '')) throw new Error('circle_request_id_invalid');
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + EXTERNAL_ENTRY_TTL_MS);
+  const payload = canonicalEntryPayload({
+    ...params,
+    executionMode: 'CIRCLE_USER_WALLET',
+    nonce,
+    expiresAt,
+  });
+  const payloadHash = sha256Hex(JSON.stringify(payload));
+  const { rows } = await db.query(
+    `INSERT INTO action_authorizations
+       (id, user_id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_request_id)
+     VALUES ($1, $2, 'ENTRY', $3, $4, $5, $6, $7)
+     ON CONFLICT (user_id, action_type, circle_request_id)
+       WHERE circle_request_id IS NOT NULL
+     DO UPDATE SET id = action_authorizations.id
+     RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
+       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
+       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
+       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+    [id, params.userId, payloadHash, payload, expiresAt, params.circleWalletId, requestId],
+  );
+  const action = actionRow(rows[0]);
+  if (!sameCircleEntryIntent(action.payload, params) || action.circleWalletId !== params.circleWalletId) {
+    throw new Error('circle_request_id_conflict');
+  }
+  return action;
+}
+
+async function getCircleEntryAction(userId, actionId, walletAddress, circleWalletId) {
+  const { rows } = await db.query(
+    `SELECT id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
+       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
+       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
+       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash
+       FROM action_authorizations
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND payload_json->>'executionMode' = 'CIRCLE_USER_WALLET'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND circle_wallet_id = $4
+      LIMIT 1`,
+    [actionId, userId, walletAddress, circleWalletId],
+  );
+  if (!rows.length) throw new Error('circle_entry_authorization_invalid');
+  return actionRow(rows[0]);
+}
+
+const CIRCLE_PHASES = Object.freeze({
+  APPROVAL: {
+    reservationStates: [null, 'APPROVAL_CHALLENGE'], state: 'APPROVAL_CHALLENGE',
+    bindStates: ['APPROVAL_CHALLENGE', 'APPROVAL_SUBMITTED'],
+    idempotency: 'circle_approval_idempotency_key', ref: 'circle_approval_ref_id',
+    challenge: 'circle_approval_challenge_id', txId: 'circle_approval_transaction_id', txHash: 'circle_approval_tx_hash',
+  },
+  ENTRY: {
+    reservationStates: ['APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'], state: 'ENTRY_CHALLENGE',
+    bindStates: ['ENTRY_CHALLENGE', 'ENTRY_SUBMITTED'],
+    idempotency: 'circle_entry_idempotency_key', ref: 'circle_entry_ref_id',
+    challenge: 'circle_entry_challenge_id', txId: 'circle_entry_transaction_id', txHash: 'verified_tx_hash',
+  },
+});
+
+function hasSameBoundCircleTransaction(action, phaseName, transaction) {
+  const phase = CIRCLE_PHASES[phaseName];
+  return Boolean(
+    phase && action?.[phaseName === 'APPROVAL' ? 'circleApprovalTransactionId' : 'circleEntryTransactionId'] &&
+    action?.[phaseName === 'APPROVAL' ? 'circleApprovalTxHash' : 'verifiedTxHash'] &&
+    action[phaseName === 'APPROVAL' ? 'circleApprovalTransactionId' : 'circleEntryTransactionId'] === transaction.id &&
+    action[phaseName === 'APPROVAL' ? 'circleApprovalTxHash' : 'verifiedTxHash'].toLowerCase() === transaction.txHash.toLowerCase()
+  );
+}
+
+function isTerminalOrAdvancedApprovalState(state) {
+  return ['APPROVAL_VERIFIED', 'ENTRY_CHALLENGE', 'ENTRY_SUBMITTED', 'VERIFIED'].includes(state);
+}
+
+async function reserveCircleEntryChallenge(userId, actionId, walletAddress, circleWalletId, phaseName) {
+  const phase = CIRCLE_PHASES[phaseName];
+  if (!phase) throw new Error('circle_entry_authorization_invalid');
+  const idempotencyKey = crypto.randomUUID();
+  const refId = `${actionId}:${phaseName.toLowerCase()}`;
+  const stateCondition = phase.reservationStates.includes(null)
+    ? '(circle_state IS NULL OR circle_state = ANY($5::varchar[]))'
+    : 'circle_state = ANY($5::varchar[])';
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET circle_state = $6,
+            ${phase.idempotency} = COALESCE(${phase.idempotency}, $7),
+            ${phase.ref} = COALESCE(${phase.ref}, $8)
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND payload_json->>'executionMode' = 'CIRCLE_USER_WALLET'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND circle_wallet_id = $4
+        AND ${stateCondition}
+        AND expires_at > NOW()
+      RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
+       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
+       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
+       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+    [
+      actionId, userId, walletAddress, circleWalletId,
+      phase.reservationStates.filter(Boolean), phase.state, idempotencyKey, refId,
+    ],
+  );
+  if (!rows.length) throw new Error('circle_entry_authorization_invalid');
+  return actionRow(rows[0]);
+}
+
+async function persistCircleEntryChallenge(userId, actionId, walletAddress, circleWalletId, phaseName, challengeId) {
+  const phase = CIRCLE_PHASES[phaseName];
+  if (!phase || typeof challengeId !== 'string' || !challengeId) throw new Error('circle_entry_authorization_invalid');
+  const { rows } = await db.query(
+    `UPDATE action_authorizations SET ${phase.challenge} = COALESCE(${phase.challenge}, $5)
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
+        AND circle_state = $6 AND (${phase.challenge} IS NULL OR ${phase.challenge} = $5)
+      RETURNING ${phase.challenge} AS challenge_id`,
+    [actionId, userId, walletAddress, circleWalletId, challengeId, phase.state],
+  );
+  if (!rows.length) throw new Error('circle_entry_authorization_invalid');
+  return rows[0].challenge_id;
+}
+
+async function persistCircleEntryTransactionId(
+  userId, actionId, walletAddress, circleWalletId, phaseName, transactionId,
+) {
+  const phase = CIRCLE_PHASES[phaseName];
+  if (!phase || typeof transactionId !== 'string' || !transactionId) {
+    throw new Error('circle_entry_authorization_invalid');
+  }
+  const reusableStates = phaseName === 'APPROVAL'
+    ? [...phase.bindStates, 'APPROVAL_VERIFIED', 'ENTRY_CHALLENGE', 'ENTRY_SUBMITTED', 'VERIFIED']
+    : [...phase.bindStates, 'VERIFIED'];
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET ${phase.txId} = COALESCE(${phase.txId}, $5)
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
+        AND circle_state = ANY($6::varchar[])
+        AND (${phase.txId} IS NULL OR ${phase.txId} = $5)
+      RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
+       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
+       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
+       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+    [actionId, userId, walletAddress, circleWalletId, transactionId, reusableStates],
+  );
+  if (rows.length) return actionRow(rows[0]);
+  const action = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  const storedId = phaseName === 'APPROVAL'
+    ? action.circleApprovalTransactionId
+    : action.circleEntryTransactionId;
+  if (storedId !== transactionId) throw new Error('circle_entry_authorization_invalid');
+  return action;
+}
+
+async function bindCircleEntryTransaction(userId, actionId, walletAddress, circleWalletId, phaseName, transaction) {
+  const phase = CIRCLE_PHASES[phaseName];
+  if (!phase || !transaction?.id || !transaction?.txHash) throw new Error('circle_transaction_pending');
+  const submittedState = phaseName === 'APPROVAL' ? 'APPROVAL_SUBMITTED' : 'ENTRY_SUBMITTED';
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET circle_state = $7, ${phase.txId} = COALESCE(${phase.txId}, $5), ${phase.txHash} = COALESCE(${phase.txHash}, $6)
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
+        AND circle_state = ANY($8::varchar[])
+        AND (${phase.txId} IS NULL OR ${phase.txId} = $5)
+        AND (${phase.txHash} IS NULL OR LOWER(${phase.txHash}) = LOWER($6))
+      RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
+       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
+       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
+       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+    [
+      actionId, userId, walletAddress, circleWalletId, transaction.id, transaction.txHash,
+      submittedState, phase.bindStates,
+    ],
+  );
+  if (rows.length) return actionRow(rows[0]);
+
+  const existing = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  const allowed = phaseName === 'APPROVAL'
+    ? isTerminalOrAdvancedApprovalState(existing.circleState)
+    : existing.circleState === 'VERIFIED';
+  if (!allowed || !hasSameBoundCircleTransaction(existing, phaseName, transaction)) {
+    throw new Error('circle_entry_authorization_invalid');
+  }
+  return existing;
+}
+
+async function markCircleApprovalVerified(userId, actionId, walletAddress, circleWalletId) {
+  const { rowCount } = await db.query(
+    `UPDATE action_authorizations SET circle_state = 'APPROVAL_VERIFIED', verified_at = NOW()
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
+        AND circle_state IN ('APPROVAL_SUBMITTED', 'APPROVAL_VERIFIED')`,
+    [actionId, userId, walletAddress, circleWalletId],
+  );
+  if (rowCount === 1) return;
+  const action = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  if (!isTerminalOrAdvancedApprovalState(action.circleState) ||
+    !action.circleApprovalTransactionId || !action.circleApprovalTxHash) {
+    throw new Error('circle_entry_authorization_invalid');
+  }
+}
+
+async function markCircleEntryReceiptVerified(userId, actionId, walletAddress, circleWalletId, txHash) {
+  const { rowCount } = await db.query(
+    `UPDATE action_authorizations SET circle_state = 'VERIFIED', verified_at = NOW()
+      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
+        AND circle_state IN ('ENTRY_SUBMITTED', 'VERIFIED')
+        AND LOWER(verified_tx_hash) = LOWER($5)`,
+    [actionId, userId, walletAddress, circleWalletId, txHash],
+  );
+  if (rowCount === 1) return;
+  const action = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  if (action.circleState !== 'VERIFIED' || !action.verifiedTxHash ||
+    action.verifiedTxHash.toLowerCase() !== txHash.toLowerCase()) {
+    throw new Error('circle_entry_authorization_invalid');
+  }
+}
+
 async function createTicketTransferRequest(params) {
   const id = crypto.randomUUID();
   const nonce = crypto.randomBytes(24).toString('base64url');
@@ -697,6 +954,7 @@ async function consumeExternalAction(userId, actionId, expectedActionType, walle
 
 module.exports = {
   createEntryRequest,
+  createOrGetCircleEntryRequest,
   createTicketTransferRequest,
   createRefundRequest,
   createClaimRequest,
@@ -715,4 +973,13 @@ module.exports = {
   bindExternalEntryTransaction,
   markExternalEntryReceiptVerified,
   consumeExternalAction,
+  getCircleEntryAction,
+  reserveCircleEntryChallenge,
+  persistCircleEntryChallenge,
+  persistCircleEntryTransactionId,
+  bindCircleEntryTransaction,
+  markCircleApprovalVerified,
+  markCircleEntryReceiptVerified,
+  CIRCLE_PHASES,
+  hasSameBoundCircleTransaction,
 };

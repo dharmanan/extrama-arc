@@ -27,6 +27,7 @@ function safeCircleError(error) {
   }
   if (code === ALREADY_INITIALIZED_CODE) return new Error('circle_user_already_initialized');
   if (code && code >= 155000 && code < 156000) return new Error('circle_request_rejected');
+  if (error?.response?.status === 429) return new Error('circle_rate_limited');
   return new Error('circle_service_unavailable');
 }
 
@@ -59,6 +60,15 @@ function nextCursor(response) {
   return typeof headerCursor === 'string' && headerCursor
     ? headerCursor
     : typeof bodyCursor === 'string' && bodyCursor ? bodyCursor : null;
+}
+
+function matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }) {
+  return transaction?.walletId === walletId &&
+    transaction?.blockchain === ARC_TESTNET &&
+    transaction?.refId === refId &&
+    typeof transaction?.contractAddress === 'string' &&
+    ethers.isAddress(transaction.contractAddress) &&
+    ethers.getAddress(transaction.contractAddress).toLowerCase() === ethers.getAddress(contractAddress).toLowerCase();
 }
 
 function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client } = {}) {
@@ -192,6 +202,77 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
+  async function createContractExecutionChallenge({
+    userToken, walletId, contractAddress, callData, idempotencyKey, refId,
+  }) {
+    try {
+      if (!userToken || !walletId || !ethers.isAddress(contractAddress) ||
+        typeof callData !== 'string' || !/^0x(?:[0-9a-fA-F]{2})*$/.test(callData) ||
+        !idempotencyKey || !refId) {
+        throw new Error('circle_request_invalid');
+      }
+      const response = await getClient().createUserTransactionContractExecutionChallenge({
+        userToken,
+        walletId,
+        contractAddress: ethers.getAddress(contractAddress),
+        callData,
+        fee: { type: 'level', config: { feeLevel: 'MEDIUM' } },
+        idempotencyKey,
+        refId,
+      });
+      const challengeId = response?.data?.challengeId;
+      if (typeof challengeId !== 'string' || !challengeId) throw new Error('circle_response_invalid');
+      return { challengeId };
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
+  }
+
+  async function findContractExecutionTransaction({ userToken, walletId, refId, contractAddress }) {
+    try {
+      let pageAfter;
+      const matching = [];
+      for (let page = 0; page < MAX_PAGES; page += 1) {
+        const response = await getClient().listTransactions({
+          userToken,
+          blockchain: ARC_TESTNET,
+          walletIds: [walletId],
+          pageAfter,
+          pageSize: PAGE_SIZE,
+        });
+        matching.push(...(response?.data?.transactions || []).filter((transaction) =>
+          matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress })));
+        const cursor = nextCursor(response);
+        if (!cursor) break;
+        if (cursor === pageAfter || page === MAX_PAGES - 1) {
+          throw new Error('circle_transaction_listing_incomplete');
+        }
+        pageAfter = cursor;
+      }
+      if (matching.length > 1) throw new Error('circle_transaction_ambiguous');
+      return matching[0] || null;
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
+  }
+
+  async function getContractExecutionTransaction({ userToken, id, walletId, refId, contractAddress }) {
+    try {
+      const response = await getClient().getTransaction({ userToken, id });
+      const transaction = response?.data?.transaction;
+      if (!transaction) return null;
+      if (!matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }) || transaction.id !== id) {
+        throw new Error('circle_transaction_mismatch');
+      }
+      return transaction;
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
+  }
+
   return {
     configured: Boolean(apiKey),
     isConfigured,
@@ -201,6 +282,9 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     createEmailDeviceToken,
     initializeArcEoa,
     listArcEoa,
+    createContractExecutionChallenge,
+    findContractExecutionTransaction,
+    getContractExecutionTransaction,
   };
 }
 
@@ -213,6 +297,7 @@ module.exports = {
   circleErrorCode,
   safeCircleError,
   pickArcEoa,
+  matchesContractExecutionTransaction,
   createCircleUserWalletService,
   ...circleUserWalletService,
 };

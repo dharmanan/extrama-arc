@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { backendApi } from "./lib/backend-api";
+import { storeCircleTabAuth } from "./lib/circle-auth";
 
 type CircleLoginResult = {
   userToken: string;
@@ -25,7 +26,6 @@ type PendingLogin = {
 };
 
 const PENDING_LOGIN_KEY = "extrema-circle-pending-login-v1";
-const CIRCLE_AUTH_KEY = "extrema-circle-auth-v1";
 const PENDING_LOGIN_MAX_AGE_MS = 15 * 60 * 1000;
 
 function readPendingLogin(): PendingLogin | null {
@@ -91,7 +91,7 @@ export function CircleWalletOnboarding({
     try {
       // Required only to authorize future Circle hosted challenges. It is scoped
       // to this browser tab and is never written to localStorage or a URL.
-      window.sessionStorage.setItem(CIRCLE_AUTH_KEY, JSON.stringify(auth));
+      storeCircleTabAuth(auth);
     } catch {
       // A session is still valid; a later Circle transaction will request login again.
     }
