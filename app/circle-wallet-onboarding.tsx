@@ -14,6 +14,7 @@ type CircleSdk = {
   updateConfigs(configs: object, onLoginComplete: (error: { message: string } | undefined, result: CircleLoginResult | undefined) => void): void;
   performLogin(provider: unknown): Promise<void>;
   verifyOtp(): void;
+  setOnResendOtpEmail(callback: () => void): void;
   setAuthentication(auth: CircleLoginResult): void;
   execute(challengeId: string, onCompleted?: (error: { message: string } | undefined) => void): void;
 };
@@ -22,6 +23,8 @@ type PendingLogin = {
   deviceToken: string;
   deviceEncryptionKey: string;
   otpToken?: string;
+  email?: string;
+  deviceId?: string;
   createdAt: number;
 };
 
@@ -151,6 +154,7 @@ export function CircleWalletOnboarding({
           deviceToken: pending.deviceToken,
           deviceEncryptionKey: pending.deviceEncryptionKey,
           ...(pending.otpToken ? { otpToken: pending.otpToken } : {}),
+          ...(pending.email ? { email: { email: pending.email } } : {}),
           ...(googleClientId ? {
             google: {
               clientId: googleClientId,
@@ -163,12 +167,31 @@ export function CircleWalletOnboarding({
     };
     if (sdkRef.current) {
       sdkRef.current.updateConfigs(configs, loginCallback);
+
+      if (pending?.email && pending.deviceId) {
+        const resendPending = pending;
+        sdkRef.current.setOnResendOtpEmail(() => {
+          const activeSdk = sdkRef.current;
+          if (activeSdk) {
+            void resendEmailOtp(resendPending, activeSdk);
+          }
+        });
+      }
+
       socialProviderRef.current = "Google";
       return sdkRef.current;
     }
 
     const sdk = new module.W3SSdk(configs, loginCallback) as unknown as CircleSdk;
     sdkRef.current = sdk;
+
+    if (pending?.email && pending.deviceId) {
+      const resendPending = pending;
+      sdk.setOnResendOtpEmail(() => {
+        void resendEmailOtp(resendPending, sdk);
+      });
+    }
+
     // v1.1.11 exports W3SSdk only; its installed runtime compares the provider
     // to the documented enum value SocialLoginProvider.GOOGLE ("Google").
     socialProviderRef.current = "Google";
@@ -204,6 +227,49 @@ export function CircleWalletOnboarding({
     return sdkRef.current || setupSdk(null);
   }
 
+  async function resendEmailOtp(pending: PendingLogin, sdk: CircleSdk) {
+    if (!pending.email || !pending.deviceId) return;
+
+    setError("");
+    setBusy("Sending a new verification code...");
+
+    try {
+      const device = await backendApi.circle.emailDeviceToken(
+        pending.deviceId,
+        pending.email,
+        crypto.randomUUID(),
+      );
+
+      const nextPending: PendingLogin = {
+        ...device,
+        email: pending.email,
+        deviceId: pending.deviceId,
+        createdAt: Date.now(),
+      };
+
+      storePendingLogin(nextPending);
+
+      const configuredSdk = await setupSdk(nextPending);
+      if (!configuredSdk) {
+        throw new Error("Circle wallet is not configured.");
+      }
+
+      // The hosted OTP iframe still contains the previous otpToken.
+      // Re-open it so Circle receives the newly issued verification session.
+      document.getElementById("sdkIframe")?.remove();
+
+      setBusy("Enter the new verification code...");
+      configuredSdk.verifyOtp();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "A new verification code could not be sent.",
+      );
+      setBusy("");
+    }
+  }
+
   async function continueWithGoogle() {
     if (!appId || !googleClientId) return;
     setError("");
@@ -225,16 +291,29 @@ export function CircleWalletOnboarding({
   }
 
   async function continueWithEmail() {
-    if (!appId || !email.trim()) return;
+    const normalizedEmail = email.trim();
+    if (!appId || !normalizedEmail) return;
     setError("");
     setBusy("Sending verification email...");
     try {
       const sdk = await getSdk();
       if (!sdk) throw new Error("Circle wallet is not configured.");
       const deviceId = await sdk.getDeviceId();
-      const device = await backendApi.circle.emailDeviceToken(deviceId, email.trim(), crypto.randomUUID());
-      storePendingLogin({ ...device, createdAt: Date.now() });
-      const configuredSdk = await setupSdk(readPendingLogin());
+      const device = await backendApi.circle.emailDeviceToken(
+        deviceId,
+        normalizedEmail,
+        crypto.randomUUID(),
+      );
+
+      const pending: PendingLogin = {
+        ...device,
+        email: normalizedEmail,
+        deviceId,
+        createdAt: Date.now(),
+      };
+
+      storePendingLogin(pending);
+      const configuredSdk = await setupSdk(pending);
       if (!configuredSdk) throw new Error("Circle wallet is not configured.");
       setBusy("Open the verification from Circle...");
       configuredSdk.verifyOtp();
