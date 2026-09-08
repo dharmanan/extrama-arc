@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS action_authorizations (
   verified_at TIMESTAMPTZ,
   authorization_token_hash CHAR(64),
   authorization_expires_at TIMESTAMPTZ,
+  external_state VARCHAR(32),
+  verified_tx_hash VARCHAR(66),
   consumed_at TIMESTAMPTZ,
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -98,6 +100,12 @@ CREATE INDEX IF NOT EXISTS action_authorizations_user_idx
 CREATE INDEX IF NOT EXISTS action_authorizations_token_idx
   ON action_authorizations(authorization_token_hash)
   WHERE authorization_token_hash IS NOT NULL;
+
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS external_state VARCHAR(32);
+
+ALTER TABLE action_authorizations
+  ADD COLUMN IF NOT EXISTS verified_tx_hash VARCHAR(66);
 
 -- Durable settlement evidence, written before settleRound is broadcast.
 -- canonical_evidence_json is TEXT, not JSONB, deliberately: PostgreSQL JSONB

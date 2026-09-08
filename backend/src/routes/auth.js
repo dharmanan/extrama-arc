@@ -253,14 +253,16 @@ router.post('/wallet-login/finish', finishLimiter, async (req, res, next) => {
   try {
     const { ownerAddress, challengeId, signature } = walletLoginFinishSchema.parse(req.body);
     const normalized = ownerAddress.toLowerCase();
+    const expectedMessage = walletLoginMessage(normalized, challengeId);
     const { rows } = await db.query(
-      `DELETE FROM auth_challenges
+      `SELECT challenge
+         FROM auth_challenges
         WHERE id = $1
           AND purpose = 'wallet_login'
           AND challenge = $2
           AND expires_at > NOW()
-        RETURNING challenge`,
-      [challengeId, walletLoginMessage(normalized, challengeId)],
+        LIMIT 1`,
+      [challengeId, expectedMessage],
     );
 
     if (!rows.length) {
@@ -275,6 +277,19 @@ router.post('/wallet-login/finish', finishLimiter, async (req, res, next) => {
     }
     if (recovered !== normalized) {
       return res.status(401).json({ error: 'invalid_wallet_signature' });
+    }
+
+    const consumed = await db.query(
+      `DELETE FROM auth_challenges
+        WHERE id = $1
+          AND purpose = 'wallet_login'
+          AND challenge = $2
+          AND expires_at > NOW()
+        RETURNING id`,
+      [challengeId, expectedMessage],
+    );
+    if (!consumed.rows.length) {
+      return res.status(400).json({ error: 'wallet_challenge_expired' });
     }
 
     const user = await findOrCreateUser(normalized);

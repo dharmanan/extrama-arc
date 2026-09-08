@@ -41,9 +41,15 @@ function assertPayload(payload) {
     typeof payload.nonce !== 'string' ||
     payload.nonce.length < 16 ||
     !payload.expiresAt ||
-    Date.parse(payload.expiresAt) <= Date.now()
+    Number.isNaN(Date.parse(payload.expiresAt))
   ) {
     throw new Error('action_authorization_invalid');
+  }
+}
+
+function assertPayloadFresh(payload) {
+  if (Date.parse(payload.expiresAt) <= Date.now()) {
+    throw new Error('action_authorization_expired');
   }
 }
 
@@ -127,6 +133,7 @@ function transactionRequest({ from, to, data }) {
 
 async function prepareExternalEntry(payload, dependencies = {}) {
   assertPayload(payload);
+  assertPayloadFresh(payload);
   const state = await (dependencies.readLiveState || readLiveState)(payload);
   assertEntryAvailable(payload, state);
 
@@ -196,6 +203,7 @@ function assertTransaction(tx, request) {
 
 async function verifyExternalApprovalReceipt(payload, txHash, dependencies = {}) {
   assertPayload(payload);
+  assertPayloadFresh(payload);
   if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     throw new Error('entry_txhash_invalid');
   }
@@ -317,6 +325,7 @@ async function verifyExternalEntryReceipt(payload, txHash, dependencies = {}) {
 module.exports = {
   STAKE_AMOUNT,
   assertPayload,
+  assertPayloadFresh,
   assertTransaction,
   prepareExternalEntry,
   verifyExternalApprovalReceipt,

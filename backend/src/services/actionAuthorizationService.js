@@ -456,12 +456,18 @@ async function getConsumedAction(userId, actionId, expectedActionType) {
   }
 
   const { rows } = await db.query(
-    `SELECT id, action_type, payload_hash, payload_json, consumed_at
+    `SELECT id, action_type, payload_hash, payload_json, consumed_at,
+            external_state, authorization_expires_at, verified_tx_hash
        FROM action_authorizations
       WHERE id = $1
         AND user_id = $2
         AND action_type = $3
         AND consumed_at IS NOT NULL
+        AND (
+          payload_json->>'executionMode' NOT IN ('EXTERNAL_WALLET', 'EXTERNAL_OWNER')
+          OR authorization_expires_at IS NULL
+          OR authorization_expires_at > NOW()
+        )
       LIMIT 1`,
     [actionId, userId, expectedActionType],
   );
@@ -474,6 +480,9 @@ async function getConsumedAction(userId, actionId, expectedActionType) {
     payloadHash: rows[0].payload_hash,
     payload: rows[0].payload_json,
     consumedAt: rows[0].consumed_at,
+    externalState: rows[0].external_state,
+    authorizationExpiresAt: rows[0].authorization_expires_at,
+    verifiedTxHash: rows[0].verified_tx_hash,
   };
 }
 
@@ -502,26 +511,170 @@ async function getPendingExternalAction(userId, actionId, expectedActionType, wa
   };
 }
 
-async function markExternalApprovalVerified(userId, actionId, walletAddress) {
-  const { rowCount } = await db.query(
+async function initializeExternalEntryState(userId, actionId, walletAddress, state) {
+  if (!['APPROVAL_REQUIRED', 'ENTRY_READY'].includes(state)) {
+    throw new Error('action_authorization_invalid');
+  }
+
+  const { rows } = await db.query(
     `UPDATE action_authorizations
-        SET verified_at = NOW()
+        SET external_state = $4,
+            authorization_expires_at = CASE
+              WHEN $4 = 'ENTRY_READY' THEN NOW() + INTERVAL '10 minutes'
+              ELSE authorization_expires_at
+            END
       WHERE id = $1
         AND user_id = $2
         AND action_type = 'ENTRY'
         AND LOWER(payload_json->>'walletAddress') = LOWER($3)
         AND payload_json->>'executionMode' = 'EXTERNAL_WALLET'
+        AND external_state IS NULL
         AND consumed_at IS NULL
-        AND expires_at > NOW()`,
+        AND expires_at > NOW()
+      RETURNING external_state, authorization_expires_at`,
+    [actionId, userId, walletAddress, state],
+  );
+
+  if (!rows.length) throw new Error('action_authorization_invalid');
+  return {
+    externalState: rows[0].external_state,
+    authorizationExpiresAt: rows[0].authorization_expires_at,
+  };
+}
+
+async function getPendingExternalEntryAction(userId, actionId, walletAddress, expectedState) {
+  if (expectedState !== 'APPROVAL_REQUIRED') {
+    throw new Error('action_authorization_invalid');
+  }
+
+  const { rows } = await db.query(
+    `SELECT id, action_type, payload_hash, payload_json, external_state, expires_at
+       FROM action_authorizations
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND payload_json->>'executionMode' = 'EXTERNAL_WALLET'
+        AND external_state = $4
+        AND consumed_at IS NULL
+        AND expires_at > NOW()
+      LIMIT 1`,
+    [actionId, userId, walletAddress, expectedState],
+  );
+
+  if (!rows.length) throw new Error('action_authorization_invalid');
+  return {
+    id: rows[0].id,
+    actionType: rows[0].action_type,
+    payloadHash: rows[0].payload_hash,
+    payload: rows[0].payload_json,
+    externalState: rows[0].external_state,
+    expiresAt: rows[0].expires_at,
+  };
+}
+
+async function completeExternalEntryApproval(userId, actionId, walletAddress) {
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET external_state = 'ENTRY_READY',
+            verified_at = NOW(),
+            authorization_expires_at = NOW() + INTERVAL '10 minutes'
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND payload_json->>'executionMode' = 'EXTERNAL_WALLET'
+        AND external_state = 'APPROVAL_REQUIRED'
+        AND consumed_at IS NULL
+        AND expires_at > NOW()
+      RETURNING payload_hash, payload_json, external_state, verified_at, authorization_expires_at`,
     [actionId, userId, walletAddress],
   );
-  if (rowCount !== 1) throw new Error('action_authorization_invalid');
+
+  if (!rows.length) throw new Error('action_authorization_invalid');
+  return {
+    payloadHash: rows[0].payload_hash,
+    payload: rows[0].payload_json,
+    externalState: rows[0].external_state,
+    verifiedAt: rows[0].verified_at,
+    authorizationExpiresAt: rows[0].authorization_expires_at,
+  };
+}
+
+async function bindExternalEntryTransaction(userId, actionId, walletAddress, txHash) {
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET external_state = 'ENTRY_SUBMITTED',
+            verified_tx_hash = $4,
+            consumed_at = NOW(),
+            authorization_expires_at = NOW() + INTERVAL '10 minutes'
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND payload_json->>'executionMode' = 'EXTERNAL_WALLET'
+        AND external_state = 'ENTRY_READY'
+        AND consumed_at IS NULL
+        AND COALESCE(authorization_expires_at, expires_at) > NOW()
+      RETURNING id, payload_hash, payload_json, external_state, verified_tx_hash, consumed_at, authorization_expires_at`,
+    [actionId, userId, walletAddress, txHash],
+  );
+
+  if (rows.length) {
+    return {
+      id: rows[0].id,
+      payloadHash: rows[0].payload_hash,
+      payload: rows[0].payload_json,
+      externalState: rows[0].external_state,
+      verifiedTxHash: rows[0].verified_tx_hash,
+      consumedAt: rows[0].consumed_at,
+      authorizationExpiresAt: rows[0].authorization_expires_at,
+    };
+  }
+
+  const existing = await getConsumedAction(userId, actionId, 'ENTRY');
+  if (
+    !['ENTRY_SUBMITTED', 'VERIFIED'].includes(existing.externalState) ||
+    !existing.verifiedTxHash ||
+    existing.verifiedTxHash.toLowerCase() !== txHash.toLowerCase() ||
+    existing.payload.walletAddress.toLowerCase() !== walletAddress.toLowerCase()
+  ) {
+    throw new Error('action_authorization_invalid');
+  }
+  return existing;
+}
+
+async function markExternalEntryReceiptVerified(userId, actionId, walletAddress, txHash) {
+  const { rows } = await db.query(
+    `UPDATE action_authorizations
+        SET external_state = 'VERIFIED',
+            verified_at = NOW()
+      WHERE id = $1
+        AND user_id = $2
+        AND action_type = 'ENTRY'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND payload_json->>'executionMode' = 'EXTERNAL_WALLET'
+        AND external_state IN ('ENTRY_SUBMITTED', 'VERIFIED')
+        AND LOWER(verified_tx_hash) = LOWER($4)
+        AND consumed_at IS NOT NULL
+        AND authorization_expires_at > NOW()
+      RETURNING external_state, verified_at, verified_tx_hash`,
+    [actionId, userId, walletAddress, txHash],
+  );
+
+  if (!rows.length) throw new Error('action_authorization_invalid');
+  return {
+    externalState: rows[0].external_state,
+    verifiedAt: rows[0].verified_at,
+    verifiedTxHash: rows[0].verified_tx_hash,
+  };
 }
 
 async function consumeExternalAction(userId, actionId, expectedActionType, walletAddress) {
   const { rows } = await db.query(
     `UPDATE action_authorizations
-        SET consumed_at = NOW()
+        SET consumed_at = NOW(),
+            authorization_expires_at = NOW() + INTERVAL '10 minutes'
       WHERE id = $1
         AND user_id = $2
         AND action_type = $3
@@ -556,6 +709,10 @@ module.exports = {
   consumeVerifiedAction,
   getConsumedAction,
   getPendingExternalAction,
-  markExternalApprovalVerified,
+  initializeExternalEntryState,
+  getPendingExternalEntryAction,
+  completeExternalEntryApproval,
+  bindExternalEntryTransaction,
+  markExternalEntryReceiptVerified,
   consumeExternalAction,
 };

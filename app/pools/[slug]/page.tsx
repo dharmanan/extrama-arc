@@ -397,13 +397,22 @@ export default function PoolDetailPage() {
 
       void refreshEntries(state.pool);
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "Passkey verification failed.";
+      const isExternalWallet = executionMode === "EXTERNAL_WALLET";
+      const message = cause instanceof Error
+        ? cause.message
+        : isExternalWallet
+          ? "Wallet transaction verification failed."
+          : "Passkey verification failed.";
       if (message === "authentication_required" || message === "invalid_session" || message === "session_expired") {
         setEntryError("Your EXTREMA session is locked or expired. Reconnect your wallet, then try again.");
       } else if (message === "entry_insufficient_usdc") {
-        setEntryError("You need at least 1 USDC in your EXTREMA wallet to enter.");
+        setEntryError(isExternalWallet
+          ? "You need at least 1 USDC in your connected wallet to enter."
+          : "You need at least 1 USDC in your EXTREMA wallet to enter.");
       } else if (message === "entry_already_entered") {
-        setEntryError("This EXTREMA wallet has already entered this round.");
+        setEntryError(isExternalWallet
+          ? "This connected wallet has already entered this round."
+          : "This EXTREMA wallet has already entered this round.");
       } else if (message === "entry_price_taken") {
         setEntryError("That exact price has already been taken. Choose another price.");
       } else if (message === "entry_round_not_available") {

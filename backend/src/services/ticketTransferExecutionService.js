@@ -27,9 +27,15 @@ function assertTransferPayload(payload) {
     typeof payload.nonce !== 'string' ||
     payload.nonce.length < 16 ||
     !payload.expiresAt ||
-    Date.parse(payload.expiresAt) <= Date.now()
+    Number.isNaN(Date.parse(payload.expiresAt))
   ) {
     throw new Error('action_authorization_invalid');
+  }
+}
+
+function assertTransferPayloadFresh(payload) {
+  if (Date.parse(payload.expiresAt) <= Date.now()) {
+    throw new Error('action_authorization_expired');
   }
 }
 
@@ -41,6 +47,7 @@ function requireSuccessfulReceipt(receipt) {
 
 async function executeTicketTransfer(userId, payload) {
   assertTransferPayload(payload);
+  assertTransferPayloadFresh(payload);
   if (payload.executionMode !== 'BACKEND_WALLET') {
     throw new Error('transfer_execution_mode_mismatch');
   }
@@ -114,6 +121,7 @@ async function executeTicketTransfer(userId, payload) {
 
 async function buildExternalTransferTransactionRequest(payload) {
   assertTransferPayload(payload);
+  assertTransferPayloadFresh(payload);
   if (!['EXTERNAL_WALLET', 'EXTERNAL_OWNER'].includes(payload.executionMode)) {
     throw new Error('transfer_execution_mode_mismatch');
   }
@@ -206,5 +214,6 @@ async function verifyExternalTransferReceipt(payload, txHash) {
 module.exports = {
   executeTicketTransfer,
   buildExternalTransferTransactionRequest,
+  assertTransferPayloadFresh,
   verifyExternalTransferReceipt,
 };

@@ -309,7 +309,14 @@ assert.match(externalEntryStart, /executionMode: EXECUTION_MODES\.EXTERNAL_WALLE
 assert.ok(!externalEntryStart.includes('executeEntry('));
 assert.match(actions, /'\/entry\/approval\/verify'/);
 assert.match(actions, /'\/entry\/verify'/);
-assert.match(actionAuth, /getPendingExternalAction/);
+assert.match(actions, /'APPROVAL_REQUIRED'/);
+assert.match(actions, /bindExternalEntryTransaction/);
+assert.match(actionAuth, /initializeExternalEntryState/);
+assert.match(actionAuth, /getPendingExternalEntryAction/);
+assert.match(actionAuth, /completeExternalEntryApproval/);
+assert.match(actionAuth, /bindExternalEntryTransaction/);
+assert.match(actionAuth, /markExternalEntryReceiptVerified/);
+assert.match(actionAuth, /authorization_expires_at/);
 assert.match(actionAuth, /consumeExternalAction/);
 assert.match(clientActions, /authorization === "EXTERNAL_WALLET_SESSION"/);
 assert.match(clientActions, /verifyEntryApproval/);
@@ -317,6 +324,9 @@ assert.match(clientActions, /verifyEntry\(start\.actionId/);
 
 assert.match(transfers, /buildExternalTransferTransactionRequest/);
 assert.match(transfers, /verifyExternalTransferReceipt/);
+assert.match(transfers, /assertTransferPayloadFresh/);
+assert.match(schema, /external_state VARCHAR\(32\)/);
+assert.match(schema, /verified_tx_hash VARCHAR\(66\)/);
 assert.match(claims, /buildExternalClaimTransactionRequest/);
 assert.match(claims, /verifyExternalClaimReceipt/);
 assert.match(refunds, /buildExternalRefundTransactionRequest/);

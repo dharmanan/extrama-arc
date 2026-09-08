@@ -211,6 +211,12 @@ router.post('/entry/start', startLimiter, async (req, res, next) => {
         executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
       });
       const prepared = await externalEntryExecutionService.prepareExternalEntry(action.payload);
+      await actionAuthorizationService.initializeExternalEntryState(
+        req.auth.userId,
+        action.id,
+        walletAddress,
+        prepared.step,
+      );
       return res.json({
         actionId: action.id,
         action: action.payload,
@@ -267,17 +273,17 @@ router.post('/entry/approval/verify', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, txHash } = entryVerifySchema.parse(req.body);
     const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
-    const action = await actionAuthorizationService.getPendingExternalAction(
+    const action = await actionAuthorizationService.getPendingExternalEntryAction(
       req.auth.userId,
       actionId,
-      'ENTRY',
       walletAddress,
+      'APPROVAL_REQUIRED',
     );
     const result = await externalEntryExecutionService.verifyExternalApprovalReceipt(
       action.payload,
       txHash,
     );
-    await actionAuthorizationService.markExternalApprovalVerified(
+    await actionAuthorizationService.completeExternalEntryApproval(
       req.auth.userId,
       actionId,
       walletAddress,
@@ -298,21 +304,22 @@ router.post('/entry/verify', finishLimiter, async (req, res, next) => {
   try {
     const { actionId, txHash } = entryVerifySchema.parse(req.body);
     const walletAddress = assertExternalSessionAddress(req.auth, req.auth.walletAddress);
-    const action = await actionAuthorizationService.getPendingExternalAction(
+    const action = await actionAuthorizationService.bindExternalEntryTransaction(
       req.auth.userId,
       actionId,
-      'ENTRY',
       walletAddress,
+      txHash,
     );
+    assertExternalSessionAddress(req.auth, action.payload.walletAddress);
     const result = await externalEntryExecutionService.verifyExternalEntryReceipt(
       action.payload,
       txHash,
     );
-    await actionAuthorizationService.consumeExternalAction(
+    await actionAuthorizationService.markExternalEntryReceiptVerified(
       req.auth.userId,
       actionId,
-      'ENTRY',
       walletAddress,
+      txHash,
     );
     res.json({
       confirmed: true,
