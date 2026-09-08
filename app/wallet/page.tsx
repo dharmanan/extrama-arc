@@ -505,7 +505,13 @@ export default function WalletPage() {
 
             <section className="ex-entry ex-wallet-session">
               <h3 className="ex-entry__title">{t.wallet.sessionTitle}</h3>
-              <p className="ex-entry__note">{executionMode === "EXTERNAL_WALLET" ? t.wallet.externalSessionBody : t.wallet.sessionBody}</p>
+              <p className="ex-entry__note">
+                {executionMode === "EXTERNAL_WALLET"
+                  ? t.wallet.externalSessionBody
+                  : executionMode === "CIRCLE_USER_WALLET"
+                    ? t.wallet.circleSessionBody
+                    : t.wallet.sessionBody}
+              </p>
               <button className="ex-btn ex-btn--ghost" type="button" onClick={handleLock}>
                 {t.wallet.disconnectSession}
               </button>
