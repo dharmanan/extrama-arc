@@ -360,7 +360,14 @@ for (const functionName of [
 assert.match(actions, /assertExternalSessionAddress\(req\.auth, action\.payload\.walletAddress\)/);
 assert.match(actions, /circle_wallet_not_configured/);
 assert.ok(!walletPage.includes('createCircleWallet'));
-assert.ok(!walletPage.includes('Gateway'));
+
+// The multi wallet preparation phase blocked every Gateway reference on the
+// wallet page because no Gateway capability existed yet. C3 ships a real,
+// supplemental balance read, so the guard is narrowed instead of dropped: the
+// page may read the unified balance, but it must not carry a Gateway execution
+// path of its own.
+assert.ok(walletPage.includes('backendApi.wallet.gatewayBalance()'));
+assert.ok(!/gatewayTransfer|gatewayDeposit|gatewayMint|burnIntent/i.test(walletPage));
 
 console.log('multi-wallet-execution: PASS');
 }

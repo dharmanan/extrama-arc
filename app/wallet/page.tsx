@@ -36,6 +36,15 @@ function formatWalletMarketPrice(value: string, locale: "en" | "tr") {
   }).format(numeric);
 }
 
+// Gateway balances arrive as canonical 6 decimal raw units. The backend already
+// validates them, but the wallet page must never crash on an unexpected value,
+// so anything that is not a positive integer string counts as no Gateway
+// balance. Digit inspection keeps this exact at any size without BigInt, which
+// this project's ES2017 target does not allow as a literal.
+function hasPositiveRawAmount(value: string) {
+  return /^\d+$/.test(value) && !/^0+$/.test(value);
+}
+
 function WalletLiveMarket() {
   const { locale } = useLocale();
   const [prices, setPrices] = useState<Record<string, WalletMarketPrice>>({});
@@ -143,6 +152,7 @@ export default function WalletPage() {
   const [chainState, setChainState] = useState<Awaited<ReturnType<typeof backendApi.wallet.chainState>> | null>(null);
   const [chainBusy, setChainBusy] = useState("");
   const [chainError, setChainError] = useState("");
+  const [gateway, setGateway] = useState<Awaited<ReturnType<typeof backendApi.wallet.gatewayBalance>> | null>(null);
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
   const [walletNotice, setWalletNotice] = useState("");
@@ -236,6 +246,32 @@ export default function WalletPage() {
       void refreshChainState();
     }
   }, [step, walletStatus, walletAddress]);
+
+  // Gateway is supplemental and Circle only. It is read separately from the Arc
+  // chain state so that a Gateway outage can never surface as a wallet error,
+  // an Arc balance failure or a broken session. Every failure resolves to null,
+  // which simply hides the Gateway figure.
+  async function refreshGatewayBalance() {
+    try {
+      setGateway(await backendApi.wallet.gatewayBalance());
+    } catch {
+      setGateway(null);
+    }
+  }
+
+  useEffect(() => {
+    if (
+      step === "ready" &&
+      walletStatus === "ready" &&
+      walletAddress &&
+      executionMode === "CIRCLE_USER_WALLET"
+    ) {
+      void refreshGatewayBalance();
+      return;
+    }
+
+    setGateway(null);
+  }, [step, walletStatus, walletAddress, executionMode]);
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -355,6 +391,8 @@ export default function WalletPage() {
     setStep("owner");
   }
 
+  const gatewayFunded = gateway !== null && hasPositiveRawAmount(gateway.totalRaw);
+
   if (step === "recovery" && walletAddress && privateKey) {
     return (
       <main className="ex-wallet-page">
@@ -456,7 +494,10 @@ export default function WalletPage() {
                   </button>
                 </div>
               ) : chainState ? (
-                <div className="ex-wallet-summary">
+                <div
+                  className="ex-wallet-summary"
+                  data-columns={gatewayFunded ? "3" : "2"}
+                >
                   <div className="ex-wallet-summary__item">
                     <span>Network</span>
                     <strong className="ex-num">
@@ -470,6 +511,15 @@ export default function WalletPage() {
                       {chainState.usdc.balanceFormatted} {chainState.usdc.symbol}
                     </strong>
                   </div>
+
+                  {gateway && gatewayFunded && (
+                    <div className="ex-wallet-summary__item">
+                      <span>{t.wallet.gatewayBalance}</span>
+                      <strong className="ex-num">
+                        {gateway.totalUsdc} {gateway.token}
+                      </strong>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <p className="ex-wallet-ledger__pending">{chainBusy || t.wallet.balanceNotLoaded}</p>
@@ -478,7 +528,15 @@ export default function WalletPage() {
               {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
 
               <div className="ex-wallet-actions">
-                <button className="ex-btn ex-btn--ghost" type="button" onClick={refreshChainState} disabled={Boolean(chainBusy)}>
+                <button
+                  className="ex-btn ex-btn--ghost"
+                  type="button"
+                  onClick={() => {
+                    void refreshChainState();
+                    if (executionMode === "CIRCLE_USER_WALLET") void refreshGatewayBalance();
+                  }}
+                  disabled={Boolean(chainBusy)}
+                >
                   {chainBusy || t.wallet.refreshBalance}
                 </button>
                 <a

@@ -76,8 +76,41 @@ const ADDRESS = '0x1111111111111111111111111111111111111111';
   assert.ok(!gatewaySection.includes('req.body'));
   assert.ok(!gatewaySection.includes('req.query'));
 
+  const walletPage = fs.readFileSync(
+    path.join(__dirname, '../../app/wallet/page.tsx'),
+    'utf8',
+  );
+
+  const gatewayReader = walletPage.slice(
+    walletPage.indexOf('async function refreshGatewayBalance()'),
+    walletPage.indexOf('useEffect', walletPage.indexOf('async function refreshGatewayBalance()')),
+  );
+
+  assert.ok(gatewayReader.length > 0, 'refreshGatewayBalance must exist');
+
+  // A Gateway outage is supplemental. It may only clear its own state; it must
+  // never fabricate an Arc balance, raise a wallet error or expire the session.
+  assert.ok(gatewayReader.includes('setGateway(null)'));
+  assert.ok(!gatewayReader.includes('setChainState'));
+  assert.ok(!gatewayReader.includes('setChainError'));
+  assert.ok(!gatewayReader.includes('setSessionNeedsAuth'));
+  assert.ok(!gatewayReader.includes('setError'));
+
+  // The Gateway read is Circle only, and the figure is shown only when the
+  // unified balance is actually funded.
+  assert.match(
+    walletPage,
+    /executionMode === "CIRCLE_USER_WALLET"\s*\)\s*\{\s*void refreshGatewayBalance\(\);/,
+  );
+  assert.match(
+    walletPage,
+    /const gatewayFunded = gateway !== null && hasPositiveRawAmount\(gateway\.totalRaw\);/,
+  );
+  assert.match(walletPage, /\{gateway && gatewayFunded && \(/);
+
   console.log('GATEWAY_SERVICE=PASS');
   console.log('GATEWAY_ROUTE=PASS');
+  console.log('GATEWAY_WALLET_UI=PASS');
 })().catch((error) => {
   console.error(error);
   process.exit(1);
