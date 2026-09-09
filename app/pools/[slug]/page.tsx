@@ -12,6 +12,11 @@ import {
 } from "../../lib/backend-api";
 import { assetConfigs } from "../../lib/asset-config";
 import { confirmEntry } from "../../lib/entry-execution";
+import {
+  clearCircleEntryRecovery,
+  matchesCircleEntryRecovery,
+  readCircleEntryRecovery,
+} from "../../lib/circle-auth";
 import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 import { useCopy, useLocale } from "../../i18n";
 import { useWalletSession } from "../../wallet-session";
@@ -241,9 +246,7 @@ export default function PoolDetailPage() {
   const circleEntryRequestId = useRef<string | null>(null);
   const [entrySuccess, setEntrySuccess] = useState<{
     ticketId: string;
-    entryTxHash: string;
-    explorerUrl: string;
-    approvalTxHash: string | null;
+    explorerUrl: string | null;
   } | null>(null);
 
   useEffect(() => {
@@ -265,6 +268,31 @@ export default function PoolDetailPage() {
         throw new Error("round_entries_identity_mismatch");
       }
       if (requestId !== entriesRequestId.current) return;
+
+      const ownEntry = address
+        ? result.entries.find(
+            (entry) => entry.originalEntrant.toLowerCase() === address.toLowerCase(),
+          ) ?? null
+        : null;
+
+      if (executionMode === "CIRCLE_USER_WALLET" && ownEntry) {
+        const recovery = readCircleEntryRecovery();
+        const predictionPriceCents = Number(ownEntry.predictionPriceCents);
+
+        if (
+          recovery &&
+          Number.isSafeInteger(predictionPriceCents) &&
+          matchesCircleEntryRecovery(recovery, {
+            poolAddress: pool.poolAddress,
+            roundId: pool.round.roundId,
+            predictionPriceCents,
+          })
+        ) {
+          clearCircleEntryRecovery();
+          circleEntryRequestId.current = null;
+        }
+      }
+
       setEntriesState(result);
       setEntriesError(false);
     } catch {
@@ -272,7 +300,7 @@ export default function PoolDetailPage() {
       setEntriesState(null);
       setEntriesError(true);
     }
-  }, []);
+  }, [address, executionMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -397,9 +425,7 @@ export default function PoolDetailPage() {
 
       setEntrySuccess({
         ticketId: result.ticketId,
-        entryTxHash: result.entryTxHash,
         explorerUrl: result.explorerUrl,
-        approvalTxHash: result.approvalTxHash,
       });
 
       void refreshEntries(state.pool);
@@ -413,12 +439,63 @@ export default function PoolDetailPage() {
           : isCircleWallet
             ? "Circle transaction verification failed."
           : "Passkey verification failed.";
+
+      const ambiguousCircleResult =
+        isCircleWallet &&
+        (
+          message === "invalid_backend_response" ||
+          message === "backend_unreachable" ||
+          message === "circle_transaction_pending" ||
+          message === "circle_service_unavailable"
+        );
+
+      if (ambiguousCircleResult && address) {
+        try {
+          const [latestRound, latestEntries] = await Promise.all([
+            backendApi.rounds.get(state.pool.slug),
+            backendApi.rounds.entries(state.pool.slug, state.pool.round.roundId),
+          ]);
+
+          const recoveredEntry = latestEntries.entries.find(
+            (entry) =>
+              entry.originalEntrant.toLowerCase() === address.toLowerCase() &&
+              entry.predictionPriceCents === String(predictionPriceCents),
+          );
+
+          if (recoveredEntry) {
+            clearCircleEntryRecovery();
+            circleEntryRequestId.current = null;
+            setState(latestRound);
+            setEntriesState(latestEntries);
+            setEntriesError(false);
+            setPrediction("");
+            setEntryError("");
+            setEntrySuccess({
+              ticketId: recoveredEntry.ticketId,
+              explorerUrl: null,
+            });
+            return;
+          }
+        } catch {
+          // Keep the original ambiguous state below. Never resubmit automatically.
+        }
+      }
+
       if (message === "authentication_required" || message === "invalid_session" || message === "session_expired") {
         setEntryError("Your EXTREMA session is locked or expired. Reconnect your wallet, then try again.");
       } else if (message === "circle_reauthentication_required" || message === "circle_authentication_invalid") {
         setEntryError("Your Circle authorization is no longer available in this tab. Reconnect your Circle wallet, then try again.");
-      } else if (message === "circle_transaction_pending") {
-        setEntryError("Circle accepted the request but Arc confirmation is still pending. Please wait before retrying.");
+      } else if (
+        message === "circle_transaction_pending" ||
+        message === "invalid_backend_response" ||
+        message === "backend_unreachable" ||
+        message === "circle_service_unavailable"
+      ) {
+        setEntryError(
+          "We could not confirm the final transaction status yet. Do not submit again. Refresh the round in a moment.",
+        );
+      } else if (message === "circle_entry_authorization_invalid") {
+        setEntryError("This prediction session expired. Refresh the page and try again.");
       } else if (message === "entry_insufficient_usdc") {
         setEntryError(isExternalWallet
           ? "You need at least 1 USDC in your connected wallet to enter."
@@ -472,7 +549,6 @@ export default function PoolDetailPage() {
   const { pool, chain } = state;
   const config = assetConfigs[pool.asset];
   const phase = roundPhase(pool, now);
-  const canSubmit = pool.round.canEnter && phase.key === "ENTRY_OPEN";
 
   const ownEntry = address
     ? (entriesState?.entries ?? []).find(
@@ -480,6 +556,11 @@ export default function PoolDetailPage() {
       ) ?? null
     : null;
   const ownPriceCents = ownEntry ? parsePredictionCents(ownEntry.predictionPriceCents) : null;
+  const hasConfirmedEntry = Boolean(ownEntry || entrySuccess);
+  const canSubmit =
+    pool.round.canEnter &&
+    phase.key === "ENTRY_OPEN" &&
+    !hasConfirmedEntry;
 
   const completePrices = entriesState?.round.complete
     ? entriesState.entries
@@ -632,6 +713,15 @@ export default function PoolDetailPage() {
 
             {/* ---- Entry ---------------------------------------------- */}
             <div className="ex-entry">
+              {ownEntry ? (
+                <div className="ex-entry__msg" data-tone="ok">
+                  <p>
+                    <b>Prediction confirmed.</b> Ticket #{ownEntry.ticketId} is entered for this round.
+                  </p>
+                  <p>Your prediction: {formatPredictionPrice(ownEntry.predictionPriceCents, locale)}</p>
+                </div>
+              ) : (
+                <>
               <h3 className="ex-entry__title">{t.makePrediction}</h3>
               <p className="ex-entry__note">{t.onePredictionCosts}</p>
 
@@ -685,12 +775,16 @@ export default function PoolDetailPage() {
               {entrySuccess && (
                 <div className="ex-entry__msg" data-tone="ok">
                   <p><b>Prediction confirmed.</b> Ticket #{entrySuccess.ticketId} was minted on Arc Testnet.</p>
-                  <p>
-                    <a href={entrySuccess.explorerUrl} target="_blank" rel="noreferrer">
-                      View transaction on ArcScan
-                    </a>
-                  </p>
+                  {entrySuccess.explorerUrl && (
+                    <p>
+                      <a href={entrySuccess.explorerUrl} target="_blank" rel="noreferrer">
+                        View transaction on ArcScan
+                      </a>
+                    </p>
+                  )}
                 </div>
+              )}
+                </>
               )}
             </div>
           </section>
