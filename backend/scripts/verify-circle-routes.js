@@ -14,6 +14,8 @@ const entryService = fs.readFileSync(path.join(root, 'src/services/circleEntryEx
 
 assert.match(routes, /router\.post\('\/device-token\/social'/);
 assert.match(routes, /router\.post\('\/device-token\/email'/);
+assert.match(routes, /emailOtpLimiter/);
+assert.match(routes, /circle_email_otp_cooldown/);
 assert.match(routes, /router\.post\('\/wallet\/initialize'/);
 assert.match(routes, /router\.post\('\/session'/);
 assert.match(routes, /circleUserWalletService\.listArcEoa\(token\)/);

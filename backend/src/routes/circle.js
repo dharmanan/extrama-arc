@@ -12,6 +12,23 @@ const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
 const router = express.Router();
 const deviceLimiter = rateLimit({ windowMs: 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false });
+
+const emailOtpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  skipFailedRequests: true,
+  keyGenerator: (req) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const deviceId = String(req.body?.deviceId || '');
+    return `${email}:${deviceId}`;
+  },
+  handler: (req, res) => {
+    res.status(429).json({ error: 'circle_email_otp_cooldown' });
+  },
+});
+
 const walletLimiter = rateLimit({ windowMs: 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false });
 const readinessLimiter = rateLimit({ windowMs: 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false });
 
@@ -92,7 +109,7 @@ router.post('/device-token/social', deviceLimiter, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/device-token/email', deviceLimiter, async (req, res, next) => {
+router.post('/device-token/email', emailOtpLimiter, deviceLimiter, async (req, res, next) => {
   try {
     res.json(await circleUserWalletService.createEmailDeviceToken(emailSchema.parse(req.body)));
   } catch (error) { next(error); }

@@ -251,7 +251,12 @@ export function CircleWalletOnboarding({
     const now = Date.now();
     if (now < resendAllowedAtRef.current) {
       const seconds = Math.ceil((resendAllowedAtRef.current - now) / 1000);
-      setBusy(`A new code was already sent. Try again in ${seconds}s.`);
+
+      document.getElementById("sdkIframe")?.remove();
+
+      setResentOtpReady(true);
+      setResendSecondsLeft(seconds);
+      setBusy("");
       return;
     }
 
@@ -296,7 +301,9 @@ export function CircleWalletOnboarding({
 
       const message = cause instanceof Error ? cause.message : "";
 
-      if (message === "circle_email_otp_send_limit") {
+      if (message === "circle_email_otp_cooldown") {
+        setError("A verification code was already sent. Please wait 60 seconds before requesting another.");
+      } else if (message === "circle_email_otp_send_limit") {
         setError("You've requested several verification codes. Please try again in 60 minutes.");
       } else if (message === "circle_email_otp_attempt_limit") {
         setError("Too many verification attempts were made. Please try again in 60 minutes.");
@@ -385,6 +392,12 @@ export function CircleWalletOnboarding({
       };
 
       storePendingLogin(pending);
+
+      // The first OTP email also starts the resend cooldown.
+      // Circle's hosted Send again link remains visible, but pressing it
+      // during this window must not trigger another email.
+      resendAllowedAtRef.current = Date.now() + 60_000;
+
       const configuredSdk = await setupSdk(pending);
       if (!configuredSdk) throw new Error("Circle wallet is not configured.");
       setBusy("Open the verification from Circle...");
@@ -394,7 +407,9 @@ export function CircleWalletOnboarding({
 
       const message = cause instanceof Error ? cause.message : "";
 
-      if (message === "circle_email_otp_send_limit") {
+      if (message === "circle_email_otp_cooldown") {
+        setError("A verification code was already sent. Please wait 60 seconds before requesting another.");
+      } else if (message === "circle_email_otp_send_limit") {
         setError("You've requested several verification codes. Please try again in 60 minutes.");
       } else if (message === "circle_email_otp_attempt_limit") {
         setError("Too many verification attempts were made. Please try again in 60 minutes.");
