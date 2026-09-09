@@ -14,6 +14,7 @@ type CircleSdk = {
   updateConfigs(configs: object, onLoginComplete: (error: { message: string } | undefined, result: CircleLoginResult | undefined) => void): void;
   performLogin(provider: unknown): Promise<void>;
   verifyOtp(): void;
+  messageHandler(event: MessageEvent): void;
   setOnResendOtpEmail(callback: () => void): void;
   setAuthentication(auth: CircleLoginResult): void;
   execute(challengeId: string, onCompleted?: (error: { message: string } | undefined) => void): void;
@@ -265,11 +266,23 @@ export function CircleWalletOnboarding({
         throw new Error("Circle wallet is not configured.");
       }
 
-      // updateConfigs above already supplied the fresh Circle login tokens.
-      // Keep the existing hosted iframe mounted; verifyOtp reloads that same
-      // SDK iframe with the new verification session.
+      // updateConfigs above now contains the fresh Circle email-login tokens.
+      // Re-send the SDK configuration to the already-open hosted iframe without
+      // changing its src. Calling verifyOtp() here would reload/focus the Circle
+      // form and trigger browser password-manager UI.
+      const iframe = document.getElementById("sdkIframe");
+      if (!iframe) {
+        throw new Error("Circle verification window is not open.");
+      }
+
+      configuredSdk.messageHandler(
+        new MessageEvent("message", {
+          origin: "https://pw-auth.circle.com",
+          data: { onFrameReady: true },
+        }),
+      );
+
       setBusy("Code sent. Enter the new verification code.");
-      configuredSdk.verifyOtp();
     } catch (cause) {
       resendAllowedAtRef.current = 0;
       setError(
