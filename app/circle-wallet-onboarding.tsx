@@ -91,10 +91,26 @@ export function CircleWalletOnboarding({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [resentOtpReady, setResentOtpReady] = useState(false);
+  const [resendSecondsLeft, setResendSecondsLeft] = useState(0);
   const resendAllowedAtRef = useRef(0);
 
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
   const googleClientId = process.env.NEXT_PUBLIC_CIRCLE_GOOGLE_CLIENT_ID;
+
+  useEffect(() => {
+    if (!resentOtpReady) return;
+
+    const updateCountdown = () => {
+      const seconds = Math.max(
+        0,
+        Math.ceil((resendAllowedAtRef.current - Date.now()) / 1000),
+      );
+      setResendSecondsLeft(seconds);
+    };
+
+    const timer = window.setInterval(updateCountdown, 250);
+    return () => window.clearInterval(timer);
+  }, [resentOtpReady]);
 
   async function bindExtremaSession(auth: CircleLoginResult, sdk: CircleSdk) {
     setBusy("Preparing your Arc wallet...");
@@ -273,6 +289,7 @@ export function CircleWalletOnboarding({
       document.getElementById("sdkIframe")?.remove();
 
       setResentOtpReady(true);
+      setResendSecondsLeft(60);
       setBusy("");
     } catch (cause) {
       resendAllowedAtRef.current = 0;
@@ -348,6 +365,7 @@ export function CircleWalletOnboarding({
     if (!appId || !normalizedEmail) return;
     setError("");
     setResentOtpReady(false);
+    setResendSecondsLeft(0);
     setBusy("Sending verification email...");
     try {
       const sdk = await getSdk();
@@ -445,7 +463,9 @@ export function CircleWalletOnboarding({
       <p className="ex-wallet-panel__note">
         {busy ||
           (resentOtpReady
-            ? "A new verification code was sent. Enter the latest code."
+            ? resendSecondsLeft > 0
+              ? `A new code was sent. Enter the latest code. You can request another in ${resendSecondsLeft}s.`
+              : "A new code was sent. Enter the latest code. You can request another code now."
             : "Circle hosts authentication and approval; EXTREMA never receives your private key.")}
       </p>
       {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
