@@ -227,6 +227,27 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       return { challengeId };
     } catch (error) {
       if (error?.message?.startsWith('circle_')) throw error;
+
+      const upstreamStatus =
+        error?.response?.status ??
+        error?.status ??
+        null;
+      const circleCode = circleErrorCode(error);
+      const upstreamMessage =
+        typeof error?.message === 'string'
+          ? error.message.slice(0, 300)
+          : null;
+
+      console.error(
+        '[circle] contract execution challenge failed',
+        JSON.stringify({
+          upstreamStatus,
+          circleCode,
+          upstreamMessage,
+          errorName: error?.constructor?.name || null,
+        }),
+      );
+
       throw safeCircleError(error);
     }
   }
