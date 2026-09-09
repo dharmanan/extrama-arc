@@ -591,6 +591,20 @@ export type OwnedTicketsResponse = {
   executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
 };
 
+export type GatewayBalanceResponse = {
+  token: "USDC";
+  depositor: string;
+  totalRaw: string;
+  totalUsdc: string;
+  balances: Array<{
+    domain: number;
+    depositor: string;
+    balance: string;
+    balanceRaw: string;
+  }>;
+  executionMode: "CIRCLE_USER_WALLET";
+};
+
 export type EntryActionPayload = {
   action: "ENTRY";
   chainId: 5042002;
@@ -1321,6 +1335,9 @@ export const backendApi = {
     },
     tickets() {
       return request<OwnedTicketsResponse>("/wallet/tickets");
+    },
+    gatewayBalance() {
+      return request<GatewayBalanceResponse>("/wallet/gateway-balance");
     },
     chainState() {
       return request<{
