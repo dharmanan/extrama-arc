@@ -21,6 +21,7 @@ function safeChallenge(action, phaseName) {
 }
 
 const CIRCLE_TERMINAL_FAILURE_STATES = new Set(['FAILED', 'DENIED', 'CANCELLED']);
+const CIRCLE_TERMINAL_CHALLENGE_STATES = new Set(['FAILED', 'EXPIRED']);
 
 function isArcReceiptPending(error) {
   return error?.message === 'entry_approval_transaction_not_found' ||
@@ -121,21 +122,65 @@ async function resolveCircleTransaction({ auth, actionId, userToken, phaseName }
     ? ethers.getAddress(require('./arcService').ARC_TESTNET_USDC_ADDRESS)
     : action.payload.contract;
   if (!refId) throw new Error('circle_entry_authorization_invalid');
-  const transactionId = isApproval
+  let transactionId = isApproval
     ? action.circleApprovalTransactionId
     : action.circleEntryTransactionId;
+  const challengeId = isApproval
+    ? action.circleApprovalChallengeId
+    : action.circleEntryChallengeId;
+
   let transaction;
+
+  if (!transactionId && challengeId) {
+    const challenge = await circle.getContractExecutionChallenge({
+      userToken,
+      challengeId,
+    });
+
+    if (
+      challenge &&
+      CIRCLE_TERMINAL_CHALLENGE_STATES.has(challenge.status)
+    ) {
+      throw new Error('circle_transaction_failed');
+    }
+
+    if (challenge?.transactionId) {
+      action = await authorization.persistCircleEntryTransactionId(
+        auth.userId,
+        actionId,
+        auth.walletAddress,
+        auth.circleWalletId,
+        phaseName,
+        challenge.transactionId,
+      );
+      transactionId = challenge.transactionId;
+    }
+  }
+
   if (transactionId) {
     transaction = await circle.getContractExecutionTransaction({
-      userToken, id: transactionId, walletId: auth.circleWalletId, refId, contractAddress,
+      userToken,
+      id: transactionId,
+      walletId: auth.circleWalletId,
+      refId,
+      contractAddress,
     });
   } else {
     transaction = await circle.findContractExecutionTransaction({
-      userToken, walletId: auth.circleWalletId, refId, contractAddress,
+      userToken,
+      walletId: auth.circleWalletId,
+      refId,
+      contractAddress,
     });
+
     if (transaction?.id) {
       action = await authorization.persistCircleEntryTransactionId(
-        auth.userId, actionId, auth.walletAddress, auth.circleWalletId, phaseName, transaction.id,
+        auth.userId,
+        actionId,
+        auth.walletAddress,
+        auth.circleWalletId,
+        phaseName,
+        transaction.id,
       );
     }
   }

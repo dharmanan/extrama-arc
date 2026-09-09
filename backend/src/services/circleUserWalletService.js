@@ -80,6 +80,29 @@ function matchesContractExecutionTransaction(transaction, { walletId, refId, con
     contractMatches;
 }
 
+function matchesFetchedContractExecutionTransaction(
+  transaction,
+  { walletId, refId, contractAddress },
+) {
+  const refMatches =
+    transaction?.refId == null ||
+    transaction.refId === refId;
+
+  const contractMatches =
+    transaction?.contractAddress == null ||
+    (
+      typeof transaction.contractAddress === 'string' &&
+      ethers.isAddress(transaction.contractAddress) &&
+      ethers.getAddress(transaction.contractAddress).toLowerCase() ===
+        ethers.getAddress(contractAddress).toLowerCase()
+    );
+
+  return transaction?.walletId === walletId &&
+    transaction?.blockchain === ARC_TESTNET &&
+    refMatches &&
+    contractMatches;
+}
+
 function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client } = {}) {
   let circleClient = client;
   let readinessVerifiedAt = 0;
@@ -259,6 +282,70 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
+  async function getContractExecutionChallenge({ userToken, challengeId }) {
+    try {
+      if (
+        !userToken ||
+        typeof challengeId !== 'string' ||
+        !challengeId
+      ) {
+        throw new Error('circle_request_invalid');
+      }
+
+      const response = await getClient().getUserChallenge({
+        userToken,
+        challengeId,
+      });
+
+      const challenge = response?.data?.challenge;
+      if (!challenge) return null;
+
+      if (
+        challenge.id !== challengeId ||
+        challenge.type !== 'CONTRACT_EXECUTION'
+      ) {
+        throw new Error('circle_challenge_mismatch');
+      }
+
+      const correlationIds = Array.isArray(challenge.correlationIds)
+        ? challenge.correlationIds.filter(
+            (id) => typeof id === 'string' && id,
+          )
+        : [];
+
+      if (correlationIds.length > 1) {
+        throw new Error('circle_transaction_ambiguous');
+      }
+
+      return {
+        id: challenge.id,
+        status: challenge.status,
+        type: challenge.type,
+        transactionId: correlationIds[0] || null,
+      };
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+
+      console.error(
+        '[circle] challenge lookup failed',
+        JSON.stringify({
+          upstreamStatus:
+            error?.response?.status ??
+            error?.status ??
+            null,
+          circleCode: circleErrorCode(error),
+          upstreamMessage:
+            typeof error?.message === 'string'
+              ? error.message.slice(0, 300)
+              : null,
+          errorName: error?.constructor?.name || null,
+        }),
+      );
+
+      throw safeCircleError(error);
+    }
+  }
+
   async function findContractExecutionTransaction({ userToken, walletId, refId, contractAddress }) {
     try {
       // The transaction was just created for this wallet. Query only the
@@ -303,7 +390,13 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       const response = await getClient().getTransaction({ userToken, id });
       const transaction = response?.data?.transaction;
       if (!transaction) return null;
-      if (!matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }) || transaction.id !== id) {
+      if (
+        transaction.id !== id ||
+        !matchesFetchedContractExecutionTransaction(
+          transaction,
+          { walletId, refId, contractAddress },
+        )
+      ) {
         throw new Error('circle_transaction_mismatch');
       }
       return transaction;
@@ -323,6 +416,7 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     initializeArcEoa,
     listArcEoa,
     createContractExecutionChallenge,
+    getContractExecutionChallenge,
     findContractExecutionTransaction,
     getContractExecutionTransaction,
   };
@@ -338,6 +432,7 @@ module.exports = {
   safeCircleError,
   pickArcEoa,
   matchesContractExecutionTransaction,
+  matchesFetchedContractExecutionTransaction,
   createCircleUserWalletService,
   ...circleUserWalletService,
 };

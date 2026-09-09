@@ -168,6 +168,7 @@ function circleDependencies(authorization, transaction, transactionRequest = rea
         created.push(input);
         return { challengeId: `challenge-${created.length}` };
       },
+      async getContractExecutionChallenge() { return null; },
       async findContractExecutionTransaction() { return transaction; },
       async getContractExecutionTransaction(input) {
         if (transaction?.id !== input.id) throw new Error('circle_transaction_mismatch');
@@ -482,6 +483,94 @@ async function main() {
   assert.equal(gainedHash.pending, false);
   assert.equal(discoveryCalls, 1, 'transaction history is scanned only until an ID is persisted');
   assert.equal(lookupCalls, 1, 'persisted Circle transaction IDs use getTransaction on later polls');
+
+  let challengeLookupCalls = 0;
+  let challengeFallbackListCalls = 0;
+  let challengeGetTransactionCalls = 0;
+
+  const challengeCorrelationAuthorization = createMemoryAuthorization(entryAction({
+    circleState: 'ENTRY_CHALLENGE',
+    circleEntryChallengeId: 'entry-challenge',
+    circleEntryRefId: `${ACTION_ID}:entry`,
+  }));
+
+  const challengeCorrelationDependencies = {
+    ...circleDependencies(challengeCorrelationAuthorization, null),
+    circleService: {
+      async getContractExecutionChallenge(input) {
+        challengeLookupCalls += 1;
+        assert.equal(input.challengeId, 'entry-challenge');
+        return {
+          id: 'entry-challenge',
+          status: 'COMPLETE',
+          type: 'CONTRACT_EXECUTION',
+          transactionId: discoveredId,
+        };
+      },
+      async findContractExecutionTransaction() {
+        challengeFallbackListCalls += 1;
+        throw new Error('list_must_not_run_when_challenge_has_transaction_id');
+      },
+      async getContractExecutionTransaction(input) {
+        challengeGetTransactionCalls += 1;
+        assert.equal(input.id, discoveredId);
+        return {
+          id: discoveredId,
+          txHash: entryTransaction.txHash,
+          state: 'CONFIRMED',
+        };
+      },
+    },
+  };
+
+  const challengeResolved = await circleEntry.resolveCircleTransaction({
+    auth,
+    actionId: ACTION_ID,
+    userToken: 'circle-user-token-long-enough',
+    phaseName: 'ENTRY',
+  }, challengeCorrelationDependencies);
+
+  assert.equal(challengeResolved.pending, false);
+  assert.equal(
+    challengeCorrelationAuthorization.state.circleEntryTransactionId,
+    discoveredId,
+  );
+  assert.equal(challengeLookupCalls, 1);
+  assert.equal(challengeGetTransactionCalls, 1);
+  assert.equal(challengeFallbackListCalls, 0);
+
+  const failedChallengeAuthorization = createMemoryAuthorization(entryAction({
+    circleState: 'ENTRY_CHALLENGE',
+    circleEntryChallengeId: 'failed-entry-challenge',
+    circleEntryRefId: `${ACTION_ID}:entry`,
+  }));
+
+  const failedChallengeDependencies = {
+    ...circleDependencies(failedChallengeAuthorization, null),
+    circleService: {
+      async getContractExecutionChallenge() {
+        return {
+          id: 'failed-entry-challenge',
+          status: 'FAILED',
+          type: 'CONTRACT_EXECUTION',
+          transactionId: null,
+        };
+      },
+      async findContractExecutionTransaction() {
+        throw new Error('list_must_not_run_after_failed_challenge');
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => circleEntry.resolveCircleTransaction({
+      auth,
+      actionId: ACTION_ID,
+      userToken: 'circle-user-token-long-enough',
+      phaseName: 'ENTRY',
+    }, failedChallengeDependencies),
+    /circle_transaction_failed/,
+  );
 
   const terminalLookupAuthorization = createMemoryAuthorization(entryAction({
     circleState: 'ENTRY_CHALLENGE', circleEntryRefId: `${ACTION_ID}:entry`, circleEntryTransactionId: discoveredId,

@@ -19,6 +19,7 @@ const {
 const {
   createCircleUserWalletService,
   matchesContractExecutionTransaction,
+  matchesFetchedContractExecutionTransaction,
 } = require('../src/services/circleUserWalletService');
 
 const WALLET_ID = '11111111-1111-4111-8111-111111111111';
@@ -26,9 +27,35 @@ const REF_ID = '22222222-2222-4222-8222-222222222222:approval';
 const CONTRACT = '0x3600000000000000000000000000000000000000';
 const TX_ID = '33333333-3333-4333-8333-333333333333';
 const TX_HASH = `0x${'a'.repeat(64)}`;
+const CHALLENGE_ID = '44444444-4444-4444-8444-444444444444';
 const USER_TOKEN = 'circle-user-token-long-enough-for-runtime-smoke';
 
 async function main() {
+  assert.equal(
+    matchesFetchedContractExecutionTransaction(
+      {
+        walletId: WALLET_ID,
+        blockchain: 'ARC-TESTNET',
+      },
+      { walletId: WALLET_ID, refId: REF_ID, contractAddress: CONTRACT },
+    ),
+    true,
+    'exact transaction ID fetch may omit optional refId and contractAddress',
+  );
+
+  assert.equal(
+    matchesFetchedContractExecutionTransaction(
+      {
+        walletId: WALLET_ID,
+        blockchain: 'ARC-TESTNET',
+        refId: 'wrong-ref',
+      },
+      { walletId: WALLET_ID, refId: REF_ID, contractAddress: CONTRACT },
+    ),
+    false,
+    'a present but wrong refId must still be rejected',
+  );
+
   assert.equal(
     matchesContractExecutionTransaction(
       {
@@ -65,6 +92,21 @@ async function main() {
     });
 
     res.writeHead(200, { 'content-type': 'application/json' });
+
+    if (req.url.includes('/challenges/')) {
+      res.end(JSON.stringify({
+        data: {
+          challenge: {
+            id: CHALLENGE_ID,
+            correlationIds: [TX_ID],
+            status: 'COMPLETE',
+            type: 'CONTRACT_EXECUTION',
+          },
+        },
+      }));
+      return;
+    }
+
     res.end(JSON.stringify({
       data: {
         transactions: [{
@@ -117,6 +159,24 @@ async function main() {
     assert.equal(requestUrl.searchParams.has('blockchain'), false);
     assert.equal(requestUrl.searchParams.has('operation'), false);
     assert.equal(requests[0].headers['x-user-token'], USER_TOKEN);
+
+    const challenge = await service.getContractExecutionChallenge({
+      userToken: USER_TOKEN,
+      challengeId: CHALLENGE_ID,
+    });
+
+    assert.equal(challenge?.id, CHALLENGE_ID);
+    assert.equal(challenge?.status, 'COMPLETE');
+    assert.equal(challenge?.type, 'CONTRACT_EXECUTION');
+    assert.equal(challenge?.transactionId, TX_ID);
+    assert.equal(requests.length, 2);
+
+    const challengeRequestUrl = new URL(requests[1].url, baseUrl);
+
+    assert.ok(
+      challengeRequestUrl.pathname.endsWith(`/challenges/${CHALLENGE_ID}`),
+    );
+    assert.equal(requests[1].headers['x-user-token'], USER_TOKEN);
 
     console.log('CIRCLE_SDK_RUNTIME=PASS');
   } finally {
