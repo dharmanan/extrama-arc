@@ -90,6 +90,7 @@ export function CircleWalletOnboarding({
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [resentOtpReady, setResentOtpReady] = useState(false);
   const resendAllowedAtRef = useRef(0);
 
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
@@ -174,7 +175,7 @@ export function CircleWalletOnboarding({
         sdkRef.current.setOnResendOtpEmail(() => {
           const activeSdk = sdkRef.current;
           if (activeSdk) {
-            void resendEmailOtp(resendPending, activeSdk);
+            void resendEmailOtp(resendPending);
           }
         });
       }
@@ -189,7 +190,7 @@ export function CircleWalletOnboarding({
     if (pending?.email && pending.deviceId) {
       const resendPending = pending;
       sdk.setOnResendOtpEmail(() => {
-        void resendEmailOtp(resendPending, sdk);
+        void resendEmailOtp(resendPending);
       });
     }
 
@@ -228,7 +229,7 @@ export function CircleWalletOnboarding({
     return sdkRef.current || setupSdk(null);
   }
 
-  async function resendEmailOtp(pending: PendingLogin, sdk: CircleSdk) {
+  async function resendEmailOtp(pending: PendingLogin) {
     if (!pending.email || !pending.deviceId) return;
 
     const now = Date.now();
@@ -265,19 +266,60 @@ export function CircleWalletOnboarding({
         throw new Error("Circle wallet is not configured.");
       }
 
-      // updateConfigs above already supplied the fresh Circle login tokens.
-      // Keep the existing hosted iframe mounted; verifyOtp reloads that same
-      // SDK iframe with the new verification session.
-      setBusy("Code sent. Enter the new verification code.");
-      configuredSdk.verifyOtp();
+      // The fresh Circle login tokens are now configured.
+      // Close the current hosted OTP frame instead of immediately reopening it.
+      // Reopening it here is what causes browser password-manager UI to appear
+      // directly after the user presses Send again.
+      document.getElementById("sdkIframe")?.remove();
+
+      setResentOtpReady(true);
+      setBusy("");
     } catch (cause) {
       resendAllowedAtRef.current = 0;
+
+      const message = cause instanceof Error ? cause.message : "";
+
+      if (message === "circle_email_otp_send_limit") {
+        setError("You've requested several verification codes. Please try again in 60 minutes.");
+      } else if (message === "circle_email_otp_attempt_limit") {
+        setError("Too many verification attempts were made. Please try again in 60 minutes.");
+      } else if (message === "circle_request_rejected") {
+        setError("We couldn't send a new verification code. Please try again.");
+      } else {
+        setError(message || "A new verification code could not be sent. Please try again.");
+      }
+
+      setBusy("");
+    }
+  }
+
+  async function openResentEmailOtp() {
+    const pending = readPendingLogin();
+
+    if (!pending?.email || !pending.otpToken) {
+      setResentOtpReady(false);
+      setError("The verification session expired. Please request a new code.");
+      return;
+    }
+
+    setError("");
+    setBusy("Opening verification...");
+
+    try {
+      const configuredSdk = await setupSdk(pending);
+      if (!configuredSdk) {
+        throw new Error("Circle wallet is not configured.");
+      }
+
+      configuredSdk.verifyOtp();
+      setBusy("");
+    } catch (cause) {
+      setBusy("");
       setError(
         cause instanceof Error
           ? cause.message
-          : "A new verification code could not be sent.",
+          : "Verification could not be opened. Please try again.",
       );
-      setBusy("");
     }
   }
 
@@ -305,6 +347,7 @@ export function CircleWalletOnboarding({
     const normalizedEmail = email.trim();
     if (!appId || !normalizedEmail) return;
     setError("");
+    setResentOtpReady(false);
     setBusy("Sending verification email...");
     try {
       const sdk = await getSdk();
@@ -390,11 +433,21 @@ export function CircleWalletOnboarding({
         <input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
       </label>
       <div className="ex-wallet-panel__actions">
-        <button className="ex-btn ex-btn--ghost" type="button" onClick={continueWithEmail} disabled={!email.trim() || Boolean(busy)}>
-          Continue with email
+        <button
+          className="ex-btn ex-btn--ghost"
+          type="button"
+          onClick={resentOtpReady ? openResentEmailOtp : continueWithEmail}
+          disabled={resentOtpReady ? Boolean(busy) : !email.trim() || Boolean(busy)}
+        >
+          {resentOtpReady ? "Enter new code" : "Continue with email"}
         </button>
       </div>
-      <p className="ex-wallet-panel__note">{busy || "Circle hosts authentication and approval; EXTREMA never receives your private key."}</p>
+      <p className="ex-wallet-panel__note">
+        {busy ||
+          (resentOtpReady
+            ? "A new verification code was sent. Enter the latest code."
+            : "Circle hosts authentication and approval; EXTREMA never receives your private key.")}
+      </p>
       {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
     </div>
   );
