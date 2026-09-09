@@ -7,8 +7,9 @@
 > private key or secret. It only orchestrates: `forge test` (Layer 2, a fixed
 > historical Arc fork block + local deterministic EVM), a handful of
 > read-only Arc RPC checks against permanent historical evidence (Layer 1),
-> and the existing backend `verify-*.js` service/API state-machine suite
-> (Layer 3). Every row below resolves from the real pass/fail of one of
+> and the existing backend `verify-*.js` SERVICE_STATE_MACHINE suite plus
+> local HTTP_ROUTE_MIDDLEWARE integration proof (Layer 3). Every row below
+> resolves from the real pass/fail of one of
 > those checks — this file does not assert anything on its own.
 
 Snapshot date: 2026-09-09. Reference commit: `c044a52` (working tree on top).
@@ -34,9 +35,10 @@ npm --prefix backend run check
 ```
 forge test:        67/67 passed
 Layer 1 scripts:   1/1 passed
-Layer 3 scripts:   15/15 passed
+Layer 3 SERVICE_STATE_MACHINE scripts: 15/15 passed
+Layer 3 HTTP_ROUTE_MIDDLEWARE scripts: 1/1 passed
 Root scripts:      1/1 passed
-Matrix rows:       46 PASS, 0 FAIL, 4 UNSUPPORTED_BY_DESIGN, 0 NOT_YET_TESTABLE (deterministic rows)
+Matrix rows:       47 PASS, 0 FAIL, 4 UNSUPPORTED_BY_DESIGN, 0 NOT_YET_TESTABLE (deterministic rows)
 
 EXTREMA_E2E=PASS
 ```
@@ -61,7 +63,8 @@ result).
 |---|---|---|
 | BACKEND_WALLET entry | PASS | `ExtremaPoolEntryTest::testEntryTransfersOneUsdcAndMintsTicket` + `verify-multi-wallet-execution.js` |
 | EXTERNAL_WALLET entry | PASS | `verify-multi-wallet-execution.js` (`prepareExecutionWalletEntry`, receipt verification) |
-| CIRCLE state machine (APPROVAL_CHALLENGE/PENDING, ENTRY_CHALLENGE/PENDING) | PASS | `verify-circle-entry.js`, `verify-circle-entry-behavior.js` |
+| CIRCLE service state machine (APPROVAL_CHALLENGE/PENDING, ENTRY_CHALLENGE/PENDING) | PASS | `verify-circle-entry.js`, `verify-circle-entry-behavior.js` |
+| CIRCLE HTTP route + auth/middleware flow | PASS | `verify-http-actions-e2e.js` (real local Express + `express.json()` + `routes/actions.js` + `middleware/auth.js`; local state/network doubles only) |
 | allowance-required path | PASS | `verify-circle-entry.js` (`APPROVAL_REQUIRED` step) |
 | allowance-already-present path | PASS | `verify-circle-entry.js` ("direct Circle entry with existing allowance") |
 | duplicate entry (same wallet) rejected | PASS | `ExtremaPoolEntryTest::testDuplicateWalletRejected` |
@@ -197,5 +200,5 @@ Kept explicitly out of the deterministic suite by design.
 ## Remaining coverage gaps (not yet addressed)
 
 - Layer 1 currently reconciles only a handful of hand-picked historical fixtures (two `lockRound` receipts + the Arc-fork test's pool/ticket). It does not yet systematically enumerate DB-recorded historical entries/marketplace/refund/claim rows against on-chain state — that is the next DB-diagnostic-driven step.
-- No test exercises the full backend HTTP action routes end-to-end (start -> WebAuthn challenge -> finish -> verify) against a running Express server; today's Layer 3 coverage exercises the service functions directly, not the route layer plus middleware chain as a whole.
+- Backend HTTP action coverage is intentionally scoped to the deterministic Circle ENTRY route flow: start -> approval verify -> entry verify, auth/session middleware, validation, replay, execution-mode rejection, and independent route limiters. BACKEND_WALLET WebAuthn and live external-wallet receipt paths remain covered at service level because they require different browser/chain boundaries.
 - `verify-rounds.js`'s stale assumption (gap #4 above) needs a product decision on intended semantics before it can be fixed and re-added.

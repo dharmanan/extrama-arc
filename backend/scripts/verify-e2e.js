@@ -13,7 +13,7 @@
 //                                      verify-rounds.js
 //   Layer 2 (fixed-block Arc fork replay + local deterministic EVM)
 //                                  -> `forge test` (contracts/test/*.t.sol)
-//   Layer 3 (application service / API state-machine)
+//   Layer 3 (service state machines + HTTP route/middleware integration)
 //                                  -> the existing backend verify-*.js suite
 //                                     plus verify-circle-support-matrix.js
 //
@@ -88,6 +88,7 @@ const LAYER3_SCRIPTS = [
   'scripts/verify-circle-entry.js',
   'scripts/verify-circle-sdk-runtime.js',
   'scripts/verify-circle-entry-behavior.js',
+  'scripts/verify-http-actions-e2e.js',
   'scripts/verify-circle-support-matrix.js',
   'scripts/verify-round-automation-logging.js',
   'scripts/verify-v2-migration-guards.js',
@@ -123,6 +124,7 @@ const MATRIX = [
   { section: 'A. ENTRY', id: 'BACKEND_WALLET entry', forge: ['ExtremaPoolEntryTest::testEntryTransfersOneUsdcAndMintsTicket()'], scripts: ['scripts/verify-multi-wallet-execution.js'] },
   { section: 'A. ENTRY', id: 'EXTERNAL_WALLET entry', scripts: ['scripts/verify-multi-wallet-execution.js'] },
   { section: 'A. ENTRY', id: 'CIRCLE state machine (APPROVAL/ENTRY challenge+verify)', scripts: ['scripts/verify-circle-entry.js', 'scripts/verify-circle-entry-behavior.js'] },
+  { section: 'A. ENTRY', id: 'CIRCLE HTTP route + auth/middleware flow', scripts: ['scripts/verify-http-actions-e2e.js'] },
   { section: 'A. ENTRY', id: 'allowance-required path (APPROVAL_REQUIRED)', scripts: ['scripts/verify-circle-entry.js'] },
   { section: 'A. ENTRY', id: 'allowance-already-present path (direct ENTRY_READY)', scripts: ['scripts/verify-circle-entry.js'] },
   { section: 'A. ENTRY', id: 'duplicate entry (same wallet) rejected', forge: ['ExtremaPoolEntryTest::testDuplicateWalletRejected()'] },
@@ -216,7 +218,7 @@ function main() {
     console.log(`${result.ok ? 'PASS' : 'FAIL (advisory)'}  ${script}  (${result.lastLine})`);
   }
 
-  console.log('\n--- Layer 3: backend service/API state-machine scripts ---');
+  console.log('\n--- Layer 3: backend SERVICE_STATE_MACHINE + HTTP_ROUTE_MIDDLEWARE scripts ---');
   const layer3Results = {};
   for (const script of LAYER3_SCRIPTS) {
     const result = runNode(script);
