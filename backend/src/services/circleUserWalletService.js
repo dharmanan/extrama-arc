@@ -258,9 +258,7 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       // newest contract executions instead of walking the user's full history.
       const response = await getClient().listTransactions({
         userToken,
-        blockchain: ARC_TESTNET,
-        walletIds: walletId,
-        operation: 'CONTRACT_EXECUTION',
+        walletIds: [walletId],
         pageSize: PAGE_SIZE,
         order: 'DESC',
       });

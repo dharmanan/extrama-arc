@@ -253,9 +253,9 @@ async function main() {
   });
   assert.equal(transaction?.txHash, `0x${'a'.repeat(64)}`);
   assert.equal(transactionListCalls.length, 1);
-  assert.equal(transactionListCalls[0].blockchain, 'ARC-TESTNET');
-  assert.equal(transactionListCalls[0].walletIds, CIRCLE_WALLET_ID);
-  assert.equal(transactionListCalls[0].operation, 'CONTRACT_EXECUTION');
+  assert.equal(transactionListCalls[0].blockchain, undefined);
+  assert.deepEqual(transactionListCalls[0].walletIds, [CIRCLE_WALLET_ID]);
+  assert.equal(transactionListCalls[0].operation, undefined);
   assert.equal(transactionListCalls[0].order, 'DESC');
   assert.equal(transactionListCalls[0].pageAfter, undefined);
   assert.equal(await circle.findContractExecutionTransaction({
