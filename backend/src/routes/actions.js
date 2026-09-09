@@ -42,6 +42,24 @@ const finishLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const CIRCLE_VERIFY_LIMIT = 20;
+
+// A `store` override exists only so tests can inject an isolated in-memory
+// store per instance and prove independence; production never passes one,
+// so each call keeps express-rate-limit's own default per-instance store.
+function createCircleVerifyLimiter(store) {
+  return rateLimit({
+    windowMs: 60 * 1000,
+    limit: CIRCLE_VERIFY_LIMIT,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    ...(store ? { store } : {}),
+  });
+}
+
+const entryApprovalVerifyLimiter = createCircleVerifyLimiter();
+const entryVerifyLimiter = createCircleVerifyLimiter();
+
 const credentialSchema = z.object({}).passthrough();
 
 const entryStartSchema = z.object({
@@ -306,7 +324,7 @@ router.post('/entry/finish', finishLimiter, async (req, res, next) => {
   }
 });
 
-router.post('/entry/approval/verify', finishLimiter, async (req, res, next) => {
+router.post('/entry/approval/verify', entryApprovalVerifyLimiter, async (req, res, next) => {
   try {
     if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
       const { actionId, circleUserToken } = circleEntryVerifySchema.parse(req.body);
@@ -354,7 +372,7 @@ router.post('/entry/approval/verify', finishLimiter, async (req, res, next) => {
   }
 });
 
-router.post('/entry/verify', finishLimiter, async (req, res, next) => {
+router.post('/entry/verify', entryVerifyLimiter, async (req, res, next) => {
   try {
     if (req.auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
       const { actionId, circleUserToken } = circleEntryVerifySchema.parse(req.body);
@@ -1313,3 +1331,12 @@ router.post('/marketplace-buy/verify', finishLimiter, async (req, res, next) => 
 });
 
 module.exports = router;
+
+// Test-only: lets the behavioral regression suite prove the two Circle
+// verify limiters are independent instances without exercising real HTTP.
+// Never read by production code.
+router.__circleVerifyLimitersForTests = {
+  createCircleVerifyLimiter,
+  entryApprovalVerifyLimiter,
+  entryVerifyLimiter,
+};

@@ -560,12 +560,41 @@ async function main() {
   assert.match(frontendSource, /const EXTREMA_SESSION_ERRORS = new Set/);
   assert.match(frontendSource, /withFreshExtremaCircleSession/);
   assert.match(frontendSource, /backendApi\.circle\s*\.session\(userToken\)/);
-  assert.match(frontendSource, /verifyCircleEntryApproval\(recovery\.actionId, userToken\)/);
-  assert.match(frontendSource, /verifyCircleEntry\(recovery\.actionId, userToken\)/);
+
+  // Both the one-shot probe (APPROVAL_CHALLENGE / ENTRY_CHALLENGE) and the
+  // polling loop (APPROVAL_PENDING / ENTRY_PENDING) must call through the
+  // exact same session-refresh-wrapped helper -- never the raw backendApi
+  // function directly, and never a second, duplicated wrapper.
+  const APPROVAL_ONCE_CALL_SITE = /verifyCircleApprovalOnce\(\s*recovery\.actionId,\s*userToken,?\s*\)/g;
+  const ENTRY_ONCE_CALL_SITE = /verifyCircleEntryOnce\(\s*recovery\.actionId,\s*userToken,?\s*\)/g;
+  assert.equal(
+    (frontendSource.match(APPROVAL_ONCE_CALL_SITE) || []).length,
+    2,
+    'verifyCircleApprovalOnce must be called from exactly two places: the APPROVAL_CHALLENGE probe and the APPROVAL_PENDING poll',
+  );
+  assert.equal(
+    (frontendSource.match(ENTRY_ONCE_CALL_SITE) || []).length,
+    2,
+    'verifyCircleEntryOnce must be called from exactly two places: the ENTRY_CHALLENGE probe and the ENTRY_PENDING poll',
+  );
+
+  const approvalProbeIndex = frontendSource.search(APPROVAL_ONCE_CALL_SITE);
+  const entryProbeIndex = frontendSource.search(ENTRY_ONCE_CALL_SITE);
+  const executeHostedChallengeIndices = [
+    ...frontendSource.matchAll(/executeHostedChallenge\(recovery\.challengeId\)/g),
+  ].map((match) => match.index);
+  assert.equal(
+    executeHostedChallengeIndices.length,
+    2,
+    'the hosted challenge must execute exactly once per phase: once for APPROVAL_CHALLENGE, once for ENTRY_CHALLENGE',
+  );
   assert.ok(
-    frontendSource.indexOf('verifyCircleEntryApproval(recovery.actionId, userToken)') <
-    frontendSource.indexOf('executeHostedChallenge(recovery.challengeId)'),
-    'approval probe must happen before hosted challenge execution',
+    approvalProbeIndex >= 0 && approvalProbeIndex < executeHostedChallengeIndices[0],
+    'the APPROVAL_CHALLENGE probe must happen before that phase executes the hosted challenge',
+  );
+  assert.ok(
+    entryProbeIndex >= 0 && entryProbeIndex < executeHostedChallengeIndices[1],
+    'the ENTRY_CHALLENGE probe must happen before that phase executes the hosted challenge',
   );
 
   const authorizationSource = require('node:fs').readFileSync(
@@ -579,6 +608,59 @@ async function main() {
   assert.match(
     authorizationSource,
     /Date\.now\(\) \+ CIRCLE_ENTRY_TTL_MS/,
+  );
+
+  const pollIntervalMatch = frontendSource.match(
+    /const CIRCLE_VERIFY_POLL_INTERVAL_MS = (\d+);/,
+  );
+  const pollAttemptsMatch = frontendSource.match(
+    /const CIRCLE_VERIFY_MAX_ATTEMPTS = (\d+);/,
+  );
+
+  assert.ok(pollIntervalMatch, 'Circle poll interval constant is required');
+  assert.ok(pollAttemptsMatch, 'Circle poll attempt constant is required');
+
+  const pollIntervalMs = Number(pollIntervalMatch[1]);
+  const pollAttempts = Number(pollAttemptsMatch[1]);
+
+  assert.ok(
+    Math.ceil(60_000 / pollIntervalMs) + 1 < 20,
+    'Circle polling plus its preflight probe must stay below 20 requests/minute',
+  );
+
+  assert.ok(
+    pollIntervalMs * pollAttempts >= 120_000,
+    'Circle verification must tolerate at least two minutes of indexing/finality delay',
+  );
+
+  assert.equal(
+    (frontendSource.match(/backendApi\.actions\.verifyCircleEntryApproval/g) || []).length,
+    1,
+    'all approval verification must flow through the session-refresh helper',
+  );
+
+  assert.equal(
+    (frontendSource.match(/backendApi\.actions\.verifyCircleEntry\(/g) || []).length,
+    1,
+    'all entry verification must flow through the session-refresh helper',
+  );
+
+  assert.match(frontendSource, /result\?\.status === "FAILED"/);
+  assert.match(frontendSource, /result\?\.status === "EXPIRED"/);
+
+  const actionsSource = require('node:fs').readFileSync(
+    require('node:path').resolve(__dirname, '../src/routes/actions.js'),
+    'utf8',
+  );
+
+  assert.match(actionsSource, /const CIRCLE_VERIFY_LIMIT = 20;/);
+  assert.match(
+    actionsSource,
+    /router\.post\('\/entry\/approval\/verify', entryApprovalVerifyLimiter,/,
+  );
+  assert.match(
+    actionsSource,
+    /router\.post\('\/entry\/verify', entryVerifyLimiter,/,
   );
 
   console.log('CIRCLE_ENTRY_FOUNDATION=PASS');

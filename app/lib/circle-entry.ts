@@ -10,11 +10,25 @@ import {
   type CircleEntryRecovery,
 } from "./circle-auth";
 
+type CircleChallengeResult = {
+  type?: string;
+  status?: string;
+};
+
 type CircleSdk = {
   getDeviceId(): Promise<string>;
   setAuthentication(auth: { userToken: string; encryptionKey: string }): void;
-  execute(challengeId: string, onCompleted?: (error: { message: string } | undefined) => void): void;
+  execute(
+    challengeId: string,
+    onCompleted?: (
+      error: { message: string } | undefined,
+      result?: CircleChallengeResult,
+    ) => void,
+  ): void;
 };
+
+const CIRCLE_VERIFY_POLL_INTERVAL_MS = 4000;
+const CIRCLE_VERIFY_MAX_ATTEMPTS = 45;
 
 const EXTREMA_SESSION_ERRORS = new Set([
   "authentication_required",
@@ -54,6 +68,26 @@ async function withFreshExtremaCircleSession<T>(
   }
 }
 
+async function verifyCircleApprovalOnce(
+  actionId: string,
+  userToken: string,
+) {
+  return withFreshExtremaCircleSession(
+    userToken,
+    () => backendApi.actions.verifyCircleEntryApproval(actionId, userToken),
+  );
+}
+
+async function verifyCircleEntryOnce(
+  actionId: string,
+  userToken: string,
+) {
+  return withFreshExtremaCircleSession(
+    userToken,
+    () => backendApi.actions.verifyCircleEntry(actionId, userToken),
+  );
+}
+
 async function executeHostedChallenge(challengeId: string) {
   const auth = readCircleTabAuth();
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
@@ -64,9 +98,22 @@ async function executeHostedChallenge(challengeId: string) {
   // The value is intentionally transient and never added to recovery storage.
   await sdk.getDeviceId();
   sdk.setAuthentication(auth);
-  await new Promise<void>((resolve, reject) => {
-    sdk.execute(challengeId, (error) => error ? reject(new Error(error.message)) : resolve());
-  });
+  const result = await new Promise<CircleChallengeResult | undefined>(
+    (resolve, reject) => {
+      sdk.execute(
+        challengeId,
+        (error, challengeResult) =>
+          error
+            ? reject(new Error(error.message))
+            : resolve(challengeResult),
+      );
+    },
+  );
+
+  if (result?.status === "FAILED" || result?.status === "EXPIRED") {
+    throw new Error("circle_transaction_failed");
+  }
+
   return auth.userToken;
 }
 
@@ -95,12 +142,9 @@ function clearRecoveryForTerminalError(error: unknown) {
 async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: string) {
   if (recovery.phase === "APPROVAL_CHALLENGE") {
     if (!recovery.challengeId) throw new Error("circle_entry_recovery_invalid");
-    const probe = await withFreshExtremaCircleSession(
+    const probe = await verifyCircleApprovalOnce(
+      recovery.actionId,
       userToken,
-      () => withFreshExtremaCircleSession(
-        userToken,
-        () => backendApi.actions.verifyCircleEntryApproval(recovery.actionId, userToken),
-      ),
     );
     if ("pending" in probe && probe.pending && probe.transactionObserved) {
       const pending = { ...recovery, phase: "APPROVAL_PENDING" as const, challengeId: null };
@@ -123,7 +167,7 @@ async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: strin
   }
   if (recovery.phase === "APPROVAL_PENDING") {
     const approval = await waitForCircleResult(
-      () => backendApi.actions.verifyCircleEntryApproval(recovery.actionId, userToken),
+      () => verifyCircleApprovalOnce(recovery.actionId, userToken),
     ) as CircleEntryApprovalVerifyResponse;
     if (approval.actionId !== recovery.actionId || approval.payloadHash !== recovery.payloadHash) {
       throw new Error("circle_approval_verification_failed");
@@ -139,12 +183,9 @@ async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: strin
   }
   if (recovery.phase === "ENTRY_CHALLENGE") {
     if (!recovery.challengeId) throw new Error("circle_entry_recovery_invalid");
-    const probe = await withFreshExtremaCircleSession(
+    const probe = await verifyCircleEntryOnce(
+      recovery.actionId,
       userToken,
-      () => withFreshExtremaCircleSession(
-      userToken,
-      () => backendApi.actions.verifyCircleEntry(recovery.actionId, userToken),
-    ),
     );
     if ("pending" in probe && probe.pending && probe.transactionObserved) {
       const pending = { ...recovery, phase: "ENTRY_PENDING" as const, challengeId: null };
@@ -167,7 +208,7 @@ async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: strin
     return resumeCircleEntry(pending, userToken);
   }
   const verified = await waitForCircleResult(
-    () => backendApi.actions.verifyCircleEntry(recovery.actionId, userToken),
+    () => verifyCircleEntryOnce(recovery.actionId, userToken),
   ) as CircleEntryVerifyResponse;
   if (
     verified.actionId !== recovery.actionId || verified.payloadHash !== recovery.payloadHash ||
@@ -180,13 +221,29 @@ async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: strin
 }
 
 async function waitForCircleResult<T>(read: () => Promise<T>) {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < CIRCLE_VERIFY_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
     const result = await read();
-    if (!(typeof result === "object" && result !== null && "pending" in result && result.pending === true)) {
+
+    if (
+      !(
+        typeof result === "object" &&
+        result !== null &&
+        "pending" in result &&
+        result.pending === true
+      )
+    ) {
       return result;
     }
-    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+
+    await new Promise((resolve) =>
+      window.setTimeout(resolve, CIRCLE_VERIFY_POLL_INTERVAL_MS),
+    );
   }
+
   throw new Error("circle_transaction_pending");
 }
 
