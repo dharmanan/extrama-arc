@@ -184,11 +184,23 @@ const MATRIX = [
   { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: MARKETPLACE (list/update/cancel/buy)', unsupported: true, scripts: ['scripts/verify-circle-support-matrix.js'] },
 ];
 
-const NOT_YET_TESTABLE = [
-  { section: 'LIVE PRODUCTION PROOF', id: 'Real Arc Testnet settleRound for a >=3-entry round (prizes actually paid)', reason: 'requires a real state-changing Arc Testnet transaction; deterministic suite proves the same logic on a local fork instead (see H above)', txRequired: true },
-  { section: 'LIVE PRODUCTION PROOF', id: 'Real Arc Testnet refund/claim (real USDC movement)', reason: 'requires a real state-changing Arc Testnet transaction; deterministic suite proves the same logic on a local fork instead (see G/I above)', txRequired: true },
-  { section: 'LIVE PRODUCTION PROOF', id: 'Real Circle production ENTRY (hosted challenge against real Circle API)', reason: 'the deterministic suite must never call the real Circle API by design; only the real installed SDK against a local fake server is used', txRequired: true },
-  { section: 'LIVE PRODUCTION PROOF', id: 'Marketplace cache-refresh observed correct on a live Railway Postgres instance', reason: 'requires a live DB, not code-path correctness; verify-marketplace-actions.js proves every write call site awaits the refresh, not the live result', txRequired: false },
+const RECORDED_LIVE_PROOF = [
+  {
+    id: 'Real Arc Testnet settleRound for a >=3-entry round',
+    evidence: 'ETH Daily High Round #4 tx 0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9',
+  },
+  {
+    id: 'Real Arc Testnet refund + claim with actual USDC movement',
+    evidence: 'refund tx 0x04183e238f8e2e2a29e733119b5262e2ffc74b8c492542d73febce04117cb8cf; claim tx 0xc7913e802e228549cfb564e60eba6f6f57afbbc1e8e4e8fe33ee0f11e59cf2ff',
+  },
+  {
+    id: 'Real Circle production ENTRY',
+    evidence: 'SOL Daily Low Round #6 tx 0x9ef2fcbc33b7195517e2e3b323fce34b96e87550e9ce9d6222b3a6769d633d52',
+  },
+  {
+    id: 'Marketplace cache-refresh on live Railway',
+    evidence: 'stale block 61265957 refreshed in background to 61265977 with zero degraded listings',
+  },
 ];
 
 function statusIcon(status) {
@@ -270,9 +282,9 @@ function main() {
     console.log(`  [${statusIcon(status)}] ${row.id}`);
   }
 
-  console.log('\nLIVE PRODUCTION PROOF (excluded from this deterministic run by design)');
-  for (const row of NOT_YET_TESTABLE) {
-    console.log(`  [NOT_YET_TESTABLE] ${row.id} -- real transaction required: ${row.txRequired ? 'YES' : 'NO'}`);
+  console.log('\nLIVE PRODUCTION PROOF (recorded production evidence; excluded from deterministic verdict)');
+  for (const row of RECORDED_LIVE_PROOF) {
+    console.log(`  [RECORDED] ${row.id} -- ${row.evidence}`);
   }
 
   console.log('\n=== SUMMARY ===');
