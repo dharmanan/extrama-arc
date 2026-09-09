@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const walletService = require('../services/walletService');
 const arcService = require('../services/arcService');
+const gatewayService = require('../services/gatewayService');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
 const router = express.Router();
@@ -44,6 +45,28 @@ router.get('/chain-state', async (req, res, next) => {
 
     const state = await arcService.getArcWalletState(wallet.address);
     res.json(state);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/gateway-balance', async (req, res, next) => {
+  try {
+    if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      return res.status(409).json({ error: 'gateway_circle_wallet_required' });
+    }
+
+    const wallet = await resolveSessionWallet(req);
+    if (!wallet?.address) {
+      return res.status(404).json({ error: 'wallet_not_found' });
+    }
+
+    const gateway = await gatewayService.readUnifiedUsdcBalance(wallet.address);
+
+    res.json({
+      ...gateway,
+      executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+    });
   } catch (error) {
     next(error);
   }
