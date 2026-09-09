@@ -120,8 +120,40 @@ async function verifyBurnIntent() {
   );
 
   // The intent is frozen, so a caller cannot mutate it after signing.
+  // Object.freeze is shallow, so the nested spec is frozen in its own right.
   assert.ok(Object.isFrozen(built.burnIntent));
   assert.ok(Object.isFrozen(built.burnIntent.spec));
+
+  // isFrozen only reports the flag. Prove the effect: mutating a critical
+  // nested field throws under strict mode and leaves the value untouched, so a
+  // signed intent cannot be repointed at another token before submission.
+  const destinationTokenBefore = built.burnIntent.spec.destinationToken;
+  assert.throws(() => {
+    built.burnIntent.spec.destinationToken = ethers.zeroPadValue(
+      '0x000000000000000000000000000000000000dEaD',
+      32,
+    );
+  }, TypeError);
+  assert.equal(built.burnIntent.spec.destinationToken, destinationTokenBefore);
+
+  // Same for the outer intent, where the fee lives.
+  const maxFeeBefore = built.burnIntent.maxFee;
+  assert.throws(() => {
+    built.burnIntent.maxFee = '999999999';
+  }, TypeError);
+  assert.equal(built.burnIntent.maxFee, maxFeeBefore);
+
+  // The signed message and the submitted intent are still the same object after
+  // those attempts, so nothing can drift between signing and submission.
+  assert.strictEqual(built.burnIntent, built.typedData.message);
+  assert.equal(
+    built.digest,
+    ethers.TypedDataEncoder.hash(
+      built.typedData.domain,
+      built.typedData.types,
+      built.typedData.message,
+    ),
+  );
 
   // EIP-712 domain carries no chainId, which is what lets one Arc EOA signature
   // spend a balance held on any source domain.
@@ -198,6 +230,19 @@ async function verifyBurnIntent() {
   assert.ok(!SOURCE_USDC_BY_DOMAIN.has(ARC_GATEWAY_DOMAIN), 'Arc is the destination');
   assert.equal(isTransferableSourceDomain(5), false);
   assert.equal(isTransferableSourceDomain(ARC_GATEWAY_DOMAIN), false);
+
+  // Domain 13 is Sonic Testnet, not the separate Sonic Blaze Testnet. Checksum
+  // validation cannot tell these apart, so the mapping is pinned explicitly.
+  assert.equal(
+    SOURCE_USDC_BY_DOMAIN.get(13),
+    '0x0BA304580ee7c9a980CF72e55f5Ed2E9fd30Bc51',
+    'domain 13 must be Sonic Testnet USDC',
+  );
+  assert.notEqual(
+    SOURCE_USDC_BY_DOMAIN.get(13),
+    '0xA4879Fed32Ecbef99399e5cbC247E533421C4eC6',
+    'Sonic Blaze Testnet USDC is a different network',
+  );
 
   // Arc USDC must never be reachable as a source token.
   for (const address of SOURCE_USDC_BY_DOMAIN.values()) {

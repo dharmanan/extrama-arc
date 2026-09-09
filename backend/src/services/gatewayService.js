@@ -77,7 +77,11 @@ const SOURCE_USDC_BY_DOMAIN = new Map([
   [6, '0x036CbD53842c5426634e7929541eC2318f3dCF7e'], // Base Sepolia
   [7, '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582'], // Polygon PoS Amoy
   [10, '0x31d0220469e10c4E71834a79b1f276d740d3768F'], // Unichain Sepolia
-  [13, '0xA4879Fed32Ecbef99399e5cbC247E533421C4eC6'], // Sonic Blaze Testnet
+  // Domain 13 is "Sonic / Testnet" per Gateway's supported blockchains page and
+  // per live /v1/info. Circle's USDC page also lists a separate "Sonic Blaze
+  // Testnet" (0xA4879Fed...), which is a different network and must not be used
+  // here. Checksum validation cannot catch this class of mistake.
+  [13, '0x0BA304580ee7c9a980CF72e55f5Ed2E9fd30Bc51'], // Sonic Testnet
   [14, '0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88'], // World Chain Sepolia
   [16, '0x4fCF1784B31630811181f670Aea7A7bEF803eaED'], // Sei Testnet
   [19, '0x2B3370eE501B4a559b57D449569354196457D8Ab'], // HyperEVM Testnet

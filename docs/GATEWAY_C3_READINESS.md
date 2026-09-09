@@ -141,10 +141,23 @@ page as the single source of truth:
 | 6 | Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
 | 7 | Polygon PoS Amoy | `0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582` |
 | 10 | Unichain Sepolia | `0x31d0220469e10c4E71834a79b1f276d740d3768F` |
-| 13 | Sonic Blaze Testnet | `0xA4879Fed32Ecbef99399e5cbC247E533421C4eC6` |
+| 13 | Sonic Testnet | `0x0BA304580ee7c9a980CF72e55f5Ed2E9fd30Bc51` |
 | 14 | World Chain Sepolia | `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` |
 | 16 | Sei Testnet | `0x4fCF1784B31630811181f670Aea7A7bEF803eaED` |
 | 19 | HyperEVM Testnet | `0x2B3370eE501B4a559b57D449569354196457D8Ab` |
+
+Two networks in that list are easy to confuse. Gateway's domain 13 is **Sonic
+Testnet**, which both the supported blockchains page and live `/v1/info` report
+as `chain "Sonic", network "Testnet"`. Circle's USDC page separately lists a
+**Sonic Blaze Testnet** at `0xA4879Fed32Ecbef99399e5cbC247E533421C4eC6`, which is
+a different network and must not be used for domain 13.
+
+The test suite checksum validates every address in the table, but a checksum
+only proves syntax and transcription integrity. It cannot prove an address
+belongs to the right network: a correctly checksummed address for the wrong
+chain passes silently. Network identity has to be matched against the chain and
+network names Gateway itself reports for that domain, which is why domain 13 is
+additionally pinned by an explicit test.
 
 Two Gateway domains are excluded on purpose. Solana (domain 5) is not EVM and
 does not use this EIP-712 signing path. Arc itself (domain 26) is rejected as a
