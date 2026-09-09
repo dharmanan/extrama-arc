@@ -355,7 +355,7 @@ const CIRCLE_PHASES = Object.freeze({
     challenge: 'circle_approval_challenge_id', txId: 'circle_approval_transaction_id', txHash: 'circle_approval_tx_hash',
   },
   ENTRY: {
-    reservationStates: ['APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'], state: 'ENTRY_CHALLENGE',
+    reservationStates: [null, 'APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'], state: 'ENTRY_CHALLENGE',
     bindStates: ['ENTRY_CHALLENGE', 'ENTRY_SUBMITTED'],
     idempotency: 'circle_entry_idempotency_key', ref: 'circle_entry_ref_id',
     challenge: 'circle_entry_challenge_id', txId: 'circle_entry_transaction_id', txHash: 'verified_tx_hash',

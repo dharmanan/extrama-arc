@@ -84,7 +84,7 @@ function createMemoryAuthorization(initial) {
       checkIdentity(userId, actionId, walletAddress, circleWalletId);
       const allowed = phase === 'APPROVAL'
         ? [null, 'APPROVAL_CHALLENGE']
-        : ['APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'];
+        : [null, 'APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'];
       if (!allowed.includes(state.circleState)) throw new Error('circle_entry_authorization_invalid');
       const [idempotency, ref] = phaseFields(phase);
       state = {
@@ -320,6 +320,21 @@ async function main() {
   }, { actionAuthorizationService: {}, circleService: circle });
   assert.equal(replay.challengeId, 'circle-challenge-2', 'a saved challenge must never create a second Circle request');
   assert.equal(calls.length, 2);
+
+  // A fresh Circle action may already have sufficient onchain allowance.
+  // In that case it must be able to go directly from no Circle state to
+  // an ENTRY challenge without requiring another approval.
+  const directEntryAuthorization = createMemoryAuthorization(entryAction());
+  const directEntryDependencies = circleDependencies(directEntryAuthorization, null);
+  const directEntryStarted = await circleEntry.startCircleEntry({
+    action: directEntryAuthorization.state,
+    auth,
+    userToken: 'circle-user-token-long-enough',
+  }, directEntryDependencies);
+  assert.equal(directEntryStarted.step, 'ENTRY_READY');
+  assert.equal(directEntryStarted.challengeId, 'challenge-1');
+  assert.equal(directEntryAuthorization.state.circleState, 'ENTRY_CHALLENGE');
+  assert.equal(directEntryDependencies.created.length, 1);
 
   // A process can die after the durable reservation but before challenge ID
   // persistence. Both phases must retry the exact same Circle request.
