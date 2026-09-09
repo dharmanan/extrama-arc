@@ -277,6 +277,23 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       return matching[0] || null;
     } catch (error) {
       if (error?.message?.startsWith('circle_')) throw error;
+
+      console.error(
+        '[circle] transaction lookup failed',
+        JSON.stringify({
+          upstreamStatus:
+            error?.response?.status ??
+            error?.status ??
+            null,
+          circleCode: circleErrorCode(error),
+          upstreamMessage:
+            typeof error?.message === 'string'
+              ? error.message.slice(0, 300)
+              : null,
+          errorName: error?.constructor?.name || null,
+        }),
+      );
+
       throw safeCircleError(error);
     }
   }
