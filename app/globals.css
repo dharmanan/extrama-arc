@@ -2155,3 +2155,31 @@ img{max-width:100%}
     border-top:1px solid var(--line);
   }
 }
+
+
+/* Circle email OTP resend status above the hosted Circle modal. */
+.ex-circle-resend-countdown{
+  position:fixed;
+  top:18px;
+  left:50%;
+  transform:translateX(-50%);
+  z-index:2147483647;
+  pointer-events:none;
+  padding:10px 16px;
+  border:1px solid var(--line-strong);
+  border-radius:var(--r-pill);
+  background:var(--paper-bright);
+  color:var(--ink);
+  font-size:.82rem;
+  font-weight:600;
+  white-space:nowrap;
+}
+
+@media(max-width:560px){
+  .ex-circle-resend-countdown{
+    top:12px;
+    max-width:calc(100vw - 24px);
+    white-space:normal;
+    text-align:center;
+  }
+}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { backendApi } from "./lib/backend-api";
 import { storeCircleTabAuth } from "./lib/circle-auth";
 
@@ -469,6 +470,26 @@ export function CircleWalletOnboarding({
             : "Circle hosts authentication and approval; EXTREMA never receives your private key.")}
       </p>
       {error && <p className="ex-entry__msg" data-tone="error">{error}</p>}
+
+      {typeof document !== "undefined" && resentOtpReady
+        ? createPortal(
+            <div
+              className="ex-circle-resend-countdown"
+              role="status"
+              aria-live="polite"
+            >
+              {resendSecondsLeft > 0 ? (
+                <>
+                  New code sent · resend in{" "}
+                  <span className="ex-num">{resendSecondsLeft}s</span>
+                </>
+              ) : (
+                "You can request a new code now."
+              )}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
