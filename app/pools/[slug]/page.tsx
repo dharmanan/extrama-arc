@@ -11,8 +11,7 @@ import {
   type RoundEntriesResponse,
 } from "../../lib/backend-api";
 import { assetConfigs } from "../../lib/asset-config";
-import { confirmEntryWithPasskey } from "../../lib/passkey-client";
-import { confirmCircleEntry } from "../../lib/circle-entry";
+import { confirmEntry } from "../../lib/entry-execution";
 import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 import { useCopy, useLocale } from "../../i18n";
 import { useWalletSession } from "../../wallet-session";
@@ -347,18 +346,16 @@ export default function PoolDetailPage() {
 
     setEntryBusy("Confirming…");
     try {
-      const result = executionMode === "CIRCLE_USER_WALLET"
-        ? await confirmCircleEntry({
-          poolAddress: state.pool.poolAddress,
-          roundId: state.pool.round.roundId,
-          predictionPriceCents,
-          requestId: circleEntryRequestId.current ||= crypto.randomUUID(),
-        })
-        : await confirmEntryWithPasskey({
-          poolAddress: state.pool.poolAddress,
-          roundId: state.pool.round.roundId,
-          predictionPriceCents,
-          sendExternalTransaction: async (request) => {
+      const result = await confirmEntry({
+        executionMode,
+        poolAddress: state.pool.poolAddress,
+        roundId: state.pool.round.roundId,
+        predictionPriceCents,
+        circleRequestId:
+          executionMode === "CIRCLE_USER_WALLET"
+            ? (circleEntryRequestId.current ||= crypto.randomUUID())
+            : undefined,
+        sendExternalTransaction: async (request) => {
           if (
             !connectedAddress ||
             connectedAddress.toLowerCase() !== request.from.toLowerCase()
@@ -379,8 +376,8 @@ export default function PoolDetailPage() {
           const receipt = await publicClient.waitForTransactionReceipt({ hash });
           if (receipt.status !== "success") throw new Error("Wallet transaction failed.");
           return hash;
-          },
-        });
+        },
+      });
       circleEntryRequestId.current = null;
 
       setState((current) => current ? {
