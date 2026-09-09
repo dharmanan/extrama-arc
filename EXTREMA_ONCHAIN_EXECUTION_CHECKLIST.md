@@ -41,7 +41,7 @@ Code existing is never sufficient to mark an item `[x]`. A checkbox is only tick
 
 ## Production state snapshot
 
-Snapshot date: 2026-09-06. Reference commit: `7dad17a21ad764bdc1aaeaba6cf6fb719c3b6734`.
+Snapshot date: 2026-09-09. Reference commit: `f09ca39742d47206af18a2f255895d42b4ba1c02`.
 
 This section is a summary. The authoritative per-item status remains in the numbered sections below.
 
@@ -63,17 +63,22 @@ This section is a summary. The authoritative per-item status remains in the numb
 - Resolver signer provisioned to Railway as an encrypted envelope and verified against `pool.resolver()` at backend startup
 - Resolver funded for gas on Arc Testnet
 
-### Implemented, not yet live proven
+### Live production proofs completed
 
-The lifecycle engine can perform these actions and the resolver is correctly configured to sign them, but no such transaction has been broadcast yet. The blocking factor is that the relevant rounds have not reached their eligibility time.
+The previous calendar-gated lifecycle proof is no longer pending. Real Arc Testnet and Railway evidence now exists for the core C6 paths.
 
-| Action | Round | State | Eligible after |
-|---|---|---|---|
-| `cancelRound` | ETH Daily High #1 | `LOCKED`, 1 entry | `2026-09-07T00:00:00Z` |
-| `cancelRound` | ETH Daily Low #1 | `LOCKED`, 1 entry | `2026-09-07T00:00:00Z` |
-| `settleRound` | ETH Weekly High #1 | `LOCKED`, 3 entries | `2026-09-14T00:00:00Z` |
+| Proof | Live evidence | Result |
+|---|---|---|
+| Resolver `cancelRound` | ETH Daily Low Round #1, tx `0xa6119ad38927e96095930e8270d4f21b0b1f4f3a478de58c4a0066d54158a4a3` | PASS |
+| Resolver `settleRound` | ETH Daily High Round #4, tx `0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9` | PASS |
+| Real refund + USDC movement | ETH Daily Low Round #1, Ticket #1, tx `0x04183e238f8e2e2a29e733119b5262e2ffc74b8c492542d73febce04117cb8cf`, 1.0 USDC | PASS |
+| Real claim + USDC movement | ETH Daily High Round #4, Ticket #2, tx `0xc7913e802e228549cfb564e60eba6f6f57afbbc1e8e4e8fe33ee0f11e59cf2ff`, 0.405 USDC | PASS |
+| Real Circle production entry | SOL Daily Low Round #6, Ticket #1, tx `0x9ef2fcbc33b7195517e2e3b323fce34b96e87550e9ce9d6222b3a6769d633d52` | PASS |
+| Marketplace cache refresh | Railway live read: cached block `61265957` refreshed in background to `61265977`, zero degraded listings | PASS |
 
-Nothing downstream of those transactions is proven either: real refund execution, real winner determination, real treasury distribution, real claim, and live double-claim rejection all wait on them.
+The deterministic suite separately proves replay rejection, double claim prevention, double refund prevention, transferred-ticket ownership semantics, payout math, and marketplace lifecycle behavior. A duplicate live claim/refund transaction was deliberately not broadcast merely to reproduce those negative cases.
+
+Section 15 remains open: the evidence above spans multiple real rounds and therefore does not yet satisfy the stricter requirement for one single round demonstrated from creation through final claim.
 
 ### Remaining implementation
 
@@ -86,7 +91,7 @@ Nothing downstream of those transactions is proven either: real refund execution
 7. Wrong-network detection and switch proof
 8. Final security gate items
 9. Final Arc Testnet end-to-end proof
-10. Secondary NFT marketplace
+10. Secondary NFT marketplace live trade proof and final UI polish; core contract/backend lifecycle is already covered by deterministic E2E
 
 See [Current roadmap](#current-roadmap) at the end of this document for the execution order.
 
@@ -899,17 +904,21 @@ Planned intervals:
   - Read-only resolver `settleRound` reverted with `ObservationNotEnded`.
   - Result: `SETTLEMENT_BEFORE_END_FORK_SMOKE=PASS`
   - No Arc Testnet transaction was broadcast.
-- [ ] Resolver submits resolved price to Arc Testnet contract **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Contract transitions to `SETTLED` **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Settlement cannot be repeated **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Settled price readable onchain **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Settlement tx recorded **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [x] Resolver submits resolved price to Arc Testnet contract
+  - Live ETH Daily High Round #4 settlement tx: `0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9`
+- [x] Contract transitions to `SETTLED`
+- [ ] Settlement cannot be repeated live
+  - Deterministic contract/E2E proof passes. No duplicate production settlement was intentionally broadcast.
+- [x] Settled price readable onchain
+  - Round #4 resolved price: `253500` cents = `$2535.00`.
+- [x] Settlement tx recorded
+  - Persisted settlement evidence and live Arc receipt both identify the same settlement transaction.
 - [ ] Verification page shows source proof + onchain result **(NOT IMPLEMENTED / REMAINING)**
   - `app/verify/[roundId]/page.tsx` still renders from the `app/lib/data.ts` demo fixture, not from a real settlement/evidence endpoint.
 
 ### 7.3 Resolver signing path is resolved
 
-The operational gap recorded in earlier revisions of this document, that the deployed resolver had no production signing mechanism, is **closed**. This item is now infrastructure-complete; only the live transaction proof is outstanding.
+The operational gap recorded in earlier revisions of this document, that the deployed resolver had no production signing mechanism, is **closed**. The signing path is now both infrastructure-complete and live-proven by successful resolver-authorized cancellation and settlement transactions.
 
 - [x] Resolver signing mechanism exists in production
   - `backend/src/services/resolverSignerService.js` decrypts an AES-256-GCM envelope into an in-memory `ethers.Wallet` and never logs, returns, or persists the key material.
@@ -924,8 +933,12 @@ The operational gap recorded in earlier revisions of this document, that the dep
   - This preflight is informational and does not gate automation. Correctness is guarded independently: `executeResolverAction()` re-reads `pool.resolver()` before every single cancel or settle and refuses to sign on `resolver_signer_mismatch`.
 - [x] Resolver funded for gas on Arc Testnet
   - Read-only balance check (2026-09-06): resolver `0x1EDC4594195fFb134315c3258DE974563Ed9762A` holds a positive Arc balance; pool owner `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b` likewise. Arc couples native gas and ERC-20 USDC into one underlying balance.
-- [ ] Live `settleRound` broadcast **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-  - Earliest eligible round is ETH Weekly High #1 after `2026-09-14T00:00:00Z`.
+- [x] Live `settleRound` broadcast
+  - ETH Daily High Round #4
+  - Tx: `0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9`
+  - Block: `60988590`
+  - Timestamp: `2026-09-08T00:02:26Z`
+  - Resolver: `0x1EDC4594195fFb134315c3258DE974563Ed9762A`
 
 No private key, envelope value, or `ENCRYPTION_KEY` value appears in this repository. See [docs/REFUND_CANCELLATION_READINESS.md](docs/REFUND_CANCELLATION_READINESS.md) for the full mechanism description.
 
@@ -1053,33 +1066,44 @@ No private key, envelope value, or `ENCRYPTION_KEY` value appears in this reposi
 
 #### Live settlement proof
 
-- Round ID:
-- Symbol:
-- Direction:
-- Observation start:
-- Observation end:
-- Binance interval:
-- Source data hash/archive:
-- Calculated value:
-- Settlement tx:
-- Explorer:
-- Onchain resolved value:
-- Verification:
+- Verification date: 2026-09-09
+- Chain: Arc Testnet `5042002`
+- Pool: ETH Daily High `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Round ID: `4`
+- Entry count: `3`
+- Total stake: `3.0 USDC`
+- Calculated / submitted value: `253500` cents = `$2535.00`
+- Settlement tx: `0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9`
+- Block: `60988590`
+- Timestamp: `2026-09-08T00:02:26Z`
+- Resolver sender: `0x1EDC4594195fFb134315c3258DE974563Ed9762A`
+- Winner ticket IDs: `[4, 3, 2]`
+- Treasury allocation: `300000` raw = `0.3 USDC`
+- Treasury transfer: pool → `0x1D00C89Ed4AF7227a858D305183B4037f732b87e`, `0.3 USDC`
+- Current onchain status: `SETTLED`
+- Onchain resolved value: `253500`
+- Verification: receipt success, sender, pool target, calldata, `RoundSettled`, `TreasuryAllocated`, USDC transfer, winner IDs, entry count and total stake all matched = PASS.
 
 ---
 
 # 8. Real winner determination
 
-Winner ranking is computed onchain by `ExtremaPool` at settlement time. Every item below is therefore blocked on the first live `settleRound`, not on missing code.
+Winner ranking is computed onchain by `ExtremaPool` at settlement time. Live ETH Daily High Round #4 now proves the ordinary three-winner path; live tie cases and frontend result-surface completion remain separate evidence items below.
 
-- [ ] Winner #1 calculated from actual entries **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Winner #2 calculated from actual entries **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Winner #3 calculated from actual entries **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Distance calculation verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Earlier-entry tie break verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Tx/log-index final tie break verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Winner ticket IDs stored or deterministically derivable **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Results page reads real settled result **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [x] Winner #1 calculated from actual live entries
+  - Ticket #4, prediction `$2508.56`, distance `$26.44`.
+- [x] Winner #2 calculated from actual live entries
+  - Ticket #3, prediction `$2507.56`, distance `$27.44`.
+- [x] Winner #3 calculated from actual live entries
+  - Ticket #2, prediction `$2506.56`, distance `$28.44`.
+- [x] Distance calculation verified against live Round #4
+- [ ] Earlier-entry tie break exercised on a live equal-distance case
+  - Contract and deterministic E2E proof already PASS; the live Round #4 distances were distinct.
+- [x] Final deterministic fallback is contract ticket ID after equal distance and equal entry sequence
+  - The older "tx/log-index" wording was stale; the deployed contract uses distance, then `entrySequence`, then `ticketId`.
+- [x] Winner ticket IDs stored and readable onchain
+  - Live Round #4: `[4, 3, 2]`.
+- [ ] Results page reads real settled result **(NOT IMPLEMENTED / REMAINING)**
   - The backend result API already reads real Arc round state and correctly returns no winners before settlement (see proof below).
   - `app/results/[roundId]/page.tsx` still imports `getResultByRoundId` from the `app/lib/data.ts` demo fixture, so the frontend result surface must be migrated to the real endpoint before this can be ticked.
 
@@ -1106,15 +1130,15 @@ Local contract-level proof of the ranking and tie-break rules already exists in 
 - Verification: result API is reading the real Arc round and correctly exposes no resolved price or winners before settlement; no mock winner data is returned.
 - This does **not** mark the settled-result checklist item complete. Final proof still requires the real round to reach `SETTLED`.
 
-- Round ID:
-- Resolved price:
-- Entry set:
-- Winner 1:
-- Winner 2:
-- Winner 3:
-- Tie-break evidence:
-- Contract result:
-- Verification:
+- Round ID: `4`
+- Resolved price: `$2535.00`
+- Entry set: 3 real entries / `3.0 USDC`
+- Winner 1: Ticket #4, `$2508.56`, distance `$26.44`
+- Winner 2: Ticket #3, `$2507.56`, distance `$27.44`
+- Winner 3: Ticket #2, `$2506.56`, distance `$28.44`
+- Tie-break evidence: no live tie occurred; deterministic contract/E2E tie-break proof remains PASS
+- Contract result: winner ticket IDs `[4, 3, 2]`
+- Verification: live `RoundSettled` event and current onchain round state agree = PASS.
 
 ---
 
@@ -1127,32 +1151,39 @@ Gross pool distribution:
 - 13.5% third
 - 10% treasury
 
-All items below are enforced by `ExtremaPool` and proven by the local lifecycle test suite. They are blocked on the first live `settleRound`.
+The core payout path is now live-proven by ETH Daily High Round #4 settlement and Ticket #2 claim. Transferred-winner and duplicate-claim negative cases remain deterministic proof unless separately marked live below.
 
-- [ ] Payout math verified with token decimals **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Total allocation equals 100% **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Treasury amount verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Winner entitlements linked to NFT ownership **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] No payout to original entrant if ticket was transferred **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Double claim prevented **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Claim state readable onchain **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [x] Payout math verified with real USDC decimals on live Round #4
+  - `1.62 + 0.675 + 0.405 + 0.3 = 3.0 USDC`.
+- [x] Total allocation equals 100%
+- [x] Treasury amount verified
+  - `0.3 USDC` transferred from pool to treasury in the settlement receipt.
+- [x] Winner entitlements linked to NFT ownership at contract/deterministic E2E level
+- [ ] Live transferred-winner claim by a secondary buyer
+  - Deterministic E2E proves this path; the historical live claim owner was also the original entrant.
+- [ ] Live second-claim rejection
+  - Deterministic contract/E2E proof PASS; no duplicate production claim was intentionally submitted.
+- [x] Claim state readable onchain
+  - Ticket #2 changed to claimed with `claimable = 0`.
 
 ---
 
 # 10. Real claim flow
 
-The backend claim flow exists and its negative authorization gates have already been verified against live Arc state (see the readiness smoke below). What remains is a successful claim, which requires a settled round with a winning ticket.
+The backend claim flow and its negative authorization gates are verified, and a successful live Arc Testnet claim is now recorded below. Browser passkey UI evidence and a deliberate live duplicate-claim rejection remain separate open proof items.
 
-- [ ] Claim requires settled round **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-  - The negative half is already proven against live Arc state: both the backend-wallet and external-owner paths refused a pre-settlement claim with `claim_round_not_settled`.
-- [ ] Claim requires current ownership of winning NFT **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Critical claim signing requires fresh passkey step-up **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-  - Payload binding, single-use nonce, and replay rejection are proven at the action authorization layer by `CLAIM_ACTION_AUTH_SMOKE=PASS`. A real browser WebAuthn claim has not occurred.
-- [ ] Real Arc Testnet claim transaction submitted **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] USDC leaves pool/contract **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] USDC arrives in rightful wallet **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Claim state changes onchain **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Second claim attempt fails **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [x] Claim requires settled round
+  - Pre-settlement negative gate was already live-proven; Ticket #2 later claimed successfully only after Round #4 was `SETTLED`.
+- [x] Successful live claim sender matched the current winning NFT owner
+  - Non-owner rejection remains separately proven by deterministic contract/E2E tests.
+- [ ] Fresh browser passkey step-up for the historical live claim separately recorded as UI evidence
+  - Action authorization binding and single-use replay protection are proven; this checklist does not infer missing browser evidence.
+- [x] Real Arc Testnet claim transaction submitted
+- [x] USDC leaves pool/contract
+- [x] USDC arrives in rightful wallet
+- [x] Claim state changes onchain
+- [ ] Live second claim attempt fails
+  - Deterministic contract/E2E proof PASS; no duplicate live transaction was intentionally broadcast.
 
 ### Proof record
 
@@ -1217,7 +1248,7 @@ The backend claim flow exists and its negative authorization gates have already 
   - backend claim execution path rejected before signing with `claim_round_not_settled`
   - result: `LOW_BACKEND=PASS`
 - Verification: both backend and external-owner claim paths re-derived current Arc state and refused an invalid pre-settlement claim. No transaction was signed or broadcast.
-- This proves the negative authorization gate against live Arc state; a real successful claim still requires a future `SETTLED` round with a winning ticket.
+- This historical smoke proved the negative authorization gate before settlement. It is now complemented by the later live Round #4 / Ticket #2 successful claim proof below.
 
 #### Claim action authorization smoke
 
@@ -1246,17 +1277,21 @@ The backend claim flow exists and its negative authorization gates have already 
 
 ### Live claim proof
 
-- Round ID:
-- Ticket ID:
-- NFT owner:
-- Claimable before:
-- Wallet USDC before:
-- Claim tx:
-- Explorer:
-- Wallet USDC after:
-- Claimable after:
-- Second-claim rejection:
-- Verification:
+- Verification date: 2026-09-09
+- Round ID: `4`
+- Ticket ID: `2`
+- Pool: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- NFT owner / transaction sender: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Claimable amount: `405000` raw = `0.405 USDC`
+- Claim tx: `0xc7913e802e228549cfb564e60eba6f6f57afbbc1e8e4e8fe33ee0f11e59cf2ff`
+- Block: `61052025`
+- Timestamp: `2026-09-08T09:07:05Z`
+- Receipt: success
+- USDC movement: pool → current NFT owner, exactly `0.405 USDC`
+- Claimable after: `0`
+- Onchain claimed state after: `true`
+- Second-claim rejection: deterministic proof PASS; not deliberately repeated on production
+- Verification: sender, pool target, `claim(ticketId)` calldata, `RewardClaimed` event and exact USDC `Transfer` all matched = PASS.
 
 ---
 
@@ -1264,16 +1299,20 @@ The backend claim flow exists and its negative authorization gates have already 
 
 Rule: fewer than 3 valid entries → round cancelled/refundable.
 
-- [ ] Round with 0 entries cancels correctly **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Round with 1 entry cancels correctly **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-  - Two such rounds are queued: ETH Daily High #1 and ETH Daily Low #1, both `LOCKED` with 1 entry, eligible after `2026-09-07T00:00:00Z`.
-- [ ] Round with 2 entries cancels correctly **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Round with 3 entries does not cancel for minimum-participant rule **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-  - Proven at contract level (`TooManyEntriesForCancellation`) and at fork level. ETH Weekly High #1 has exactly 3 entries and is the live case.
+- [ ] Live 0-entry cancellation case recorded
+  - Deterministic contract proof exists; no separate 0-entry production proof is claimed here.
+- [x] Live 1-entry round cancels correctly
+  - ETH Daily Low Round #1, resolver `cancelRound` tx `0xa6119ad38927e96095930e8270d4f21b0b1f4f3a478de58c4a0066d54158a4a3`.
+- [ ] Live 2-entry cancellation case recorded
+  - Deterministic contract proof exists; no separate 2-entry production proof is claimed here.
+- [x] 3-entry minimum-participant rule proven at contract/deterministic E2E level
+  - Live ETH Daily High Round #4 had 3 entries and followed settlement rather than the underfilled refund path.
 - [x] Refund entitlement linked to ticket/current ownership rule as finalized
-- [x] Fresh passkey step-up required for refund transaction
-- [ ] Real Arc Testnet refund transaction verified **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
-- [ ] Double refund prevented **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [x] Fresh passkey step-up required by the refund execution design
+- [x] Real Arc Testnet refund transaction verified
+  - ETH Daily Low Round #1, Ticket #1, exactly `1.0 USDC`.
+- [ ] Live double-refund rejection
+  - Deterministic contract/E2E proof PASS; no duplicate live transaction was intentionally broadcast.
 
 ### 11.1 Automated cancellation status
 
@@ -1284,7 +1323,14 @@ Rule: fewer than 3 valid entries → round cancelled/refundable.
 - `sendOnceWithReconciliation()` never resends a transaction. If a send outcome is unknown, it re-reads the round to determine whether the transition actually landed.
 - Refunds are deliberately **not** automated. Cancellation releases the escrow, and the current NFT owner then initiates the refund through the existing `REFUND_TICKET` step-up flow. This is a design decision, not a gap: the contract pays the current ticket owner, and the backend must not spend on their behalf without their fresh authorization.
 
-No `cancelRound` transaction has been broadcast. The earliest eligible moment is `2026-09-07T00:00:00Z`.
+Live `cancelRound` is proven. ETH Daily Low Round #1 was cancelled by the configured resolver at `2026-09-07T00:02:24Z`, shortly after the canonical eligibility boundary.
+
+- Cancel tx: `0xa6119ad38927e96095930e8270d4f21b0b1f4f3a478de58c4a0066d54158a4a3`
+- Block: `60826570`
+- Resolver sender: `0x1EDC4594195fFb134315c3258DE974563Ed9762A`
+- Pool: `0x490A5CE02E3fd85d51095A69AAE9511552d91095`
+- Round: `1`
+- Receipt: success
 
 ### Proof record
 
@@ -1350,7 +1396,7 @@ No `cancelRound` transaction has been broadcast. The earliest eligible moment is
   earlier revisions of that document is now closed; see
   [section 7.3](#73-resolver-signing-path-is-resolved). This remains code
   readiness only. It does not satisfy any "real Arc Testnet" item above, and
-  no refund transaction has been broadcast.
+  this paragraph describes the earlier readiness state only. A later real Arc Testnet refund is now recorded in the live cancellation/refund proof below.
 
 #### Live Arc Testnet lock proof
 
@@ -1383,23 +1429,30 @@ ETH Daily Low Round #1:
 - Receipt status: `1 (success)`
 - Post-lock status: `LOCKED`
 
-Verification:
-- Both underfilled Daily Round #1 pools are now genuinely `LOCKED` on Arc Testnet.
-- No cancellation or refund transaction has been sent yet.
-- Earliest valid live cancellation remains after `observationEndAt = 2026-09-07T00:00:00Z` (03:00 Türkiye time).
+Verification at the time of the original lock proof:
+- Both underfilled Daily Round #1 pools were genuinely `LOCKED` on Arc Testnet.
+- Subsequent live evidence supersedes the old pending note: ETH Daily Low Round #1 later transitioned to `CANCELLED` and Ticket #1 was refunded successfully.
 
 Note on how this proof was produced versus how locking works now: these two locks were executed manually from the local Foundry keystore. Locking is since automated. `lockRound` is permissionless, so the lifecycle engine locks due rounds using the owner wallet purely as a funded sender, not as an authority. The manual keystore path described above is no longer the production mechanism for any lifecycle action; see [section 7.3](#73-resolver-signing-path-is-resolved).
 
 #### Live cancellation/refund proof
 
-- Round ID:
-- Entry count:
-- Cancellation tx:
-- Refund tx:
-- USDC before:
-- USDC after:
-- Explorer:
-- Verification:
+- Verification date: 2026-09-09
+- Pool: ETH Daily Low `0x490A5CE02E3fd85d51095A69AAE9511552d91095`
+- Round ID: `1`
+- Entry count: `1`
+- Cancellation tx: `0xa6119ad38927e96095930e8270d4f21b0b1f4f3a478de58c4a0066d54158a4a3`
+- Cancellation block: `60826570`
+- Cancellation timestamp: `2026-09-07T00:02:24Z`
+- Cancellation sender: resolver `0x1EDC4594195fFb134315c3258DE974563Ed9762A`
+- Refund ticket: `1`
+- Refund owner: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
+- Refund tx: `0x04183e238f8e2e2a29e733119b5262e2ffc74b8c492542d73febce04117cb8cf`
+- Refund block: `61052485`
+- Refund timestamp: `2026-09-08T09:11:02Z`
+- Refund amount: `1000000` raw = `1.0 USDC`
+- USDC movement: pool → current NFT owner, exactly `1.0 USDC`
+- Verification: cancel receipt/event/calldata and refund receipt/event/calldata/USDC transfer all matched = PASS.
 
 ---
 
@@ -1471,7 +1524,7 @@ The live surfaces (`/pools`, `/pools/[slug]`, `/tickets`) already read real Arc 
 
 - [x] Fresh passkey step-up implemented for entry
   - Live proof: fingerprint confirmation preceded real Arc entry tx `0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312` (section 0 and section 4).
-- [ ] Fresh passkey step-up implemented for claim **(IMPLEMENTED / WAITING FOR LIVE PROOF)**
+- [ ] Fresh passkey step-up implemented for claim **(IMPLEMENTED / BROWSER EVIDENCE NOT RECORDED)**
   - `CLAIM_ACTION_AUTH_SMOKE=PASS` covers payload binding, single use, and replay rejection in an in-memory harness. A real browser WebAuthn claim requires a settled round.
 - [x] Fresh passkey step-up implemented for refund
 - [ ] Action challenge bound to:
@@ -1623,35 +1676,35 @@ Two known frontend issues are open and unrelated to visual work:
 
 ## Current roadmap
 
-The resolver-signing gap that previously headed this section is closed. Locking, cancellation, and settlement now run from the deployed lifecycle automation.
+The old calendar-gated lifecycle proof is closed. As of 2026-09-09, the resolver has executed real cancellation and settlement transactions, a real refund and a real winner claim have moved Arc Testnet USDC, Circle production entry reconciliation is verified, and the live marketplace cache refresh path is proven.
 
-Execution order:
+### Completed live proof gate: C6
 
-1. **Weekly and Quarterly round creation automation.** Extend `ensureCurrentDailyRoundsInternal` into a cadence-general creation path. QUARTERLY must derive its observation end from the next calendar quarter boundary, not a fixed offset. Without this, no Round #2 appears at either cadence.
-2. **Remove demo/mock runtime financial state.** Delete the synthetic `pools`, `results`, and `tickets` from `app/lib/data.ts` and retire `app/demo-state.tsx` from the normal runtime. Keep `assetConfigs` and `formatUsd`. See the table in section 13.
-3. **Real settlement verification endpoint and page.** Back `/verify/[roundId]` and `/results/[roundId]` with the real settlement, evidence-hash, and winner data instead of the demo fixture.
-4. **Real leaderboard.** Derive rankings deterministically from settled onchain rounds. Show an explicit empty state until a round settles.
-5. **Complete the visual design.** Extend the homepage foundation across the remaining routes, and resolve the `app/results` route conflict.
-6. **Live cancel and refund proof.** After `2026-09-07T00:00:00Z`, verify the automation cancels ETH Daily High #1 and ETH Daily Low #1, then exercise both refund paths and record the evidence listed in section 11.
-7. **Live settle, winner, and claim proof.** After `2026-09-14T00:00:00Z`, verify settlement of ETH Weekly High #1, then winners, treasury share, a real claim, and double-claim rejection.
-8. **Final security gate.** Section 14 in full: replay verification, JWT-only rejection, rate limits, session expiry, dependency audit, secret rotation procedure including the resolver envelope, and a secret scan.
-9. **Final Arc Testnet end-to-end proof.** Section 15, one complete round from creation to claim.
+- [x] Real Circle production ENTRY
+- [x] Real Arc Testnet `settleRound` with 3 participants
+- [x] Real winner ordering and treasury allocation
+- [x] Real claim with actual pool → winner USDC movement
+- [x] Real cancellation of an underfilled round
+- [x] Real refund with actual pool → current-owner USDC movement
+- [x] Live Railway marketplace cache refresh observation
+
+These proofs intentionally do **not** imply that every negative case was redundantly broadcast on production. Live double-claim and double-refund attempts remain unperformed; their rejection is covered by deterministic contract/E2E tests.
+
+### Next execution order
+
+1. **Fix stale Circle entry recovery UX.** A stale `extrema-circle-entry-recovery-v1` value can leave the UI polling an expired historical action for roughly three minutes. The successful production entry proved the financial path; this is now a separate frontend recovery cleanup and must not change Circle transaction semantics.
+2. **Weekly and Quarterly round creation automation.** Generalize the current DAILY creation path. QUARTERLY must use the next calendar-quarter boundary rather than a fixed 91-day offset.
+3. **Remove remaining demo/mock runtime financial state.** Audit section 13 against the current repository before deleting anything; the section itself is older than several later UI/data-path changes.
+4. **Real settlement verification and result surfaces.** Ensure `/verify/[roundId]` and `/results/[roundId]` are backed only by real settlement/evidence/winner data.
+5. **Real leaderboard.** Derive it deterministically from settled onchain rounds and remove any fabricated player/earnings data.
+6. **Complete the visual design and route cleanup.** Audit the current frontend first because section 17 predates several later UI changes.
+7. **Final security gate.** Replay/JWT rejection, rate limits, session expiry, dependency review, secret rotation procedure, and secret scan.
+8. **Final Arc Testnet single-round end-to-end proof.** Section 15 remains open. Existing production evidence is strong but spans multiple rounds; the stricter acceptance test requires one complete round from creation through final claim.
+9. **Secondary marketplace live proof and final polish.** Core marketplace list/update/cancel/buy behavior is already covered by deterministic E2E and a live listing/cache refresh has been observed. Section 16.3 still needs a recorded real secondary sale if the final acceptance gate requires it.
 10. **Hackathon submission packaging.**
-
-Items 6 and 7 are gated by calendar time, not by work. Items 1 to 5 can proceed in parallel with the wait.
-
-### Secondary NFT marketplace
-
-Section 16 states that the marketplace is a required EXTREMA product feature. That requirement is preserved and not downgraded here. It remains a **separate post-core track**: it is not in the numbered list above because it must not begin until the core settlement, winner, payout, and claim/refund path is live proven, which is item 7. Its own implementation order is recorded at the end of section 16.
 
 ### Live actions pending
 
-No cancel or settle transaction has been broadcast. The lifecycle engine will act on its own once each round becomes eligible.
+No C6 lifecycle transaction is waiting on a calendar gate anymore.
 
-| Action | Round | Eligible after |
-|---|---|---|
-| `cancelRound` | ETH Daily High #1 | `2026-09-07T00:00:00Z` |
-| `cancelRound` | ETH Daily Low #1 | `2026-09-07T00:00:00Z` |
-| `settleRound` | ETH Weekly High #1 | `2026-09-14T00:00:00Z` |
-
-When these land, record the transaction hashes in the empty proof blocks in sections 7, 8, and 11 rather than only in this summary.
+Normal DAILY/WEEKLY/QUARTERLY lifecycle automation continues operating on future rounds, but those future transitions are ordinary protocol operation rather than blockers for the C6 proof gate.
