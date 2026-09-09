@@ -16,6 +16,44 @@ type CircleSdk = {
   execute(challengeId: string, onCompleted?: (error: { message: string } | undefined) => void): void;
 };
 
+const EXTREMA_SESSION_ERRORS = new Set([
+  "authentication_required",
+  "invalid_session",
+  "session_expired",
+]);
+
+let circleSessionRefreshPromise: Promise<unknown> | null = null;
+
+async function withFreshExtremaCircleSession<T>(
+  userToken: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (cause) {
+    if (
+      !(cause instanceof Error) ||
+      !EXTREMA_SESSION_ERRORS.has(cause.message)
+    ) {
+      throw cause;
+    }
+
+    if (!circleSessionRefreshPromise) {
+      circleSessionRefreshPromise = backendApi.circle
+        .session(userToken)
+        .finally(() => {
+          circleSessionRefreshPromise = null;
+        });
+    }
+
+    await circleSessionRefreshPromise;
+
+    // Retry the SAME read/start request once. Never create a second
+    // financial intent or automatically execute a hosted challenge.
+    return operation();
+  }
+}
+
 async function executeHostedChallenge(challengeId: string) {
   const auth = readCircleTabAuth();
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
@@ -57,7 +95,13 @@ function clearRecoveryForTerminalError(error: unknown) {
 async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: string) {
   if (recovery.phase === "APPROVAL_CHALLENGE") {
     if (!recovery.challengeId) throw new Error("circle_entry_recovery_invalid");
-    const probe = await backendApi.actions.verifyCircleEntryApproval(recovery.actionId, userToken);
+    const probe = await withFreshExtremaCircleSession(
+      userToken,
+      () => withFreshExtremaCircleSession(
+        userToken,
+        () => backendApi.actions.verifyCircleEntryApproval(recovery.actionId, userToken),
+      ),
+    );
     if ("pending" in probe && probe.pending && probe.transactionObserved) {
       const pending = { ...recovery, phase: "APPROVAL_PENDING" as const, challengeId: null };
       storeCircleEntryRecovery(pending);
@@ -95,7 +139,13 @@ async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: strin
   }
   if (recovery.phase === "ENTRY_CHALLENGE") {
     if (!recovery.challengeId) throw new Error("circle_entry_recovery_invalid");
-    const probe = await backendApi.actions.verifyCircleEntry(recovery.actionId, userToken);
+    const probe = await withFreshExtremaCircleSession(
+      userToken,
+      () => withFreshExtremaCircleSession(
+      userToken,
+      () => backendApi.actions.verifyCircleEntry(recovery.actionId, userToken),
+    ),
+    );
     if ("pending" in probe && probe.pending && probe.transactionObserved) {
       const pending = { ...recovery, phase: "ENTRY_PENDING" as const, challengeId: null };
       storeCircleEntryRecovery(pending);
@@ -146,14 +196,20 @@ export async function confirmCircleEntry(input: {
   predictionPriceCents: number;
   requestId: string;
 }) {
+  const auth = readCircleTabAuth();
+  if (!auth) throw new Error("circle_reauthentication_required");
+
   let pending = readCircleEntryRecovery();
 
   if (pending && !matchesCircleEntryRecovery(pending, input)) {
     try {
-      const [walletState, rounds] = await Promise.all([
-        backendApi.wallet.get(),
-        backendApi.rounds.list(),
-      ]);
+      const [walletState, rounds] = await withFreshExtremaCircleSession(
+        auth.userToken,
+        () => Promise.all([
+          backendApi.wallet.get(),
+          backendApi.rounds.list(),
+        ]),
+      );
 
       const walletAddress = walletState.wallet?.address ?? null;
       const recoveryPool = rounds.pools.find(
@@ -186,8 +242,6 @@ export async function confirmCircleEntry(input: {
     throw new Error("circle_pending_action_for_different_intent");
   }
 
-  const auth = readCircleTabAuth();
-  if (!auth) throw new Error("circle_reauthentication_required");
   if (pending) {
     try {
       return await resumeCircleEntry(pending, auth.userToken);
@@ -196,13 +250,16 @@ export async function confirmCircleEntry(input: {
       throw error;
     }
   }
-  const started = await backendApi.actions.startCircleEntry({
-    poolAddress: input.poolAddress,
-    roundId: input.roundId,
-    predictionPriceCents: input.predictionPriceCents,
-    circleUserToken: auth.userToken,
-    circleRequestId: input.requestId,
-  });
+  const started = await withFreshExtremaCircleSession(
+    auth.userToken,
+    () => backendApi.actions.startCircleEntry({
+      poolAddress: input.poolAddress,
+      roundId: input.roundId,
+      predictionPriceCents: input.predictionPriceCents,
+      circleUserToken: auth.userToken,
+      circleRequestId: input.requestId,
+    }),
+  );
   const recovery = recoveryFor(
     input,
     input.requestId,

@@ -5,6 +5,7 @@ const db = require('../db');
 
 const ACTION_TTL_MS = 2 * 60 * 1000;
 const EXTERNAL_ENTRY_TTL_MS = 10 * 60 * 1000;
+const CIRCLE_ENTRY_TTL_MS = 30 * 60 * 1000;
 
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -301,7 +302,7 @@ async function createOrGetCircleEntryRequest(params) {
   if (!/^[0-9a-f-]{36}$/i.test(requestId || '')) throw new Error('circle_request_id_invalid');
   const id = crypto.randomUUID();
   const nonce = crypto.randomBytes(24).toString('base64url');
-  const expiresAt = new Date(Date.now() + EXTERNAL_ENTRY_TTL_MS);
+  const expiresAt = new Date(Date.now() + CIRCLE_ENTRY_TTL_MS);
   const payload = canonicalEntryPayload({
     ...params,
     executionMode: 'CIRCLE_USER_WALLET',

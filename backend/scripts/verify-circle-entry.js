@@ -557,9 +557,29 @@ async function main() {
   assert.match(frontendSource, /clearCircleEntryRecovery\(\)/);
   assert.match(frontendSource, /circle_entry_action_expired_after_approval/);
   assert.match(frontendSource, /transactionObserved/);
-  assert.match(frontendSource, /const probe = await backendApi\.actions\.verifyCircleEntryApproval\(recovery\.actionId, userToken\)/);
-  assert.match(frontendSource, /const probe = await backendApi\.actions\.verifyCircleEntry\(recovery\.actionId, userToken\)/);
-  assert.ok(frontendSource.indexOf('verifyCircleEntryApproval(recovery.actionId, userToken)') < frontendSource.indexOf('executeHostedChallenge(recovery.challengeId)'));
+  assert.match(frontendSource, /const EXTREMA_SESSION_ERRORS = new Set/);
+  assert.match(frontendSource, /withFreshExtremaCircleSession/);
+  assert.match(frontendSource, /backendApi\.circle\s*\.session\(userToken\)/);
+  assert.match(frontendSource, /verifyCircleEntryApproval\(recovery\.actionId, userToken\)/);
+  assert.match(frontendSource, /verifyCircleEntry\(recovery\.actionId, userToken\)/);
+  assert.ok(
+    frontendSource.indexOf('verifyCircleEntryApproval(recovery.actionId, userToken)') <
+    frontendSource.indexOf('executeHostedChallenge(recovery.challengeId)'),
+    'approval probe must happen before hosted challenge execution',
+  );
+
+  const authorizationSource = require('node:fs').readFileSync(
+    require('node:path').resolve(__dirname, '../src/services/actionAuthorizationService.js'),
+    'utf8',
+  );
+  assert.match(
+    authorizationSource,
+    /const CIRCLE_ENTRY_TTL_MS = 30 \* 60 \* 1000;/,
+  );
+  assert.match(
+    authorizationSource,
+    /Date\.now\(\) \+ CIRCLE_ENTRY_TTL_MS/,
+  );
 
   console.log('CIRCLE_ENTRY_FOUNDATION=PASS');
 }
