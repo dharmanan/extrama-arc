@@ -46,9 +46,14 @@ no destination gas requirement and Circle submits the mint.
 The burn intent is EIP-712. Its domain carries only `{ name: "GatewayWallet",
 version: "1" }` with no `chainId` and no `verifyingContract`, which is what lets
 a single Arc EOA signature spend a balance that sits on any source domain.
-Address shaped fields are `bytes32` in the signed message (Gateway also serves
-Solana) while the REST payload carries the same values as plain 20 byte
-addresses. That asymmetry is easy to get wrong and is covered by tests.
+
+Address shaped fields are `bytes32` throughout, because Gateway also serves
+Solana. There is no 20 byte variant anywhere in this flow: Circle's quickstart
+submits the signed EIP-712 message itself as the `burnIntent` in the
+`POST /v1/transfer` body, so the signed shape and the submitted shape are the
+same object. `buildArcFundingBurnIntent` returns one frozen intent used for
+both, and the tests assert they are strictly identical rather than merely
+similar.
 
 **Gateway does not accept EIP-1271 signatures.** A Circle SCA can deposit into
 Gateway but cannot sign a burn intent to spend out. This is the concrete reason
@@ -89,7 +94,8 @@ No new dependency is required to sign a burn intent.
 `verify-gateway-service.js` covers this with real cryptography, not mocks: it
 signs a built intent with a generated key, recovers the address, and asserts a
 signature over a different intent does not validate. It also asserts the pinned
-destination fields, the 20 byte vs bytes32 asymmetry, and that every unsafe
+destination fields, that the submitted intent is strictly the signed message
+with every address field bytes32 padded, and that every unsafe
 input fails closed.
 
 ## What is deliberately NOT implemented
@@ -121,25 +127,37 @@ rather than advertising a funding capability that would almost always be empty.
 
 ## Supported source domains
 
-`buildArcFundingBurnIntent` accepts a source domain only if that chain's testnet
-USDC address is published in Circle's current EVM quickstart, because a burn
-intent must name the USDC contract on the source chain and that address differs
-per chain:
+A burn intent must name the USDC contract on the source chain, and that address
+differs per chain. Every EVM testnet domain Gateway currently supports is
+covered, with addresses taken from Circle's published USDC contract addresses
+page as the single source of truth:
 
 | Domain | Chain | Testnet USDC |
 | --- | --- | --- |
 | 0 | Ethereum Sepolia | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
-| 1 | Avalanche Fuji | `0x5425890298aed601595a70ab815c96711a31bc65` |
+| 1 | Avalanche Fuji | `0x5425890298aed601595a70AB815c96711a31Bc65` |
+| 2 | OP Sepolia | `0x5fd84259d66Cd46123540766Be93DFE6D43130D7` |
+| 3 | Arbitrum Sepolia | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` |
 | 6 | Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
-| 13 | Sonic Testnet | `0x0BA304580ee7c9a980CF72e55f5Ed2E9fd30Bc51` |
+| 7 | Polygon PoS Amoy | `0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582` |
+| 10 | Unichain Sepolia | `0x31d0220469e10c4E71834a79b1f276d740d3768F` |
+| 13 | Sonic Blaze Testnet | `0xA4879Fed32Ecbef99399e5cbC247E533421C4eC6` |
+| 14 | World Chain Sepolia | `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` |
+| 16 | Sei Testnet | `0x4fCF1784B31630811181f670Aea7A7bEF803eaED` |
+| 19 | HyperEVM Testnet | `0x2B3370eE501B4a559b57D449569354196457D8Ab` |
 
-Any other domain is rejected with `gateway_source_domain_unsupported` rather
-than guessed. Solana (domain 5) is excluded on purpose: it is not EVM and does
-not use this signing path. Arc itself (domain 26) is rejected as a source, since
-burning an Arc balance to mint back onto Arc pays a fee and delivers nothing.
+Two Gateway domains are excluded on purpose. Solana (domain 5) is not EVM and
+does not use this EIP-712 signing path. Arc itself (domain 26) is rejected as a
+source, since burning an Arc balance to mint back onto Arc pays a fee and
+delivers nothing. Any other domain is rejected with
+`gateway_source_domain_unsupported` rather than guessed, and adding one requires
+its USDC address from official Circle documentation. Do not infer one.
 
-Adding a domain to that table requires its USDC address from official Circle
-documentation. Do not infer one.
+Because `readUnifiedUsdcBalance` reports balances on every domain Gateway knows
+about, including the two excluded ones, each balance carries a `transferable`
+flag and the response carries `transferableTotalRaw` alongside `totalRaw`. A
+future execution path must spend against the transferable total, never the raw
+unified total.
 
 ## To finish C3
 

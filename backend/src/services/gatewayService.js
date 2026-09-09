@@ -26,8 +26,9 @@ const GATEWAY_MINTER_CONTRACT = '0x0022222ABE238Cc2C7Bb1f21003F0a260052475B';
 // current EVM unified balance quickstart. The domain deliberately carries only
 // a name and a version: a burn intent is chain agnostic, which is why one Arc
 // EOA signature can spend a balance held on any source domain. Address shaped
-// fields are bytes32 here even though the REST payload carries them as plain
-// 20 byte addresses, because Gateway also serves non EVM chains.
+// fields are bytes32 because Gateway also serves non EVM chains, and the
+// quickstart submits the signed message itself as the burn intent, so the
+// submitted and signed shapes are one and the same.
 const BURN_INTENT_EIP712_DOMAIN = { name: 'GatewayWallet', version: '1' };
 
 const BURN_INTENT_EIP712_TYPES = {
@@ -58,17 +59,39 @@ const TRANSFER_SPEC_VERSION = 1;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 // A burn intent must name the USDC contract on the source chain, and that
-// address differs per chain. Only domains whose testnet USDC address is
-// published in Circle's current EVM unified balance quickstart are listed, so
-// an unlisted source domain fails closed instead of being guessed. Solana
-// (domain 5) is deliberately absent: it is not EVM and does not use this
-// EIP-712 signing path.
+// address differs per chain. Every EVM testnet domain that Circle Gateway
+// currently supports is listed, with the token address taken from Circle's
+// published USDC contract addresses page as the single source of truth.
+//
+// Two Gateway domains are deliberately absent:
+//   - Solana (5) is not EVM and does not use this EIP-712 signing path.
+//   - Arc (26) is the destination of this flow; see buildArcFundingBurnIntent.
+//
+// An unlisted domain fails closed rather than being guessed. Adding one
+// requires its address from official Circle documentation, never inference.
 const SOURCE_USDC_BY_DOMAIN = new Map([
-  [0, '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'],
-  [1, '0x5425890298aed601595a70ab815c96711a31bc65'],
-  [6, '0x036CbD53842c5426634e7929541eC2318f3dCF7e'],
-  [13, '0x0BA304580ee7c9a980CF72e55f5Ed2E9fd30Bc51'],
+  [0, '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'], // Ethereum Sepolia
+  [1, '0x5425890298aed601595a70AB815c96711a31Bc65'], // Avalanche Fuji
+  [2, '0x5fd84259d66Cd46123540766Be93DFE6D43130D7'], // OP Sepolia
+  [3, '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d'], // Arbitrum Sepolia
+  [6, '0x036CbD53842c5426634e7929541eC2318f3dCF7e'], // Base Sepolia
+  [7, '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582'], // Polygon PoS Amoy
+  [10, '0x31d0220469e10c4E71834a79b1f276d740d3768F'], // Unichain Sepolia
+  [13, '0xA4879Fed32Ecbef99399e5cbC247E533421C4eC6'], // Sonic Blaze Testnet
+  [14, '0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88'], // World Chain Sepolia
+  [16, '0x4fCF1784B31630811181f670Aea7A7bEF803eaED'], // Sei Testnet
+  [19, '0x2B3370eE501B4a559b57D449569354196457D8Ab'], // HyperEVM Testnet
 ]);
+
+/**
+ * Whether a unified balance held on this domain can actually be spent to Arc
+ * through the EIP-712 path in this module. readUnifiedUsdcBalance reports every
+ * domain Gateway knows about, including Solana and Arc itself, so execution
+ * must never assume that a reported balance is transferable.
+ */
+function isTransferableSourceDomain(domain) {
+  return SOURCE_USDC_BY_DOMAIN.has(domain);
+}
 
 async function readUnifiedUsdcBalance(depositor, fetchImpl = fetch) {
   if (!ethers.isAddress(depositor)) {
@@ -126,18 +149,28 @@ async function readUnifiedUsdcBalance(depositor, fetchImpl = fetch) {
       depositor: item.depositor,
       balance: item.balance,
       balanceRaw,
+      // Gateway reports every domain it knows about, including Solana and Arc
+      // itself. Only a domain this module can actually build a burn intent for
+      // is spendable to Arc, so the distinction is carried in the data rather
+      // than left for a caller to rediscover.
+      transferable: isTransferableSourceDomain(item.domain),
     };
   });
 
-  const totalRaw = balances
+  const sumRaw = (items) => items
     .reduce((total, item) => total + BigInt(item.balanceRaw), 0n)
     .toString();
+
+  const totalRaw = sumRaw(balances);
+  const transferableTotalRaw = sumRaw(balances.filter((item) => item.transferable));
 
   return {
     token: TOKEN,
     depositor: normalizedDepositor,
     totalRaw,
     totalUsdc: ethers.formatUnits(BigInt(totalRaw), 6),
+    transferableTotalRaw,
+    transferableTotalUsdc: ethers.formatUnits(BigInt(transferableTotalRaw), 6),
     balances,
   };
 }
@@ -161,6 +194,16 @@ function assertPositiveIntegerString(value, errorName) {
  * that the authenticated session already owns. A browser can therefore never
  * redirect a signed burn intent to another chain, another token or another
  * recipient, which is the only part of this payload that can lose funds.
+ *
+ * There is exactly one burn intent shape. Circle's quickstart submits the
+ * signed EIP-712 message itself to /v1/transfer, so the returned `burnIntent`
+ * and `typedData.message` are the same frozen object: what gets signed is
+ * byte for byte what gets submitted, and the two cannot drift apart.
+ *
+ * `maxFeeRaw` and `maxBlockHeight` are validated inputs, not values this module
+ * may invent. They must come from POST /v1/estimate?enableForwarder=true, whose
+ * response supplies the maxFee and maxBlockHeight for the intent. A caller must
+ * never pass browser supplied figures straight through.
  */
 function buildArcFundingBurnIntent({
   walletAddress,
@@ -200,44 +243,29 @@ function buildArcFundingBurnIntent({
 
   const wallet = ethers.getAddress(walletAddress);
 
-  // Plain 20 byte addresses: this is the REST payload shape.
-  const spec = {
+  // The canonical Gateway spec. Address shaped fields are bytes32 throughout,
+  // which is both what the EIP-712 types declare and what is submitted.
+  const spec = Object.freeze({
     version: TRANSFER_SPEC_VERSION,
     sourceDomain,
     destinationDomain: ARC_GATEWAY_DOMAIN,
-    sourceContract: GATEWAY_WALLET_CONTRACT,
-    destinationContract: GATEWAY_MINTER_CONTRACT,
-    sourceToken: ethers.getAddress(SOURCE_USDC_BY_DOMAIN.get(sourceDomain)),
-    destinationToken: ethers.getAddress(ARC_TESTNET_USDC_ADDRESS),
-    sourceDepositor: wallet,
-    destinationRecipient: wallet,
-    sourceSigner: wallet,
-    // Circle's forwarding service submits the destination mint, so the wallet
-    // never needs gas on Arc. Leaving this open lets the forwarder call it.
-    destinationCaller: ZERO_ADDRESS,
+    sourceContract: toBytes32(GATEWAY_WALLET_CONTRACT),
+    destinationContract: toBytes32(GATEWAY_MINTER_CONTRACT),
+    sourceToken: toBytes32(SOURCE_USDC_BY_DOMAIN.get(sourceDomain)),
+    destinationToken: toBytes32(ARC_TESTNET_USDC_ADDRESS),
+    sourceDepositor: toBytes32(wallet),
+    destinationRecipient: toBytes32(wallet),
+    sourceSigner: toBytes32(wallet),
+    // Zero means any caller may present the attestation on Arc, which includes
+    // Circle's forwarder. It does not by itself enable forwarding: that is
+    // requested separately with ?enableForwarder=true on estimate and transfer.
+    destinationCaller: toBytes32(ZERO_ADDRESS),
     value: valueRaw,
     salt,
     hookData: '0x',
-  };
+  });
 
-  const burnIntent = { maxBlockHeight, maxFee: maxFeeRaw, spec };
-
-  // Signing shape: identical values, address fields widened to bytes32.
-  const message = {
-    maxBlockHeight,
-    maxFee: maxFeeRaw,
-    spec: {
-      ...spec,
-      sourceContract: toBytes32(spec.sourceContract),
-      destinationContract: toBytes32(spec.destinationContract),
-      sourceToken: toBytes32(spec.sourceToken),
-      destinationToken: toBytes32(spec.destinationToken),
-      sourceDepositor: toBytes32(spec.sourceDepositor),
-      destinationRecipient: toBytes32(spec.destinationRecipient),
-      sourceSigner: toBytes32(spec.sourceSigner),
-      destinationCaller: toBytes32(spec.destinationCaller),
-    },
-  };
+  const burnIntent = Object.freeze({ maxBlockHeight, maxFee: maxFeeRaw, spec });
 
   return {
     burnIntent,
@@ -245,7 +273,8 @@ function buildArcFundingBurnIntent({
       domain: BURN_INTENT_EIP712_DOMAIN,
       types: BURN_INTENT_EIP712_TYPES,
       primaryType: 'BurnIntent',
-      message,
+      // Same object, not a copy: the signed message is the submitted intent.
+      message: burnIntent,
     },
     // The digest the Circle wallet is asked to sign. Recovering this address
     // from the returned signature proves the session wallet signed this exact
@@ -253,7 +282,7 @@ function buildArcFundingBurnIntent({
     digest: ethers.TypedDataEncoder.hash(
       BURN_INTENT_EIP712_DOMAIN,
       BURN_INTENT_EIP712_TYPES,
-      message,
+      burnIntent,
     ),
   };
 }
@@ -285,6 +314,7 @@ module.exports = {
   GATEWAY_WALLET_CONTRACT,
   SOURCE_USDC_BY_DOMAIN,
   buildArcFundingBurnIntent,
+  isTransferableSourceDomain,
   readUnifiedUsdcBalance,
   recoverBurnIntentSigner,
 };

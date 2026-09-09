@@ -9,7 +9,9 @@ const {
   GATEWAY_API_URL,
   GATEWAY_MINTER_CONTRACT,
   GATEWAY_WALLET_CONTRACT,
+  SOURCE_USDC_BY_DOMAIN,
   buildArcFundingBurnIntent,
+  isTransferableSourceDomain,
   readUnifiedUsdcBalance,
   recoverBurnIntentSigner,
 } = require('../src/services/gatewayService');
@@ -49,44 +51,77 @@ async function verifyBurnIntent() {
 
   const built = buildArcFundingBurnIntent(burnIntentInput());
 
+  // Circle's quickstart submits the signed EIP-712 message itself as the burn
+  // intent, so there must be exactly one shape. Anything weaker would allow a
+  // 20 byte intent to be signed and a bytes32 one submitted, or the reverse.
+  assert.deepEqual(built.burnIntent, built.typedData.message);
+  assert.strictEqual(built.burnIntent, built.typedData.message);
+
+  const ADDRESS_FIELDS = [
+    'sourceContract',
+    'destinationContract',
+    'sourceToken',
+    'destinationToken',
+    'sourceDepositor',
+    'destinationRecipient',
+    'sourceSigner',
+    'destinationCaller',
+  ];
+
+  // Every address shaped field of the submittable intent is bytes32 padded.
+  for (const field of ADDRESS_FIELDS) {
+    assert.match(
+      built.burnIntent.spec[field],
+      /^0x[0-9a-f]{64}$/,
+      `${field} must be bytes32 padded in the submitted burn intent`,
+    );
+  }
+
   // Destination is pinned to Arc and to canonical Arc USDC, never caller supplied.
   assert.equal(built.burnIntent.spec.destinationDomain, ARC_GATEWAY_DOMAIN);
   assert.equal(built.burnIntent.spec.destinationDomain, 26);
   assert.equal(
-    ethers.getAddress(built.burnIntent.spec.destinationToken),
-    ethers.getAddress(ARC_USDC),
+    built.burnIntent.spec.destinationToken,
+    ethers.zeroPadValue(ethers.getAddress(ARC_USDC), 32),
   );
-  assert.equal(built.burnIntent.spec.destinationContract, GATEWAY_MINTER_CONTRACT);
-  assert.equal(built.burnIntent.spec.sourceContract, GATEWAY_WALLET_CONTRACT);
+  assert.equal(
+    built.burnIntent.spec.destinationContract,
+    ethers.zeroPadValue(GATEWAY_MINTER_CONTRACT, 32),
+  );
+  assert.equal(
+    built.burnIntent.spec.sourceContract,
+    ethers.zeroPadValue(GATEWAY_WALLET_CONTRACT, 32),
+  );
 
   // The wallet is the only depositor, signer and recipient.
   for (const field of ['sourceDepositor', 'sourceSigner', 'destinationRecipient']) {
     assert.equal(
-      ethers.getAddress(built.burnIntent.spec[field]),
-      ethers.getAddress(ADDRESS),
+      built.burnIntent.spec[field],
+      ethers.zeroPadValue(ethers.getAddress(ADDRESS), 32),
       `${field} must be the session wallet`,
     );
   }
 
-  // The forwarder submits the destination mint, so no destination gas is needed.
-  assert.equal(
-    built.burnIntent.spec.destinationCaller,
-    '0x0000000000000000000000000000000000000000',
-  );
+  // Zero destinationCaller permits any caller, including Circle's forwarder.
+  // Forwarding itself is requested with ?enableForwarder=true, not by this field.
+  assert.equal(built.burnIntent.spec.destinationCaller, ethers.ZeroHash);
 
   // Source token is the source chain's USDC, not Arc's.
   assert.notEqual(
-    ethers.getAddress(built.burnIntent.spec.sourceToken),
-    ethers.getAddress(ARC_USDC),
+    built.burnIntent.spec.sourceToken,
+    ethers.zeroPadValue(ethers.getAddress(ARC_USDC), 32),
+  );
+  assert.equal(
+    built.burnIntent.spec.sourceToken,
+    ethers.zeroPadValue(
+      ethers.getAddress(SOURCE_USDC_BY_DOMAIN.get(BASE_SEPOLIA_DOMAIN)),
+      32,
+    ),
   );
 
-  // REST payload keeps 20 byte addresses; the signed message widens them to bytes32.
-  assert.match(built.burnIntent.spec.sourceDepositor, /^0x[0-9a-fA-F]{40}$/);
-  assert.match(built.typedData.message.spec.sourceDepositor, /^0x[0-9a-fA-F]{64}$/);
-  assert.equal(
-    built.typedData.message.spec.sourceDepositor,
-    ethers.zeroPadValue(ethers.getAddress(ADDRESS), 32),
-  );
+  // The intent is frozen, so a caller cannot mutate it after signing.
+  assert.ok(Object.isFrozen(built.burnIntent));
+  assert.ok(Object.isFrozen(built.burnIntent.spec));
 
   // EIP-712 domain carries no chainId, which is what lets one Arc EOA signature
   // spend a balance held on any source domain.
@@ -147,6 +182,28 @@ async function verifyBurnIntent() {
     /gateway_signature_invalid/,
   );
 
+  // Every source domain address must survive checksum validation, which catches
+  // a mistyped or misremembered address rather than letting it reach Circle.
+  for (const [domain, address] of SOURCE_USDC_BY_DOMAIN) {
+    assert.equal(
+      ethers.getAddress(address),
+      address,
+      `domain ${domain} USDC address must be correctly checksummed`,
+    );
+    assert.ok(isTransferableSourceDomain(domain));
+  }
+
+  // The two Gateway domains that must never be on this EVM signing path.
+  assert.ok(!SOURCE_USDC_BY_DOMAIN.has(5), 'Solana must not use this path');
+  assert.ok(!SOURCE_USDC_BY_DOMAIN.has(ARC_GATEWAY_DOMAIN), 'Arc is the destination');
+  assert.equal(isTransferableSourceDomain(5), false);
+  assert.equal(isTransferableSourceDomain(ARC_GATEWAY_DOMAIN), false);
+
+  // Arc USDC must never be reachable as a source token.
+  for (const address of SOURCE_USDC_BY_DOMAIN.values()) {
+    assert.notEqual(ethers.getAddress(address), ethers.getAddress(ARC_USDC));
+  }
+
   console.log('GATEWAY_BURN_INTENT=PASS');
 }
 
@@ -187,6 +244,16 @@ async function verifyBurnIntent() {
   assert.equal(result.balances.length, 2);
   assert.equal(result.balances[0].balance, '1.500000');
   assert.equal(result.balances[0].balanceRaw, '1500000');
+
+  // Domain 26 is Arc itself and domain 0 is Ethereum Sepolia, so only the
+  // second balance can actually be spent to Arc through the burn intent path.
+  assert.equal(result.balances[0].domain, 26);
+  assert.equal(result.balances[0].transferable, false);
+  assert.equal(result.balances[1].domain, 0);
+  assert.equal(result.balances[1].transferable, true);
+  assert.equal(result.transferableTotalRaw, '500000');
+  assert.equal(result.transferableTotalUsdc, '0.5');
+  assert.notEqual(result.transferableTotalRaw, result.totalRaw);
 
   await assert.rejects(
     () => readUnifiedUsdcBalance('not-an-address'),

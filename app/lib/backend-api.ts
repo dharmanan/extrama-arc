@@ -596,11 +596,17 @@ export type GatewayBalanceResponse = {
   depositor: string;
   totalRaw: string;
   totalUsdc: string;
+  // Gateway reports every domain it knows about, including ones that cannot be
+  // spent to Arc through the burn intent path. The transferable totals cover
+  // only the domains that can.
+  transferableTotalRaw: string;
+  transferableTotalUsdc: string;
   balances: Array<{
     domain: number;
     depositor: string;
     balance: string;
     balanceRaw: string;
+    transferable: boolean;
   }>;
   executionMode: "CIRCLE_USER_WALLET";
 };
