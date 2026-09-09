@@ -65,12 +65,19 @@ function nextCursor(response) {
 }
 
 function matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }) {
+  const contractMatches =
+    transaction?.contractAddress == null ||
+    (
+      typeof transaction.contractAddress === 'string' &&
+      ethers.isAddress(transaction.contractAddress) &&
+      ethers.getAddress(transaction.contractAddress).toLowerCase() ===
+        ethers.getAddress(contractAddress).toLowerCase()
+    );
+
   return transaction?.walletId === walletId &&
     transaction?.blockchain === ARC_TESTNET &&
     transaction?.refId === refId &&
-    typeof transaction?.contractAddress === 'string' &&
-    ethers.isAddress(transaction.contractAddress) &&
-    ethers.getAddress(transaction.contractAddress).toLowerCase() === ethers.getAddress(contractAddress).toLowerCase();
+    contractMatches;
 }
 
 function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client } = {}) {

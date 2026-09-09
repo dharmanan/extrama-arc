@@ -18,6 +18,7 @@ const {
 } = require('@circle-fin/user-controlled-wallets');
 const {
   createCircleUserWalletService,
+  matchesContractExecutionTransaction,
 } = require('../src/services/circleUserWalletService');
 
 const WALLET_ID = '11111111-1111-4111-8111-111111111111';
@@ -28,6 +29,33 @@ const TX_HASH = `0x${'a'.repeat(64)}`;
 const USER_TOKEN = 'circle-user-token-long-enough-for-runtime-smoke';
 
 async function main() {
+  assert.equal(
+    matchesContractExecutionTransaction(
+      {
+        walletId: WALLET_ID,
+        blockchain: 'ARC-TESTNET',
+        refId: REF_ID,
+      },
+      { walletId: WALLET_ID, refId: REF_ID, contractAddress: CONTRACT },
+    ),
+    true,
+    'optional Circle contractAddress must not block an otherwise exact match',
+  );
+
+  assert.equal(
+    matchesContractExecutionTransaction(
+      {
+        walletId: WALLET_ID,
+        blockchain: 'ARC-TESTNET',
+        refId: REF_ID,
+        contractAddress: '0x1000000000000000000000000000000000000001',
+      },
+      { walletId: WALLET_ID, refId: REF_ID, contractAddress: CONTRACT },
+    ),
+    false,
+    'a present but wrong Circle contractAddress must still be rejected',
+  );
+
   const requests = [];
 
   const server = http.createServer((req, res) => {
@@ -44,7 +72,6 @@ async function main() {
           walletId: WALLET_ID,
           blockchain: 'ARC-TESTNET',
           refId: REF_ID,
-          contractAddress: CONTRACT,
           txHash: TX_HASH,
           state: 'CONFIRMED',
         }],
