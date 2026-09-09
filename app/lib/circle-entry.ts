@@ -146,10 +146,46 @@ export async function confirmCircleEntry(input: {
   predictionPriceCents: number;
   requestId: string;
 }) {
-  const pending = readCircleEntryRecovery();
+  let pending = readCircleEntryRecovery();
+
+  if (pending && !matchesCircleEntryRecovery(pending, input)) {
+    try {
+      const [walletState, rounds] = await Promise.all([
+        backendApi.wallet.get(),
+        backendApi.rounds.list(),
+      ]);
+
+      const walletAddress = walletState.wallet?.address ?? null;
+      const recoveryPool = rounds.pools.find(
+        (pool) => pool.poolAddress.toLowerCase() === pending!.poolAddress.toLowerCase(),
+      );
+
+      if (walletAddress && recoveryPool) {
+        const entries = await backendApi.rounds.entries(
+          recoveryPool.slug,
+          pending.roundId,
+        );
+
+        const completed = entries.entries.some(
+          (entry) =>
+            entry.originalEntrant.toLowerCase() === walletAddress.toLowerCase() &&
+            entry.predictionPriceCents === String(pending!.predictionPriceCents),
+        );
+
+        if (completed) {
+          clearCircleEntryRecovery();
+          pending = null;
+        }
+      }
+    } catch {
+      // A failed read must never discard a genuinely pending action.
+    }
+  }
+
   if (pending && !matchesCircleEntryRecovery(pending, input)) {
     throw new Error("circle_pending_action_for_different_intent");
   }
+
   const auth = readCircleTabAuth();
   if (!auth) throw new Error("circle_reauthentication_required");
   if (pending) {

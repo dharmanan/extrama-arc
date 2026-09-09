@@ -244,6 +244,7 @@ export default function PoolDetailPage() {
   const [entryError, setEntryError] = useState("");
   const entriesRequestId = useRef(0);
   const circleEntryRequestId = useRef<string | null>(null);
+  const [authoritativeWalletAddress, setAuthoritativeWalletAddress] = useState<string | null>(null);
   const [entrySuccess, setEntrySuccess] = useState<{
     ticketId: string;
     explorerUrl: string | null;
@@ -259,7 +260,11 @@ export default function PoolDetailPage() {
   const refreshEntries = useCallback(async (pool: LivePool) => {
     const requestId = ++entriesRequestId.current;
     try {
-      const result = await backendApi.rounds.entries(pool.slug, pool.round.roundId);
+      const [result, walletState] = await Promise.all([
+        backendApi.rounds.entries(pool.slug, pool.round.roundId),
+        backendApi.wallet.get(),
+      ]);
+
       if (
         result.pool.slug !== pool.slug ||
         result.pool.poolAddress.toLowerCase() !== pool.poolAddress.toLowerCase() ||
@@ -269,9 +274,13 @@ export default function PoolDetailPage() {
       }
       if (requestId !== entriesRequestId.current) return;
 
-      const ownEntry = address
+      const authoritativeAddress = walletState.wallet?.address ?? address;
+      setAuthoritativeWalletAddress(authoritativeAddress);
+
+      const ownEntry = authoritativeAddress
         ? result.entries.find(
-            (entry) => entry.originalEntrant.toLowerCase() === address.toLowerCase(),
+            (entry) =>
+              entry.originalEntrant.toLowerCase() === authoritativeAddress.toLowerCase(),
           ) ?? null
         : null;
 
@@ -449,7 +458,9 @@ export default function PoolDetailPage() {
           message === "circle_service_unavailable"
         );
 
-      if (ambiguousCircleResult && address) {
+      const recoveryAddress = authoritativeWalletAddress ?? address;
+
+      if (ambiguousCircleResult && recoveryAddress) {
         try {
           const [latestRound, latestEntries] = await Promise.all([
             backendApi.rounds.get(state.pool.slug),
@@ -458,7 +469,7 @@ export default function PoolDetailPage() {
 
           const recoveredEntry = latestEntries.entries.find(
             (entry) =>
-              entry.originalEntrant.toLowerCase() === address.toLowerCase() &&
+              entry.originalEntrant.toLowerCase() === recoveryAddress.toLowerCase() &&
               entry.predictionPriceCents === String(predictionPriceCents),
           );
 
@@ -496,6 +507,10 @@ export default function PoolDetailPage() {
         );
       } else if (message === "circle_entry_authorization_invalid") {
         setEntryError("This prediction session expired. Refresh the page and try again.");
+      } else if (message === "circle_pending_action_for_different_intent") {
+        setEntryError(
+          "Another Circle prediction is still being verified. Please wait before starting a different prediction.",
+        );
       } else if (message === "entry_insufficient_usdc") {
         setEntryError(isExternalWallet
           ? "You need at least 1 USDC in your connected wallet to enter."
@@ -550,9 +565,11 @@ export default function PoolDetailPage() {
   const config = assetConfigs[pool.asset];
   const phase = roundPhase(pool, now);
 
-  const ownEntry = address
+  const effectiveWalletAddress = authoritativeWalletAddress ?? address;
+  const ownEntry = effectiveWalletAddress
     ? (entriesState?.entries ?? []).find(
-        (entry) => entry.originalEntrant.toLowerCase() === address.toLowerCase(),
+        (entry) =>
+          entry.originalEntrant.toLowerCase() === effectiveWalletAddress.toLowerCase(),
       ) ?? null
     : null;
   const ownPriceCents = ownEntry ? parsePredictionCents(ownEntry.predictionPriceCents) : null;
@@ -713,12 +730,22 @@ export default function PoolDetailPage() {
 
             {/* ---- Entry ---------------------------------------------- */}
             <div className="ex-entry">
-              {ownEntry ? (
+              {hasConfirmedEntry ? (
                 <div className="ex-entry__msg" data-tone="ok">
-                  <p>
-                    <b>Prediction confirmed.</b> Ticket #{ownEntry.ticketId} is entered for this round.
-                  </p>
-                  <p>Your prediction: {formatPredictionPrice(ownEntry.predictionPriceCents, locale)}</p>
+                  {ownEntry ? (
+                    <>
+                      <p>
+                        <b>Prediction confirmed.</b> Ticket #{ownEntry.ticketId} is entered for this round.
+                      </p>
+                      <p>
+                        Your prediction: {formatPredictionPrice(ownEntry.predictionPriceCents, locale)}
+                      </p>
+                    </>
+                  ) : entrySuccess ? (
+                    <p>
+                      <b>Prediction confirmed.</b> Ticket #{entrySuccess.ticketId} was minted on Arc Testnet.
+                    </p>
+                  ) : null}
                 </div>
               ) : (
                 <>
@@ -756,7 +783,11 @@ export default function PoolDetailPage() {
                   ? locale === "tr"
                     ? "Bağlı cüzdanın her gerekli zincir üstü işlemi ayrı olarak onaylar."
                     : "Your connected wallet approves each required onchain transaction separately."
-                  : t.confirmBiometric}
+                  : executionMode === "CIRCLE_USER_WALLET"
+                    ? locale === "tr"
+                      ? "Circle cüzdanın gerekli her zincir üstü adımı ayrı olarak onaylamanı ister."
+                      : "Your Circle wallet asks you to approve each required onchain step."
+                    : t.confirmBiometric}
               </p>
 
               {!canSubmit && (
@@ -772,18 +803,6 @@ export default function PoolDetailPage() {
                 </p>
               )}
 
-              {entrySuccess && (
-                <div className="ex-entry__msg" data-tone="ok">
-                  <p><b>Prediction confirmed.</b> Ticket #{entrySuccess.ticketId} was minted on Arc Testnet.</p>
-                  {entrySuccess.explorerUrl && (
-                    <p>
-                      <a href={entrySuccess.explorerUrl} target="_blank" rel="noreferrer">
-                        View transaction on ArcScan
-                      </a>
-                    </p>
-                  )}
-                </div>
-              )}
                 </>
               )}
             </div>
