@@ -223,14 +223,11 @@ async function main() {
       },
       async listTransactions(input) {
         transactionListCalls.push(input);
-        if (!input.pageAfter) {
-          return { data: { transactions: [] }, headers: { 'x-next-page-after': 'transactions-page-2' } };
-        }
         return { data: { transactions: [{
           id: '44444444-4444-4444-8444-444444444444', walletId: CIRCLE_WALLET_ID,
           blockchain: 'ARC-TESTNET', refId: `${ACTION_ID}:entry`, contractAddress: POOL,
           txHash: `0x${'a'.repeat(64)}`, state: 'CONFIRMED',
-        }] }, headers: {} };
+        }] }, headers: { 'x-next-page-after': 'must-not-be-followed' } };
       },
       async getTransaction(input) {
         return { data: { transaction: {
@@ -255,13 +252,21 @@ async function main() {
     refId: `${ACTION_ID}:entry`, contractAddress: POOL,
   });
   assert.equal(transaction?.txHash, `0x${'a'.repeat(64)}`);
-  assert.equal(transactionListCalls[0].blockchain, undefined);
-  assert.equal(transactionListCalls[0].walletIds, undefined);
-  assert.equal(transactionListCalls[1].pageAfter, 'transactions-page-2');
+  assert.equal(transactionListCalls.length, 1);
+  assert.equal(transactionListCalls[0].blockchain, 'ARC-TESTNET');
+  assert.equal(transactionListCalls[0].walletIds, CIRCLE_WALLET_ID);
+  assert.equal(transactionListCalls[0].operation, 'CONTRACT_EXECUTION');
+  assert.equal(transactionListCalls[0].order, 'DESC');
+  assert.equal(transactionListCalls[0].pageAfter, undefined);
   assert.equal(await circle.findContractExecutionTransaction({
     userToken: 'circle-user-token-long-enough', walletId: CIRCLE_WALLET_ID,
     refId: 'other', contractAddress: POOL,
   }), null);
+  assert.equal(
+    transactionListCalls.length,
+    2,
+    'each transaction lookup must perform exactly one Circle list request',
+  );
   const fetched = await circle.getContractExecutionTransaction({
     userToken: 'circle-user-token-long-enough', id: '44444444-4444-4444-8444-444444444444',
     walletId: CIRCLE_WALLET_ID, refId: `${ACTION_ID}:entry`, contractAddress: POOL,

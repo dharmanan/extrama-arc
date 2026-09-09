@@ -254,23 +254,20 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
 
   async function findContractExecutionTransaction({ userToken, walletId, refId, contractAddress }) {
     try {
-      let pageAfter;
-      const matching = [];
-      for (let page = 0; page < MAX_PAGES; page += 1) {
-        const response = await getClient().listTransactions({
-          userToken,
-          pageAfter,
-          pageSize: PAGE_SIZE,
-        });
-        matching.push(...(response?.data?.transactions || []).filter((transaction) =>
-          matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress })));
-        const cursor = nextCursor(response);
-        if (!cursor) break;
-        if (cursor === pageAfter || page === MAX_PAGES - 1) {
-          throw new Error('circle_transaction_listing_incomplete');
-        }
-        pageAfter = cursor;
-      }
+      // The transaction was just created for this wallet. Query only the
+      // newest contract executions instead of walking the user's full history.
+      const response = await getClient().listTransactions({
+        userToken,
+        blockchain: ARC_TESTNET,
+        walletIds: walletId,
+        operation: 'CONTRACT_EXECUTION',
+        pageSize: PAGE_SIZE,
+        order: 'DESC',
+      });
+
+      const matching = (response?.data?.transactions || []).filter((transaction) =>
+        matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }));
+
       if (matching.length > 1) throw new Error('circle_transaction_ambiguous');
       return matching[0] || null;
     } catch (error) {
