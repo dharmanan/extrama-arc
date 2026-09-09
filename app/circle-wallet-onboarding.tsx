@@ -330,7 +330,19 @@ export function CircleWalletOnboarding({
       configuredSdk.verifyOtp();
     } catch (cause) {
       clearCircleTransientState();
-      setError(cause instanceof Error ? cause.message : "Email verification could not start.");
+
+      const message = cause instanceof Error ? cause.message : "";
+
+      if (message === "circle_email_otp_send_limit") {
+        setError("You've requested several verification codes. Please try again in 60 minutes.");
+      } else if (message === "circle_email_otp_attempt_limit") {
+        setError("Too many verification attempts were made. Please try again in 60 minutes.");
+      } else if (message === "circle_request_rejected") {
+        setError("We couldn't send a verification code. Please try again.");
+      } else {
+        setError(message || "Email verification could not start. Please try again.");
+      }
+
       setBusy("");
     }
   }

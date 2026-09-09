@@ -26,6 +26,8 @@ function safeCircleError(error) {
     return new Error('circle_authentication_invalid');
   }
   if (code === ALREADY_INITIALIZED_CODE) return new Error('circle_user_already_initialized');
+  if (code === 155142) return new Error('circle_email_otp_send_limit');
+  if (code === 155141) return new Error('circle_email_otp_attempt_limit');
   if (code && code >= 155000 && code < 156000) return new Error('circle_request_rejected');
   if (error?.response?.status === 429) return new Error('circle_rate_limited');
   return new Error('circle_service_unavailable');
