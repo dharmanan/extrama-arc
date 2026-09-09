@@ -135,6 +135,8 @@ app.use((error, req, res, next) => {
     'circle_wallet_id_forbidden',
     'circle_wallet_session_mismatch',
     'circle_authentication_invalid',
+    'circle_email_otp_send_limit',
+    'circle_email_otp_attempt_limit',
     'circle_request_rejected',
     'circle_service_unavailable',
     'circle_arc_eoa_not_found',

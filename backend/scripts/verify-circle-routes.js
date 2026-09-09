@@ -27,6 +27,8 @@ assert.match(identity, /circle_wallet_session_mismatch/);
 console.log('CIRCLE_ROUTES=PASS');
 
 for (const error of [
+  'circle_email_otp_send_limit',
+  'circle_email_otp_attempt_limit',
   'circle_rate_limited',
   'circle_entry_authorization_invalid',
   'circle_transaction_failed',
