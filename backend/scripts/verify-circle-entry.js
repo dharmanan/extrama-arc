@@ -255,6 +255,8 @@ async function main() {
     refId: `${ACTION_ID}:entry`, contractAddress: POOL,
   });
   assert.equal(transaction?.txHash, `0x${'a'.repeat(64)}`);
+  assert.equal(transactionListCalls[0].blockchain, undefined);
+  assert.equal(transactionListCalls[0].walletIds, undefined);
   assert.equal(transactionListCalls[1].pageAfter, 'transactions-page-2');
   assert.equal(await circle.findContractExecutionTransaction({
     userToken: 'circle-user-token-long-enough', walletId: CIRCLE_WALLET_ID,

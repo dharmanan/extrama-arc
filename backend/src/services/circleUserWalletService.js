@@ -259,8 +259,6 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       for (let page = 0; page < MAX_PAGES; page += 1) {
         const response = await getClient().listTransactions({
           userToken,
-          blockchain: ARC_TESTNET,
-          walletIds: [walletId],
           pageAfter,
           pageSize: PAGE_SIZE,
         });
