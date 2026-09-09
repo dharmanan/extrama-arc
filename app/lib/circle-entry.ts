@@ -123,10 +123,17 @@ function recoveryFor(
   started: { actionId: string; payloadHash: string },
   phase: CircleEntryRecovery["phase"],
   challengeId: string | null,
+  expiresInSeconds: number,
 ): CircleEntryRecovery {
   return {
-    ...input, requestId, actionId: started.actionId, payloadHash: started.payloadHash,
-    phase, challengeId, approvalTxHash: null,
+    ...input,
+    requestId,
+    actionId: started.actionId,
+    payloadHash: started.payloadHash,
+    phase,
+    challengeId,
+    approvalTxHash: null,
+    expiresAtMs: Date.now() + expiresInSeconds * 1000,
   };
 }
 
@@ -299,6 +306,26 @@ export async function confirmCircleEntry(input: {
     throw new Error("circle_pending_action_for_different_intent");
   }
 
+  if (pending && pending.expiresAtMs <= Date.now()) {
+    const probe = pending.phase === "APPROVAL_CHALLENGE" ||
+        pending.phase === "APPROVAL_PENDING"
+      ? await verifyCircleApprovalOnce(pending.actionId, auth.userToken)
+      : await verifyCircleEntryOnce(pending.actionId, auth.userToken);
+
+    if (
+      "pending" in probe &&
+      probe.pending &&
+      !probe.transactionObserved
+    ) {
+      clearCircleEntryRecovery();
+      throw new Error("circle_entry_recovery_expired");
+    }
+
+    // If Circle already sees a transaction, do not discard recovery merely
+    // because the local action TTL elapsed. Resume the existing action and
+    // reconcile that single financial intent to its terminal state.
+  }
+
   if (pending) {
     try {
       return await resumeCircleEntry(pending, auth.userToken);
@@ -323,6 +350,7 @@ export async function confirmCircleEntry(input: {
     started,
     started.step === "APPROVAL_REQUIRED" ? "APPROVAL_CHALLENGE" : "ENTRY_CHALLENGE",
     started.challengeId,
+    started.expiresInSeconds,
   );
   storeCircleEntryRecovery(recovery);
   try {

@@ -448,12 +448,90 @@ async function testSlowIndexingStateMachine() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// F. Expired local recovery must not blindly poll for minutes
+// ---------------------------------------------------------------------------
+
+async function testExpiredRecoveryDoesNotPollBlindly() {
+  const auth = createCircleAuthMock();
+
+  auth.module.readCircleEntryRecovery = () => ({
+    requestId: 'stale-recovery-request',
+    actionId: 'stale-recovery-action',
+    payloadHash: 'stale-recovery-payload',
+    poolAddress: INPUT.poolAddress,
+    roundId: INPUT.roundId,
+    predictionPriceCents: INPUT.predictionPriceCents,
+    phase: 'ENTRY_PENDING',
+    challengeId: null,
+    approvalTxHash: null,
+    expiresAtMs: Date.now() - 60_000,
+  });
+
+  const backend = createBackendApiMock({
+    startResult: START_RESULT_ENTRY_READY,
+    entrySteps: [
+      () => ({
+        pending: true,
+        transactionObserved: false,
+      }),
+    ],
+  });
+
+  const sdk = createSdkModule();
+  const window = createFakeWindow();
+
+  const circleEntry = loadWithMocks({
+    auth,
+    backend,
+    sdk,
+    window,
+  });
+
+  await assert.rejects(
+    () => circleEntry.confirmCircleEntry(INPUT),
+    /circle_entry_recovery_expired/,
+  );
+
+  assert.equal(
+    backend.verifyEntry.calls.length,
+    1,
+    'expired recovery may perform exactly one read-only reconciliation probe',
+  );
+
+  assert.equal(
+    window.delays.length,
+    0,
+    'expired recovery must not enter the 4-second polling loop',
+  );
+
+  assert.equal(
+    backend.startCalls.length,
+    0,
+    'the same click must not automatically create a second financial intent',
+  );
+
+  assert.equal(
+    sdk.executeCalls.length,
+    0,
+    'an expired hosted challenge must never be executed',
+  );
+
+  assert.equal(
+    auth.cleared.length,
+    1,
+    'expired unobserved recovery must be cleared',
+  );
+}
+
 async function main() {
   await testSessionExpiryDuringPolling();
   await testSessionRefreshRetriesOnlyOnce();
   await testIndependentVerifyRateLimiters();
   await testHostedChallengeResult();
   await testSlowIndexingStateMachine();
+  await testExpiredRecoveryDoesNotPollBlindly();
   console.log('CIRCLE_ENTRY_BEHAVIOR=PASS');
 }
 

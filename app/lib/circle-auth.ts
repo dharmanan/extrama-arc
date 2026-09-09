@@ -24,6 +24,7 @@ export type CircleEntryRecovery = {
   phase: CircleEntryRecoveryPhase;
   challengeId: string | null;
   approvalTxHash: string | null;
+  expiresAtMs: number;
 };
 
 export function readCircleTabAuth(): CircleTabAuth | null {
@@ -58,7 +59,21 @@ export function readCircleEntryRecovery(): CircleEntryRecovery | null {
       !(typeof parsed.challengeId === "string" || parsed.challengeId === null) ||
       !(typeof parsed.approvalTxHash === "string" || parsed.approvalTxHash === null)
     ) return null;
-    return parsed as CircleEntryRecovery;
+
+    // Recovery records written before expiresAtMs existed are treated as
+    // expired. confirmCircleEntry() still performs one read-only
+    // reconciliation probe before discarding them, so an already-submitted
+    // transaction is never blindly replaced by a new financial intent.
+    const expiresAtMs =
+      typeof parsed.expiresAtMs === "number" &&
+      Number.isFinite(parsed.expiresAtMs)
+        ? parsed.expiresAtMs
+        : 0;
+
+    return {
+      ...parsed,
+      expiresAtMs,
+    } as CircleEntryRecovery;
   } catch {
     return null;
   }
