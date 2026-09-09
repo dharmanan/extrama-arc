@@ -46,7 +46,56 @@ const roundAutomationSource = fs.readFileSync(
 );
 
 const runLifecycleSource = extractFunctionSource(roundAutomationSource, 'async function runLifecycle()');
+const runLifecycleInternalSource = extractFunctionSource(
+  roundAutomationSource,
+  'async function runLifecycleInternal()',
+);
 const runAndLogSource = extractFunctionSource(roundAutomationSource, 'function runAndLog()');
+
+// ---------------------------------------------------------------------------
+// Cadence creation wiring regression coverage.
+//
+// Canonical schedule arithmetic is tested separately by
+// verify-canonical-schedules.js. These assertions protect the production
+// lifecycle wiring that actually routes WEEKLY and QUARTERLY pools into the
+// generalized createRound path while leaving DAILY on its existing path.
+// ---------------------------------------------------------------------------
+
+assert.match(
+  roundAutomationSource,
+  /async function ensureCurrentWeeklyRoundsInternal\(\)\s*{\s*return ensureCurrentCadenceRoundsInternal\('WEEKLY', CADENCE_ENUM\.WEEKLY, currentWeeklySchedule\);\s*}/,
+  'WEEKLY creation must route through the generalized cadence creator with the canonical WEEKLY schedule',
+);
+
+assert.match(
+  roundAutomationSource,
+  /async function ensureCurrentQuarterlyRoundsInternal\(\)\s*{\s*return ensureCurrentCadenceRoundsInternal\('QUARTERLY', CADENCE_ENUM\.QUARTERLY, currentQuarterlySchedule\);\s*}/,
+  'QUARTERLY creation must route through the generalized cadence creator with the canonical QUARTERLY schedule',
+);
+
+assert.match(
+  runLifecycleInternalSource,
+  /const daily = await ensureCurrentDailyRoundsInternal\(\);/,
+  'DAILY creation must remain on its dedicated implementation',
+);
+
+assert.match(
+  runLifecycleInternalSource,
+  /const weekly = await ensureCadenceRoundsSafely\(ensureCurrentWeeklyRoundsInternal\);/,
+  'production lifecycle must invoke WEEKLY creation',
+);
+
+assert.match(
+  runLifecycleInternalSource,
+  /const quarterly = await ensureCadenceRoundsSafely\(ensureCurrentQuarterlyRoundsInternal\);/,
+  'production lifecycle must invoke QUARTERLY creation',
+);
+
+assert.match(
+  runLifecycleInternalSource,
+  /const created = { daily, weekly, quarterly };/,
+  'lifecycle result must preserve all three cadence creation results',
+);
 
 // ---------------------------------------------------------------------------
 // Static shape: the guard against re-attaching a logger must be in place,

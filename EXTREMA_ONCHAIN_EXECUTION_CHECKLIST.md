@@ -58,7 +58,7 @@ This section is a summary. The authoritative per-item status remains in the numb
 - Live result API reading real round state
 - Backend claim flow and backend refund flow
 - 90-day onchain archive read path
-- Round lifecycle automation running in Railway: scan, DAILY round creation, permissionless `lockRound`, and resolver-authorized `cancelRound` / `settleRound`
+- Round lifecycle automation running in Railway: DAILY/WEEKLY/QUARTERLY round creation, lifecycle scan, permissionless `lockRound`, and resolver-authorized `cancelRound` / `settleRound`
 - Arc RPC hardening: bounded retry for transient reads plus correct ethers v6 rate-limit shape detection
 - Resolver signer provisioned to Railway as an encrypted envelope and verified against `pool.resolver()` at backend startup
 - Resolver funded for gas on Arc Testnet
@@ -82,16 +82,14 @@ Section 15 remains open: the evidence above spans multiple real rounds and there
 
 ### Remaining implementation
 
-1. WEEKLY round creation automation
-2. QUARTERLY round creation automation
-3. Demo/mock runtime state removal
-4. Real leaderboard
-5. Real settlement verification page backed by a real endpoint
-6. Final mock-state removal audit
-7. Wrong-network detection and switch proof
-8. Final security gate items
-9. Final Arc Testnet end-to-end proof
-10. Secondary NFT marketplace live trade proof and final UI polish; core contract/backend lifecycle is already covered by deterministic E2E
+1. Demo/mock runtime state removal
+2. Real leaderboard
+3. Real settlement verification page backed by a real endpoint
+4. Final mock-state removal audit
+5. Wrong-network detection and switch proof
+6. Final security gate items
+7. Final Arc Testnet end-to-end proof
+8. Secondary NFT marketplace live trade proof and final UI polish; core contract/backend lifecycle is already covered by deterministic E2E
 
 See [Current roadmap](#current-roadmap) at the end of this document for the execution order.
 
@@ -616,17 +614,18 @@ Round #1 for all 24 pools was created by a one-time broadcast script. Ongoing cr
   - `ensureCurrentDailyRoundsInternal()` selects the DAILY subset of the pool topology, computes the canonical schedule from chain time, verifies the pool cadence enum before writing, and calls `createRound` from the pool owner wallet.
   - Owner authority is required: `createRound` is `onlyOwner`.
   - Multi-instance safety uses a PostgreSQL advisory lock so two Railway instances cannot create the same round twice.
-- [ ] WEEKLY round creation automated **(NOT IMPLEMENTED / REMAINING)**
-- [ ] QUARTERLY round creation automated **(NOT IMPLEMENTED / REMAINING)**
+- [x] WEEKLY round creation automated
+  - `ensureCurrentWeeklyRoundsInternal()` routes the WEEKLY topology through `ensureCurrentCadenceRoundsInternal()`.
+  - `currentWeeklySchedule()` derives the Monday-to-Monday UTC market period and closes entry exactly 24 hours before period end.
+  - Live production read on 2026-09-09: all 8 WEEKLY pools were on V2 Round #3, `ENTRY_OPEN`, with the same canonical schedule `2026-09-07T00:00:00.000Z` → `2026-09-14T00:00:00.000Z`.
+- [x] QUARTERLY round creation automated
+  - `ensureCurrentQuarterlyRoundsInternal()` routes the QUARTERLY topology through `ensureCurrentCadenceRoundsInternal()`.
+  - `currentQuarterlySchedule()` derives the next calendar-quarter boundary rather than using a fixed 91-day duration.
+  - Live production read on 2026-09-09: all 8 QUARTERLY pools were on V2 Round #2, `ENTRY_OPEN`, with the same canonical schedule `2026-07-01T00:00:00.000Z` → `2026-10-01T00:00:00.000Z`.
 
-Current WEEKLY/QUARTERLY behaviour, and why this is a real gap:
+The generalized creation path preserves DAILY separately, validates the onchain cadence enum, re-reads immediately before any write, performs a single `createRound` send attempt, reconciles uncertain outcomes by reading chain state, and isolates failures per pool so one cadence/pool does not block the others.
 
-- The lifecycle scan (`scanLifecycle`) reads every pool at every cadence, so WEEKLY and QUARTERLY rounds are correctly observed.
-- Locking, cancellation, and settlement are cadence-agnostic and already apply to WEEKLY and QUARTERLY rounds.
-- Only **creation** is DAILY-only. The canonical cadence constants for all three cadences already exist in the service (`DAILY` entry close 4h before observation start with a 24h window; `WEEKLY` 24h before with a 7d window; `QUARTERLY` 24h before with a quarter-boundary window), so the missing work is the creation path, not the schedule definition.
-- Consequence: once WEEKLY Round #1 and QUARTERLY Round #1 complete their lifecycle, no WEEKLY or QUARTERLY Round #2 will appear without a manual broadcast.
-
-QUARTERLY additionally has no fixed duration constant, because a quarter is 89 to 92 days depending on the calendar. Its creation path must derive `observationEndAt` from the next quarter boundary rather than from a fixed offset.
+QUARTERLY intentionally has no fixed duration constant because calendar quarters vary in length; `observationEndAt` is derived from the next UTC quarter boundary.
 
 ---
 
@@ -1690,18 +1689,21 @@ The old calendar-gated lifecycle proof is closed. As of 2026-09-09, the resolver
 
 These proofs intentionally do **not** imply that every negative case was redundantly broadcast on production. Live double-claim and double-refund attempts remain unperformed; their rejection is covered by deterministic contract/E2E tests.
 
+### Completed immediately after C6
+
+- [x] **Stale Circle entry recovery UX fixed.** Commit `463d9b6` adds local recovery expiry handling, one read-only reconciliation probe for expired records, no blind ~3-minute polling, and no automatic second financial intent.
+- [x] **WEEKLY and QUARTERLY round creation automation verified.** The generalized creation path is already wired into the production lifecycle. Live production state on 2026-09-09 showed 8/8 WEEKLY pools on V2 Round #3 and 8/8 QUARTERLY pools on V2 Round #2 with canonical schedules.
+
 ### Next execution order
 
-1. **Fix stale Circle entry recovery UX.** A stale `extrema-circle-entry-recovery-v1` value can leave the UI polling an expired historical action for roughly three minutes. The successful production entry proved the financial path; this is now a separate frontend recovery cleanup and must not change Circle transaction semantics.
-2. **Weekly and Quarterly round creation automation.** Generalize the current DAILY creation path. QUARTERLY must use the next calendar-quarter boundary rather than a fixed 91-day offset.
-3. **Remove remaining demo/mock runtime financial state.** Audit section 13 against the current repository before deleting anything; the section itself is older than several later UI/data-path changes.
-4. **Real settlement verification and result surfaces.** Ensure `/verify/[roundId]` and `/results/[roundId]` are backed only by real settlement/evidence/winner data.
-5. **Real leaderboard.** Derive it deterministically from settled onchain rounds and remove any fabricated player/earnings data.
-6. **Complete the visual design and route cleanup.** Audit the current frontend first because section 17 predates several later UI changes.
-7. **Final security gate.** Replay/JWT rejection, rate limits, session expiry, dependency review, secret rotation procedure, and secret scan.
-8. **Final Arc Testnet single-round end-to-end proof.** Section 15 remains open. Existing production evidence is strong but spans multiple rounds; the stricter acceptance test requires one complete round from creation through final claim.
-9. **Secondary marketplace live proof and final polish.** Core marketplace list/update/cancel/buy behavior is already covered by deterministic E2E and a live listing/cache refresh has been observed. Section 16.3 still needs a recorded real secondary sale if the final acceptance gate requires it.
-10. **Hackathon submission packaging.**
+1. **Remove remaining demo/mock runtime financial state.** Audit section 13 against the current repository before deleting anything; the section itself is older than several later UI/data-path changes.
+2. **Real settlement verification and result surfaces.** Ensure the canonical verify/results routes are backed only by real settlement/evidence/winner data.
+3. **Real leaderboard.** Derive it deterministically from settled onchain rounds and remove any fabricated player/earnings data.
+4. **Complete the visual design and route cleanup.** Audit the current frontend first because section 17 predates several later UI changes.
+5. **Final security gate.** Replay/JWT rejection, rate limits, session expiry, dependency review, secret rotation procedure, and secret scan.
+6. **Final Arc Testnet single-round end-to-end proof.** Section 15 remains open. Existing production evidence is strong but spans multiple rounds; the stricter acceptance test requires one complete round from creation through final claim.
+7. **Secondary marketplace live proof and final polish.** Core marketplace list/update/cancel/buy behavior is already covered by deterministic E2E and a live listing/cache refresh has been observed. Section 16.3 still needs a recorded real secondary sale if the final acceptance gate requires it.
+8. **Hackathon submission packaging.**
 
 ### Live actions pending
 
