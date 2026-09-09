@@ -7,7 +7,7 @@ import {ExtremaPool} from "../src/ExtremaPool.sol";
 import {ExtremaTicket} from "../src/ExtremaTicket.sol";
 
 interface Vm {
-    function createSelectFork(string calldata url) external returns (uint256 forkId);
+    function createSelectFork(string calldata url, uint256 blockNumber) external returns (uint256 forkId);
     function prank(address msgSender) external;
     function expectRevert(bytes4 revertData) external;
 }
@@ -20,12 +20,20 @@ contract ExtremaMarketplaceArcForkTest {
     address internal constant USDC = 0x3600000000000000000000000000000000000000;
     address internal constant FACTORY = 0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A;
 
-    // This pool currently has an ENTRY_OPEN round with token 4 on Arc Testnet.
     address internal constant LIVE_POOL = 0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f;
     uint256 internal constant LIVE_TOKEN_ID = 4;
 
+    // Pinned, not "latest": at block 61250761 this round had already settled
+    // (RoundNotTradable), because an unpinned fork silently drifts as the live
+    // round progresses. This block is round 4's own LOCKED window -- entry
+    // closed (entryCloseAt 1788811200), token 4 already minted, status still
+    // LOCKED, and before the marketplace's pre-observation-end cutoff -- so the
+    // list/updatePrice/cancel/transfer compatibility checks below stay true
+    // regardless of what happens to this round on Arc Testnet afterward.
+    uint256 internal constant ARC_FIXED_BLOCK = 60_965_654;
+
     function testArcDeploymentAbiAndMarketplaceCompatibility() public {
-        vm.createSelectFork(ARC_RPC);
+        vm.createSelectFork(ARC_RPC, ARC_FIXED_BLOCK);
         require(block.chainid == ARC_CHAIN_ID, "wrong chain");
 
         ExtremaFactory factory = ExtremaFactory(FACTORY);

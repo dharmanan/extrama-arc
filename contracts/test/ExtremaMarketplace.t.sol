@@ -173,6 +173,23 @@ contract ExtremaMarketplaceTest {
         require(secondListing != firstListing, "new id");
     }
 
+    function testBuyAfterCancelRejected() public {
+        uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
+        _approveTicket(ALICE, tokenId);
+        uint256 listingId = _list(ALICE, tokenId, 1_000_000);
+
+        vm.prank(ALICE);
+        marketplace.cancel(listingId);
+
+        vm.prank(BOB);
+        usdc.approve(address(marketplace), 1_000_000);
+        vm.expectRevert(ExtremaMarketplace.ListingNotActive.selector);
+        vm.prank(BOB);
+        marketplace.buy(listingId, 1_000_000);
+
+        require(ticket.ownerOf(tokenId) == ALICE, "ticket ownership must be unchanged after a rejected buy");
+    }
+
     function testManualTransferMakesListingUnbuyable() public {
         uint256 tokenId = _enter(ALICE, _createRound(), 10_000);
         _approveTicket(ALICE, tokenId);

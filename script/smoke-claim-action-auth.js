@@ -127,6 +127,44 @@ const fakeDb = {
 
     if (
       normalized.startsWith(
+        'SELECT id, action_type, payload_hash, payload_json, consumed_at, external_state, authorization_expires_at, verified_tx_hash FROM action_authorizations',
+      )
+    ) {
+      const [actionId, userId, actionType] = params;
+      const row = actionRows.get(actionId);
+      const executionMode = row && row.payload_json && row.payload_json.executionMode;
+      const isExternal = executionMode === 'EXTERNAL_WALLET' || executionMode === 'EXTERNAL_OWNER';
+      const authorizationStillFresh =
+        row && (row.authorization_expires_at == null || row.authorization_expires_at > new Date());
+      if (
+        !row ||
+        row.user_id !== userId ||
+        row.action_type !== actionType ||
+        !row.consumed_at ||
+        (isExternal && !authorizationStillFresh)
+      ) {
+        return { rowCount: 0, rows: [] };
+      }
+
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: row.id,
+            action_type: row.action_type,
+            payload_hash: row.payload_hash,
+            payload_json: row.payload_json,
+            consumed_at: row.consumed_at,
+            external_state: row.external_state ?? null,
+            authorization_expires_at: row.authorization_expires_at ?? null,
+            verified_tx_hash: row.verified_tx_hash ?? null,
+          },
+        ],
+      };
+    }
+
+    if (
+      normalized.startsWith(
         'SELECT id, action_type, payload_hash, payload_json, consumed_at FROM action_authorizations',
       )
     ) {
@@ -214,7 +252,15 @@ async function expectError(operation, expectedMessage) {
   assert.strictEqual(created.payload.walletAddress, walletAddress);
   assert(created.payload.nonce.length >= 16);
   assert(Date.parse(created.payload.expiresAt) > Date.now());
-  assert.strictEqual(created.expiresInSeconds, 120);
+  // expiresInSeconds is Math.floor((expiresAt - Date.now()) / 1000): the
+  // nonzero time this function itself takes to run means it is almost always
+  // 119, not 120, even though the TTL requested was exactly 120s. Asserting
+  // the exact value made this check flaky/timing-dependent rather than
+  // deterministic; a tolerant range still proves the real invariant (~120s TTL).
+  assert.ok(
+    created.expiresInSeconds === 119 || created.expiresInSeconds === 120,
+    `expected expiresInSeconds to floor to 119 or 120, got ${created.expiresInSeconds}`,
+  );
 
   const expectedHash = crypto
     .createHash('sha256')
