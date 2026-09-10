@@ -96,6 +96,12 @@ const LAYER3_SCRIPTS = [
   'scripts/verify-market-archive-core.js',
   'scripts/verify-canonical-schedules.js',
   'scripts/verify-gateway-service.js',
+  'scripts/verify-seed-bot-core.js',
+  'scripts/verify-seed-bot-execution.js',
+  'scripts/verify-seed-bot-plan-store.js',
+  'scripts/verify-seed-bot-live-state.js',
+  'scripts/verify-seed-bot-production-executor.js',
+  'scripts/verify-seed-bot-automation.js',
 ];
 
 // ---------------------------------------------------------------------------

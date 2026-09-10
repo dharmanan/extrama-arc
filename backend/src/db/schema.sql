@@ -226,3 +226,50 @@ CREATE INDEX IF NOT EXISTS daily_market_archives_period_idx
 -- table, so make the new daily archive default explicit without rewriting rows.
 ALTER TABLE daily_market_archives
   ALTER COLUMN interval SET DEFAULT '1d';
+
+-- Durable seed-agent scheduler state. These rows contain public scheduling
+-- metadata only; no private key material or signer secrets are stored here.
+CREATE TABLE IF NOT EXISTS seed_bot_dispatches (
+  plan_key TEXT PRIMARY KEY,
+  status VARCHAR(16) NOT NULL,
+  claimed_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT seed_bot_dispatches_status_check
+    CHECK (status IN ('IN_FLIGHT', 'COMPLETED'))
+);
+
+CREATE INDEX IF NOT EXISTS seed_bot_dispatches_status_idx
+  ON seed_bot_dispatches (status, updated_at);
+
+CREATE TABLE IF NOT EXISTS seed_bot_scheduler_state (
+  singleton_id SMALLINT PRIMARY KEY DEFAULT 1,
+  last_dispatch_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT seed_bot_scheduler_state_singleton_check
+    CHECK (singleton_id = 1)
+);
+
+INSERT INTO seed_bot_scheduler_state (singleton_id)
+VALUES (1)
+ON CONFLICT (singleton_id) DO NOTHING;
+
+-- Immutable seed-agent plan for one wallet/pool/round. Once generated, the
+-- prediction and scheduled execution time survive Railway deploys/restarts
+-- instead of being recalculated from a later market reference.
+CREATE TABLE IF NOT EXISTS seed_bot_plans (
+  plan_key TEXT PRIMARY KEY,
+  wallet_address VARCHAR(42) NOT NULL,
+  pool_address VARCHAR(42) NOT NULL,
+  pool_slug VARCHAR(64) NOT NULL,
+  round_id BIGINT NOT NULL,
+  planner_version TEXT NOT NULL,
+  prediction_price_cents NUMERIC(20,0) NOT NULL,
+  planned_execution_at TIMESTAMPTZ NOT NULL,
+  entry_close_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (wallet_address, pool_address, round_id)
+);
+
+CREATE INDEX IF NOT EXISTS seed_bot_plans_due_idx
+  ON seed_bot_plans (planned_execution_at, entry_close_at);

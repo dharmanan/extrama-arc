@@ -318,32 +318,64 @@ function marketReferenceForAsset(references, asset) {
 function buildPredictionCents(markCents, wallets, seed, poolKey) {
   const used = new Set();
   const spreadUnit = markCents / 250n > 0n ? markCents / 250n : 1n;
+  // Keep agent predictions visibly separated instead of merely unique.
+  // This is approximately 0.2% of the market reference, with a one-cent
+  // floor for tiny-price fixtures.
+  const minimumGap =
+    spreadUnit / 2n > 0n ? spreadUnit / 2n : 1n;
   const predictions = new Map();
+
+  function isTooClose(candidate) {
+    for (const existingText of used) {
+      const existing = BigInt(existingText);
+      const distance =
+        candidate >= existing
+          ? candidate - existing
+          : existing - candidate;
+
+      if (distance < minimumGap) return true;
+    }
+
+    return false;
+  }
 
   wallets.forEach((wallet, index) => {
     const side = index % 2 === 0 ? -1n : 1n;
     const step = BigInt(Math.floor(index / 2) + 1);
-    const jitter = deterministicModulo(`${seed}|prediction|${poolKey}|${wallet}`, spreadUnit + 1n);
+    const jitter = deterministicModulo(
+      `${seed}|prediction|${poolKey}|${wallet}`,
+      spreadUnit + 1n,
+    );
     const magnitude = spreadUnit * step + jitter;
+
     let candidate = side < 0n
-      ? markCents - (magnitude > markCents - 1n ? markCents - 1n : magnitude)
+      ? markCents - (
+        magnitude > markCents - 1n
+          ? markCents - 1n
+          : magnitude
+      )
       : markCents + magnitude;
 
-    if (candidate <= 0n) candidate = markCents + step;
+    if (candidate <= 0n) {
+      candidate = markCents + magnitude;
+    }
 
-    // Bounded deterministic collision resolution. The fallback scans away
-    // from the requested side and then above the mark, so even a tiny fixture
-    // mark (or a future price-slot collision) always receives a unique
-    // positive cent value without runtime randomness.
+    // Deterministically move farther from the mark until the candidate is
+    // both positive and sufficiently separated from every prior seed slot.
     let attempts = 0;
-    while (used.has(candidate.toString()) || candidate <= 0n) {
+    while (candidate <= 0n || isTooClose(candidate)) {
       attempts += 1;
-      if (attempts > wallets.length * 16) return;
-      const delta = BigInt(attempts);
+      if (attempts > wallets.length * 32) return;
+
+      const delta = minimumGap * BigInt(attempts);
+
       candidate = side < 0n
         ? markCents - magnitude - delta
         : markCents + magnitude + delta;
-      if (candidate <= 0n) candidate = markCents + magnitude + delta;
+
+      if (candidate <= 0n) {
+        candidate = markCents + magnitude + delta;
+      }
     }
 
     used.add(candidate.toString());

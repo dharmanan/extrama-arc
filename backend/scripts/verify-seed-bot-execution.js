@@ -15,6 +15,7 @@ const {
 } = require('../src/services/seedBotExecutionService');
 const {
   createIdempotencyStore,
+  createPostgresIdempotencyStore,
   createSeedBotScheduler,
   planKey,
 } = require('../src/services/seedBotScheduler');
@@ -290,6 +291,82 @@ async function main() {
     now: entryOpenAt + 1_000,
   });
   assert.equal(expiredTick.dispatched, false, 'expired rounds never execute');
+
+  // PostgreSQL adapter contract: claim/complete/release and global spacing
+  // use only durable public scheduler metadata.
+  const dbCalls = [];
+  const fakeDb = {
+    async query(sql, params = []) {
+      const compact = sql.replace(/\s+/g, ' ').trim();
+      dbCalls.push({ sql: compact, params });
+
+      if (compact.startsWith('INSERT INTO seed_bot_dispatches')) {
+        return { rows: [{ plan_key: params[0] }] };
+      }
+      if (compact.startsWith('SELECT status FROM seed_bot_dispatches')) {
+        return { rows: [{ status: 'COMPLETED' }] };
+      }
+      if (compact.startsWith('SELECT EXTRACT(EPOCH FROM last_dispatch_at)')) {
+        return { rows: [{ last_dispatch_at: '1800000100' }] };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const durableStore = createPostgresIdempotencyStore({
+    dbClient: fakeDb,
+    inFlightLeaseSeconds: 900,
+  });
+
+  assert.equal(await durableStore.claim('seed:test:key'), true);
+  assert.equal(await durableStore.isCompleted('seed:test:key'), true);
+  assert.equal(await durableStore.getLastDispatchAt(), 1800000100n);
+
+  await durableStore.setLastDispatchAt(1800000200);
+  await durableStore.complete('seed:test:key');
+  await durableStore.release('seed:test:key');
+  await durableStore.defer('seed:test:uncertain');
+
+  assert.equal(
+    dbCalls.some((call) =>
+      call.sql.includes("status = 'IN_FLIGHT'") &&
+      call.sql.includes("status <> 'COMPLETED'")
+    ),
+    true,
+    'durable claim is fail-closed for completed work',
+  );
+  assert.equal(
+    dbCalls.some((call) =>
+      call.sql.startsWith('INSERT INTO seed_bot_scheduler_state')
+    ),
+    true,
+    'last dispatch time is persisted',
+  );
+  assert.equal(
+    dbCalls.some((call) =>
+      call.sql.startsWith('UPDATE seed_bot_dispatches') &&
+      call.sql.includes("status = 'COMPLETED'")
+    ),
+    true,
+    'completed work is persisted',
+  );
+  assert.equal(
+    dbCalls.some((call) =>
+      call.sql.startsWith('DELETE FROM seed_bot_dispatches') &&
+      call.sql.includes("status = 'IN_FLIGHT'")
+    ),
+    true,
+    'explicit retryable in-flight work can be released',
+  );
+  assert.equal(
+    dbCalls.some((call) =>
+      call.sql.startsWith('UPDATE seed_bot_dispatches') &&
+      call.sql.includes('claimed_at = NOW()') &&
+      call.sql.includes("status = 'IN_FLIGHT'")
+    ),
+    true,
+    'uncertain execution keeps a durable lease before reconciliation',
+  );
 
   const coreSource = fs.readFileSync(require.resolve('../src/services/seedBotCore'), 'utf8');
   const executionSource = fs.readFileSync(require.resolve('../src/services/seedBotExecutionService'), 'utf8');

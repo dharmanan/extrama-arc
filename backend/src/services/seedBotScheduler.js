@@ -75,6 +75,132 @@ function createIdempotencyStore(state = {}) {
   };
 }
 
+/**
+ * PostgreSQL-backed scheduler state for production. Completed work survives
+ * deploys/restarts. An abandoned IN_FLIGHT claim can be reclaimed only after
+ * the lease expires; the live executor must still perform a fresh onchain
+ * hasEntered/price/round check before any transaction is possible.
+ */
+function createPostgresIdempotencyStore({
+  dbClient,
+  inFlightLeaseSeconds = 15 * 60,
+} = {}) {
+  const database = dbClient || require('../db');
+  const leaseSeconds = Math.max(
+    60,
+    Number.isFinite(Number(inFlightLeaseSeconds))
+      ? Math.floor(Number(inFlightLeaseSeconds))
+      : 15 * 60,
+  );
+
+  return {
+    async claim(key) {
+      const { rows } = await database.query(
+        `INSERT INTO seed_bot_dispatches (
+           plan_key,
+           status,
+           claimed_at,
+           completed_at,
+           updated_at
+         )
+         VALUES ($1, 'IN_FLIGHT', NOW(), NULL, NOW())
+         ON CONFLICT (plan_key) DO UPDATE
+           SET status = 'IN_FLIGHT',
+               claimed_at = NOW(),
+               completed_at = NULL,
+               updated_at = NOW()
+         WHERE seed_bot_dispatches.status <> 'COMPLETED'
+           AND (
+             seed_bot_dispatches.claimed_at IS NULL
+             OR seed_bot_dispatches.claimed_at
+                < NOW() - ($2::double precision * INTERVAL '1 second')
+           )
+         RETURNING plan_key`,
+        [String(key), leaseSeconds],
+      );
+
+      return rows.length === 1;
+    },
+
+    async complete(key) {
+      await database.query(
+        `UPDATE seed_bot_dispatches
+            SET status = 'COMPLETED',
+                completed_at = NOW(),
+                updated_at = NOW()
+          WHERE plan_key = $1`,
+        [String(key)],
+      );
+    },
+
+    async release(key) {
+      await database.query(
+        `DELETE FROM seed_bot_dispatches
+          WHERE plan_key = $1
+            AND status = 'IN_FLIGHT'`,
+        [String(key)],
+      );
+    },
+
+    // An executor exception may have happened after a transaction broadcast.
+    // Keep the claim leased instead of making it immediately retryable.
+    // After the lease expires, the production executor must reconcile fresh
+    // onchain state before any further broadcast is possible.
+    async defer(key) {
+      await database.query(
+        `UPDATE seed_bot_dispatches
+            SET claimed_at = NOW(),
+                updated_at = NOW()
+          WHERE plan_key = $1
+            AND status = 'IN_FLIGHT'`,
+        [String(key)],
+      );
+    },
+
+    async isCompleted(key) {
+      const { rows } = await database.query(
+        `SELECT status
+           FROM seed_bot_dispatches
+          WHERE plan_key = $1
+          LIMIT 1`,
+        [String(key)],
+      );
+
+      return rows[0]?.status === 'COMPLETED';
+    },
+
+    async getLastDispatchAt() {
+      const { rows } = await database.query(
+        `SELECT EXTRACT(EPOCH FROM last_dispatch_at)::bigint AS last_dispatch_at
+           FROM seed_bot_scheduler_state
+          WHERE singleton_id = 1`,
+      );
+
+      return parseBigInt(rows[0]?.last_dispatch_at);
+    },
+
+    async setLastDispatchAt(value) {
+      const timestamp = parseTimestamp(value);
+      if (timestamp === null) {
+        throw new Error('seed_scheduler_dispatch_time_invalid');
+      }
+
+      await database.query(
+        `INSERT INTO seed_bot_scheduler_state (
+           singleton_id,
+           last_dispatch_at,
+           updated_at
+         )
+         VALUES (1, TO_TIMESTAMP($1::double precision), NOW())
+         ON CONFLICT (singleton_id) DO UPDATE
+           SET last_dispatch_at = EXCLUDED.last_dispatch_at,
+               updated_at = NOW()`,
+        [timestamp.toString()],
+      );
+    },
+  };
+}
+
 function normalizeNow(now, clock) {
   if (now !== undefined && now !== null) return parseTimestamp(now);
   const value = typeof clock === 'function' ? clock() : Math.floor(Date.now() / 1000);
@@ -145,9 +271,12 @@ function createSeedBotScheduler({
 
       if (!(await store.claim(key))) continue;
 
+      // The spacing gate begins as soon as work is dispatched. This also
+      // protects against an executor error occurring after a broadcast.
+      await store.setLastDispatchAt(nowAt);
+
       try {
         const result = await executor.executeDueEntry(entry, { now: nowAt.toString(), idempotencyKey: key });
-        await store.setLastDispatchAt(nowAt);
         // A completed onchain entry or an explicit idempotent/safety skip is
         // terminal for this planned work item. A future integration can return
         // retryable:true to release it without declaring completion.
@@ -161,7 +290,11 @@ function createSeedBotScheduler({
           overdue: nowAt > item.plannedAt,
         };
       } catch (error) {
-        await store.release(key);
+        if (typeof store.defer === 'function') {
+          await store.defer(key);
+        } else {
+          await store.release(key);
+        }
         return {
           dispatched: true,
           idempotencyKey: key,
@@ -186,6 +319,7 @@ function createSeedBotScheduler({
 module.exports = {
   DEFAULT_MIN_GLOBAL_SPACING_SECONDS,
   createIdempotencyStore,
+  createPostgresIdempotencyStore,
   createSeedBotScheduler,
   planKey,
 };

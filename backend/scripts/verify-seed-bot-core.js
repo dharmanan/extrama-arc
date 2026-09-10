@@ -152,7 +152,32 @@ async function main() {
     assert.equal(poolEntries.length, 9, 'nine entries per eligible pool');
     const predictions = poolEntries.map((entry) => BigInt(entry.predictionPriceCents));
     assert.equal(new Set(predictions.map(String)).size, 9);
-    const mark = BigInt(marketReferences[pool.asset].markPriceCents);
+
+    const mark = BigInt(
+      marketReferences[pool.asset].markPriceCents,
+    );
+    const spreadUnit =
+      mark / 250n > 0n ? mark / 250n : 1n;
+    const minimumGap =
+      spreadUnit / 2n > 0n ? spreadUnit / 2n : 1n;
+
+    const sortedPredictions =
+      predictions.map(BigInt).sort((a, b) =>
+        a < b ? -1 : a > b ? 1 : 0
+      );
+
+    for (
+      let index = 1;
+      index < sortedPredictions.length;
+      index += 1
+    ) {
+      assert.equal(
+        sortedPredictions[index] -
+          sortedPredictions[index - 1] >= minimumGap,
+        true,
+        `${pool.asset} ${pool.direction} seed predictions are too close`,
+      );
+    }
     assert.equal(predictions.some((value) => value < mark), true);
     assert.equal(predictions.some((value) => value > mark), true);
     const predictionSpread = predictions.reduce((minMax, value) => ({

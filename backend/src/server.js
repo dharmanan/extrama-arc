@@ -15,8 +15,14 @@ const marketplaceRoutes = require('./routes/marketplace');
 const circleRoutes = require('./routes/circle');
 const arcService = require('./services/arcService');
 const roundAutomationService = require('./services/roundAutomationService');
+const {
+  createSeedBotAutomationService,
+} = require('./services/seedBotAutomationService');
 const settlementEvidenceService = require('./services/settlementEvidenceService');
 const marketOutcomeService = require('./services/marketOutcomeService');
+
+const seedBotAutomationService =
+  createSeedBotAutomationService();
 
 const app = express();
 
@@ -242,6 +248,7 @@ const server = app.listen(config.PORT, () => {
   console.log(`[extrema-backend] listening on :${config.PORT}`);
   arcService.warmStandardRoundsCache();
   roundAutomationService.startRoundAutomation();
+  seedBotAutomationService.start();
 
   // PHASE A readiness check only: confirms Railway PostgreSQL actually
   // exposes the settlement_evidence relation and its critical columns
@@ -281,6 +288,7 @@ const server = app.listen(config.PORT, () => {
 
 async function shutdown(signal) {
   console.log(`[extrema-backend] ${signal}, shutting down`);
+  seedBotAutomationService.stop();
   roundAutomationService.stopRoundAutomation();
   server.close(async () => {
     await db.close();
