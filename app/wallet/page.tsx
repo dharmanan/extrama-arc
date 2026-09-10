@@ -185,6 +185,7 @@ export default function WalletPage() {
     setError("");
     setBusy("Waiting for wallet signature...");
     try {
+      await ensureArcTestnet();
       const challenge = await backendApi.auth.walletLoginChallenge(connectedAddress);
       const signature = await signMessageAsync({ message: challenge.message });
       const session = await backendApi.auth.finishWalletLogin(
