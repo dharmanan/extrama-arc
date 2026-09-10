@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import "@rainbow-me/rainbowkit/styles.css";
 import "./globals.css";
-import "./wireframe.css";
 import { WalletSessionProvider } from "./wallet-session";
 import Web3Provider from "./providers/Web3Provider";
 import { LocaleProvider } from "./i18n";

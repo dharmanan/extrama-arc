@@ -132,7 +132,7 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
 export function AssetMark({ asset }: { asset: Asset }) {
   const item = assetConfigs[asset];
   return (
-    <span className="wf-asset-mark">
+    <span className="ex-asset-mark">
       <img src={item.brandSrc} alt="" />
       <span>{asset}</span>
     </span>

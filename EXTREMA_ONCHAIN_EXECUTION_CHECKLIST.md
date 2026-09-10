@@ -82,14 +82,12 @@ Section 15 remains open: the evidence above spans multiple real rounds and there
 
 ### Remaining implementation
 
-1. Demo/mock runtime state removal
-2. Real leaderboard
-3. Real settlement verification page backed by a real endpoint
-4. Final mock-state removal audit
-5. Wrong-network detection and switch proof
-6. Final security gate items
-7. Final Arc Testnet end-to-end proof
-8. Secondary NFT marketplace live trade proof and final UI polish; core contract/backend lifecycle is already covered by deterministic E2E
+1. Final browser-level visual polish and missing brand assets
+2. Wrong-network detection and switch proof
+3. Final security gate items
+4. Final Arc Testnet single-round end-to-end proof
+5. Secondary NFT marketplace live trade proof; core contract/backend lifecycle is already covered by deterministic E2E
+6. Hackathon submission packaging
 
 See [Current roadmap](#current-roadmap) at the end of this document for the execution order.
 
@@ -912,8 +910,17 @@ Planned intervals:
   - Round #4 resolved price: `253500` cents = `$2535.00`.
 - [x] Settlement tx recorded
   - Persisted settlement evidence and live Arc receipt both identify the same settlement transaction.
-- [ ] Verification page shows source proof + onchain result **(NOT IMPLEMENTED / REMAINING)**
-  - `app/verify/[roundId]/page.tsx` still renders from the `app/lib/data.ts` demo fixture, not from a real settlement/evidence endpoint.
+- [x] Verification page shows source proof + onchain result
+  - Canonical route: `app/verify/[slug]/[roundId]/page.tsx`.
+  - The page reads `GET /api/rounds/:slug/:roundId/verification` with `cache: "no-store"` and renders the real verification object.
+  - Live Railway proof for ETH Daily High Round #4 on 2026-09-09:
+    - HTTP `200`, Arc Testnet chain ID `5042002`, status `SETTLED`
+    - verification status `VERIFIED`
+    - Binance USDⓈ-M Futures Mark Price Klines, `ETHUSDT`, interval `1d`, candle count `1`
+    - evidence SHA256 `0451d8569c28edd05e76a008d259a52a5860f7280594f2968bad1882a266dd75`
+    - source-data SHA256 `e3ebc5037503422a58bb0e968ef9bbdfa9917be0c8c8111a1dc082dfa7467392`
+    - settlement tx `0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9`
+    - evidence hash, pool identity, market period, and resolved-price integrity checks all `true`
 
 ### 7.3 Resolver signing path is resolved
 
@@ -1102,9 +1109,16 @@ Winner ranking is computed onchain by `ExtremaPool` at settlement time. Live ETH
   - The older "tx/log-index" wording was stale; the deployed contract uses distance, then `entrySequence`, then `ticketId`.
 - [x] Winner ticket IDs stored and readable onchain
   - Live Round #4: `[4, 3, 2]`.
-- [ ] Results page reads real settled result **(NOT IMPLEMENTED / REMAINING)**
-  - The backend result API already reads real Arc round state and correctly returns no winners before settlement (see proof below).
-  - `app/results/[roundId]/page.tsx` still imports `getResultByRoundId` from the `app/lib/data.ts` demo fixture, so the frontend result surface must be migrated to the real endpoint before this can be ticked.
+- [x] Results page reads real settled result
+  - Canonical route: `app/results/[slug]/[roundId]/page.tsx`.
+  - The page reads `GET /api/rounds/:slug/:roundId/result` with `cache: "no-store"` and no demo fixture.
+  - Live Railway proof for ETH Daily High Round #4 on 2026-09-09:
+    - HTTP `200`, Arc Testnet chain ID `5042002`, status `SETTLED`
+    - resolved price `253500` cents
+    - winner ticket IDs `[4, 3, 2]`
+    - winner #1 claimable `1.62 USDC`
+    - winner #2 claimable `0.675 USDC`
+    - winner #3 already claimed
 
 Local contract-level proof of the ranking and tie-break rules already exists in section 2.2 and section 10's lifecycle simulation. That is contract logic proof, not live proof.
 
@@ -1457,65 +1471,72 @@ Note on how this proof was produced versus how locking works now: these two lock
 
 # 12. Real leaderboard
 
-Current state: **NOT IMPLEMENTED / REMAINING.** `app/leaderboard/page.tsx` renders a hardcoded four-row `players` array with invented wallet fragments, win counts, podium counts, and USDC earnings, and reports a count derived from the `app/lib/data.ts` demo fixture. None of it is real. This is a fabricated-metric surface in the normal product path and must be replaced, not merely relabelled.
+Current state: **COMPLETE.** `app/leaderboard/page.tsx` derives its rows from the real 90-day round archive and contains no seeded player or earnings fixture.
 
-- [ ] Leaderboard source defined from settled onchain rounds/indexed events
-- [ ] No seeded/mock users
-- [ ] No seeded/mock scores
-- [ ] Ranking formula documented
-- [ ] Wallet identities derived from real participation
-- [ ] Historical settled rounds rebuild leaderboard deterministically
+- [x] Leaderboard source defined from settled onchain rounds
+- [x] No seeded/mock users
+- [x] No seeded/mock scores
+- [x] Ranking formula documented
+- [x] Wallet identities derived from real participation
+- [x] Historical settled rounds rebuild leaderboard deterministically
 
-A real leaderboard cannot produce meaningful output until at least one round has settled, because every ranking input derives from settled results. Until then the honest surface is an explicit empty state, not placeholder rows.
+Leaderboard attribution uses `originalEntrant`, not current ticket owner, because secondary NFT ownership controls claim rights but must not rewrite who made the prediction. Rows are sorted deterministically by wins descending, podiums descending, total reward descending, then address ascending.
 
 ### Proof record
 
-- Source rounds:
-- Indexed events:
-- Calculated leaderboard:
-- Rebuild verification:
+- Source: `GET /api/rounds/archive?days=90`.
+- Backend archive rebuilds canonical V2 rounds from Arc Testnet contract state and reads settled winner ticket IDs, original entrants, current owners, claim status, and payout amounts.
+- Live Railway archive proof on 2026-09-09:
+  - Arc Testnet chain ID `5042002`
+  - archive block `61275754`
+  - retention `90` days
+  - settled round count `1`
+  - winner count `3`
+  - ETH Daily High Round #4 winners: Ticket #4, Ticket #3, Ticket #2
+- `app/leaderboard/page.tsx` filters the archive to `SETTLED` rounds and feeds their real winners into `buildLeaderboard()`.
+- No hardcoded `players` array remains.
 
 ---
 
 # 13. Remove all mock product state
 
-This section is not complete until every normal user path is backed by real testnet state.
+Current state: **COMPLETE.** The normal product runtime no longer uses synthetic financial fixtures, seeded wallets, fake balances, fake tickets, fake predictions, fake claims, or localStorage-backed financial truth.
 
-### Known demo state still in the normal runtime
+The old runtime files recorded in earlier checklist revisions are gone:
 
-Verified against the repository at `7dad17a`. These are not test fixtures; they are reachable on normal product routes.
+- `app/lib/data.ts` — absent
+- `app/demo-state.tsx` — absent
+- `app/verify/[roundId]/page.tsx` — absent
+- `app/results/[roundId]/page.tsx` — absent
+- `app/rounds/[slug]/RoundUserState.tsx` — absent
 
-| File | What it still contains | Reached from |
-|---|---|---|
-| `app/lib/data.ts` | Synthetic `pools`, `results`, and `tickets` arrays plus `getPoolBySlug` / `getResultByRoundId` / `getTicketsForWallet` | imported by the files below |
-| `app/demo-state.tsx` | localStorage-backed financial state (`extrema-demo-state-v4`): demo wallet balance, seeded tickets, seeded prediction entries, and `fundWallet` / `enterPrediction` / `claimTicket` mutators | mounted globally by `app/layout.tsx` |
-| `app/leaderboard/page.tsx` | Hardcoded player rankings and USDC earnings | `/leaderboard` |
-| `app/verify/[roundId]/page.tsx` | Settlement result rendered from the demo fixture | `/verify/[roundId]` |
-| `app/results/[roundId]/page.tsx` | Result and pool rendered from the demo fixture | `/results/[roundId]` |
-| `app/rounds/[slug]/RoundUserState.tsx` | Consumes `useDemoState` for user position | `/rounds/[slug]` |
-| `app/wallet/page.tsx` | Consumes `useDemoState` | `/wallet` |
+Current canonical surfaces use real backend and Arc Testnet state.
 
-`app/lib/data.ts` also exports `assetConfigs` and `formatUsd`, which are legitimate presentation helpers used by `home-client.tsx` and `product-components.tsx`. Those must survive the cleanup. The financial arrays must not.
-
-The live surfaces (`/pools`, `/pools/[slug]`, `/tickets`) already read real Arc state through the backend and are not affected.
-
-- [ ] Remove mock USDC balance
-- [ ] Remove mock faucet
-- [ ] Remove mock player counts
-- [ ] Remove mock pool balances
-- [ ] Remove mock prediction entries
-- [ ] Remove mock tickets
-- [ ] Remove mock live position
-- [ ] Remove mock settlement/result fixture from normal product path
-- [ ] Remove mock claim balance updates
-- [ ] Remove localStorage as source of financial truth
-- [ ] Remove seeded leaderboard data
-- [ ] Keep any fixtures only inside explicit tests/dev fixtures, never normal product runtime
+- [x] Remove mock USDC balance
+- [x] Remove mock faucet
+- [x] Remove mock player counts
+- [x] Remove mock pool balances
+- [x] Remove mock prediction entries
+- [x] Remove mock tickets
+- [x] Remove mock live position
+- [x] Remove mock settlement/result fixture from normal product path
+- [x] Remove mock claim balance updates
+- [x] Remove localStorage as source of financial truth
+- [x] Remove seeded leaderboard data
+- [x] Keep any fixtures only outside normal product runtime
 
 ### Verification
 
-- [ ] Search repository for mock/demo financial state
-- [ ] Confirm normal app can be rebuilt from chain + backend/indexer state only
+- [x] Search repository for mock/demo financial state
+  - Repo-wide runtime grep on 2026-09-09 found no removed demo-file references and no localStorage financial-state writes.
+  - Matches such as `claimTicketKey`, `refundWalletAddress`, and `enterPrediction` are legitimate real product identifiers and execution paths, not mock state.
+  - The only remaining `extrema-demo-state-v4` reference is `LEGACY_DEMO_STORAGE_KEY` in `app/wallet-session.tsx`; it is used solely to delete the obsolete demo localStorage key before backend session hydration.
+- [x] Confirm normal app financial state is reconstructed from backend / Arc Testnet state
+  - wallet session truth comes from `backendApi.wallet.get()`
+  - results come from `/api/rounds/:slug/:roundId/result`
+  - verification comes from `/api/rounds/:slug/:roundId/verification`
+  - leaderboard comes from `/api/rounds/archive?days=90`
+  - pools, tickets, balances, claims, refunds, entries, settlement, and marketplace state use their real backend/onchain paths
 
 ---
 
@@ -1657,19 +1678,39 @@ Implementation order:
 
 # 17. Design phase
 
-The original plan deferred all visual work until sections 1 to 16 were complete. That ordering has been partially revised: the global visual foundation and the homepage were redesigned ahead of schedule, while the functional sections continue in parallel.
+The global EXTREMA visual system is now active across the normal product routes. The old structural wireframe runtime layer has been removed; final browser-level visual polish remains open.
 
-- [ ] Replace structural wireframe with final EXTREMA visual design **(IN PROGRESS)**
-  - Complete: global design token system in `app/globals.css`, and the homepage.
-  - Not started: `/pools`, `/pools/[slug]`, `/rounds/[slug]`, `/results/[roundId]`, `/verify/[roundId]`, `/tickets`, `/leaderboard`, `/how-it-works`, `/wallet`. These still render the structural wireframe.
+- [x] Remove structural wireframe runtime layer
+  - `app/wireframe.css` removed.
+  - `app/layout.tsx` no longer imports `wireframe.css`.
+  - The final remaining `wf-asset-mark` class was migrated to `ex-asset-mark`.
+  - Repo-wide `wireframe.css|wf-` runtime grep returned no matches after cleanup.
+- [x] Move current product routes onto the EXTREMA `ex-*` visual system
+  - `/pools`
+  - `/pools/[slug]`
+  - `/results/[slug]/[roundId]`
+  - `/verify/[slug]/[roundId]`
+  - `/tickets`
+  - `/leaderboard`
+  - `/how-it-works`
+  - `/wallet`
+  - `/rounds/[slug]` is not a separate visual surface; it canonically redirects to `/pools/[slug]`.
+- [x] Remove obsolete results / verification route conflict
+  - `app/results/[roundId]/page.tsx` is absent.
+  - `app/verify/[roundId]/page.tsx` is absent.
+  - Canonical routes are `/results/[slug]/[roundId]` and `/verify/[slug]/[roundId]`.
+  - Next.js production build completed successfully with both canonical dynamic routes.
 - [x] Preserve all verified real onchain flows
-  - The redesign touched presentation only. No backend, contract, schedule, or signer path was modified, and the live `/pools` and `/tickets` data paths continue to read real Arc state.
-- [ ] Re-run complete Arc Testnet end-to-end test after design integration
-
-Two known frontend issues are open and unrelated to visual work:
-
-- A route conflict exists between `app/results/[roundId]` and `app/results/[slug]/[roundId]`. It predates the redesign and originates in commit `6a251d8`. It breaks local serving and needs a decision on which route shape is canonical.
-- The homepage pair row still lacks the Circle USDC and Arc brand marks. `public/brands/usdc.svg` and `public/brands/arc.svg` do not exist in the repository, and no asset may be fabricated for them.
+  - The cleanup changed presentation/runtime CSS only. No backend, contract, schedule, signer, or financial execution path was modified.
+  - Post-cleanup deterministic E2E: Forge `67/67`, Layer 1 `1/1`, Layer 3 `16/16`, root scripts `1/1`, matrix `47 PASS / 0 FAIL`, `EXTREMA_E2E=PASS`.
+- [x] Production frontend build passes after wireframe removal
+  - `npm run check` passed TypeScript generation, typecheck, and Next.js production build.
+- [ ] Final browser-level visual polish **(IN PROGRESS)**
+  - Review spacing, responsive behavior, alignment, overflow, and visual consistency on the canonical pages.
+  - The homepage pair row still lacks dedicated Circle USDC and Arc brand marks. No corresponding asset files currently exist under `public`, so this remains a separate asset/polish task.
+- [ ] Re-run the final live Arc Testnet single-round acceptance flow after visual integration
+  - Deterministic E2E already passes after the visual cleanup.
+  - The stricter Section 15 requirement remains separate because it requires one complete real round from creation through final claim.
 
 ---
 
@@ -1693,17 +1734,18 @@ These proofs intentionally do **not** imply that every negative case was redunda
 
 - [x] **Stale Circle entry recovery UX fixed.** Commit `463d9b6` adds local recovery expiry handling, one read-only reconciliation probe for expired records, no blind ~3-minute polling, and no automatic second financial intent.
 - [x] **WEEKLY and QUARTERLY round creation automation verified.** The generalized creation path is already wired into the production lifecycle. Live production state on 2026-09-09 showed 8/8 WEEKLY pools on V2 Round #3 and 8/8 QUARTERLY pools on V2 Round #2 with canonical schedules.
+- [x] **Demo/mock runtime financial state removal verified.** Removed demo files are absent, runtime grep found no financial localStorage truth or seeded financial fixtures, and the obsolete demo storage key is deletion-only.
+- [x] **Real settlement result and verification surfaces verified.** ETH Daily High Round #4 returned real settled winners and `VERIFIED` Binance/onchain evidence from the canonical Railway endpoints.
+- [x] **Real leaderboard verified.** The page derives deterministic rankings from the real 90-day settled-round archive; the live archive returned Round #4 and three real winners.
 
 ### Next execution order
 
-1. **Remove remaining demo/mock runtime financial state.** Audit section 13 against the current repository before deleting anything; the section itself is older than several later UI/data-path changes.
-2. **Real settlement verification and result surfaces.** Ensure the canonical verify/results routes are backed only by real settlement/evidence/winner data.
-3. **Real leaderboard.** Derive it deterministically from settled onchain rounds and remove any fabricated player/earnings data.
-4. **Complete the visual design and route cleanup.** Audit the current frontend first because section 17 predates several later UI changes.
-5. **Final security gate.** Replay/JWT rejection, rate limits, session expiry, dependency review, secret rotation procedure, and secret scan.
-6. **Final Arc Testnet single-round end-to-end proof.** Section 15 remains open. Existing production evidence is strong but spans multiple rounds; the stricter acceptance test requires one complete round from creation through final claim.
-7. **Secondary marketplace live proof and final polish.** Core marketplace list/update/cancel/buy behavior is already covered by deterministic E2E and a live listing/cache refresh has been observed. Section 16.3 still needs a recorded real secondary sale if the final acceptance gate requires it.
-8. **Hackathon submission packaging.**
+1. **Final browser-level visual polish and missing brand assets.** Structural wireframe removal and canonical route cleanup are complete; inspect the current rendered pages for spacing, responsive behavior, overflow, alignment, and the remaining Arc/USDC brand treatment.
+2. **Wrong-network detection and switch proof.** Confirm transaction actions block the wrong chain and the switch-to-Arc flow works in the current UI.
+3. **Final security gate.** Replay/JWT rejection, rate limits, session expiry, dependency review, secret rotation procedure, and secret scan.
+4. **Final Arc Testnet single-round end-to-end proof.** Section 15 remains open. Existing production evidence is strong but spans multiple rounds; the stricter acceptance test requires one complete round from creation through final claim.
+5. **Secondary marketplace live proof.** Core marketplace list/update/cancel/buy behavior is already covered by deterministic E2E and a live listing/cache refresh has been observed. Section 16.3 still needs a recorded real secondary sale if the final acceptance gate requires it.
+6. **Hackathon submission packaging.**
 
 ### Live actions pending
 
