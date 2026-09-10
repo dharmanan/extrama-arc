@@ -442,7 +442,8 @@ img{max-width:100%}
   align-items:end;
   margin-bottom:clamp(26px,3.2vw,44px);
 }
-.ex-mechanic__head .ex-eyebrow{margin-bottom:12px}
+.ex-mechanic__head .ex-eyebrow,
+.ex-verify__head .ex-eyebrow{margin-bottom:12px}
 .ex-steps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 clamp(28px,4vw,64px);margin:0;padding:0;list-style:none;counter-reset:step}
 .ex-steps li{
   counter-increment:step;
@@ -597,6 +598,9 @@ img{max-width:100%}
   .ex-mechanic__head,.ex-verify__head,.ex-payout{grid-template-columns:minmax(0,1fr)}
   .ex-mechanic__head,.ex-verify__head{align-items:start;gap:14px}
   .ex-steps,.ex-evidence{grid-template-columns:minmax(0,1fr)}
+  /* Stacked, each item's body text would otherwise sit flush on the next
+     item's rule. */
+  .ex-evidence{row-gap:clamp(20px,3vw,26px)}
   .ex-steps li:nth-last-child(-n+2){border-bottom:0}
   .ex-steps li:last-child{border-bottom:1px solid var(--line)}
   .ex-band-split--3,.ex-band-split--2{grid-template-columns:minmax(0,1fr)}
@@ -884,7 +888,9 @@ img{max-width:100%}
 @media(max-width:900px){
   .ex-pools__head{grid-template-columns:minmax(0,1fr);align-items:start;gap:clamp(20px,4vw,30px)}
   .ex-window{justify-self:start;min-width:min(360px,100%)}
-  .ex-rail__meta{margin-inline-start:0;flex-basis:100%}
+  /* On its own line the count and block may wrap: "listings shown" and the
+     TR copy are longer than the phone width at nowrap. */
+  .ex-rail__meta{margin-inline-start:0;flex-basis:100%;white-space:normal}
   .ex-matrix{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   /* The horizon column is gone, so the empty corner header must go too or
      it would push LOW onto its own line. */
@@ -1208,9 +1214,12 @@ img{max-width:100%}
   .ex-book__head{gap:12px}
   .ex-book__totals{gap:clamp(18px,6vw,32px)}
   .ex-book__total{text-align:left}
-  .ex-book__strip{grid-template-columns:minmax(0,1fr)}
-  .ex-book__cell{border-left:0;border-top:1px solid var(--line);padding-inline:0}
-  .ex-book__cell:first-child{border-top:0}
+  /* Lowest and highest side by side under the strip's own top rule, close
+     time full width below them. */
+  .ex-book__strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .ex-book__cell{padding:12px 0}
+  .ex-book__cell:nth-child(2){padding-left:14px}
+  .ex-book__cell:nth-child(3){grid-column:1 / -1;border-left:0;border-top:1px solid var(--line)}
   .ex-dist__plot{gap:2px}
 }
 
@@ -1238,20 +1247,24 @@ img{max-width:100%}
 .ex-winner{display:grid;grid-template-columns:auto minmax(150px,1.2fr) minmax(240px,2fr) minmax(120px,.8fr);gap:clamp(16px,2.5vw,40px);align-items:start;padding-block:clamp(18px,2.3vw,29px);border-bottom:1px solid var(--line)}
 .ex-winner__rank{font-size:1.12rem;color:var(--ember)}
 .ex-winner__price{display:grid;gap:5px}.ex-winner__price strong{font-size:clamp(1.5rem,2.6vw,2.2rem);font-weight:400;letter-spacing:-.04em}.ex-winner__price small{line-height:1.4}
-.ex-winner__meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}.ex-winner__meta>div{display:grid;gap:4px;min-width:0}.ex-winner__meta dd{font-size:.86rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ex-winner__meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}.ex-winner__meta>div{display:grid;gap:4px;min-width:0;align-content:space-between}.ex-winner__meta dd{font-size:.86rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ex-winner__claim{display:grid;gap:5px;justify-items:end;text-align:right}.ex-winner__claim strong{font-size:1.05rem;font-weight:400}.ex-winner__claim[data-claimed="true"] span{color:var(--ink-2)}
 .ex-result__actions{display:flex;flex-wrap:wrap;gap:10px;padding-block:clamp(25px,3vw,40px)}
 
 .ex-proof__head{display:grid;grid-template-columns:minmax(0,6fr) minmax(280px,4fr);gap:clamp(32px,6vw,100px);align-items:end;padding-block:clamp(32px,4.5vw,64px) clamp(38px,5vw,72px);border-bottom:1px solid var(--line-strong)}
-.ex-proof__head[data-warning="true"]{border-bottom-color:var(--ember)}.ex-proof__identity{margin:14px 0 0;font-family:var(--mono);font-size:.87rem;color:var(--muted);letter-spacing:.02em}
+.ex-proof__head[data-warning="true"]{border-bottom-color:var(--ember)}.ex-proof__head .ex-eyebrow{margin-bottom:12px}.ex-proof__identity{margin:14px 0 0;font-family:var(--mono);font-size:.87rem;color:var(--muted);letter-spacing:.02em}
 .ex-proof__hero{display:grid;gap:10px;padding-top:16px;border-top:1px solid var(--line-strong);color:var(--ink-2);line-height:1.58}.ex-proof__hero>span{font-size:.75rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)}.ex-proof__hero>strong{font-size:clamp(2rem,4vw,3.8rem);font-weight:400;letter-spacing:-.05em;color:var(--ink);line-height:1}.ex-proof__hero p{margin:0}.ex-proof__hero dl{display:grid;gap:9px;margin:0}.ex-proof__hero dl>div{display:grid;gap:3px}.ex-proof__reason{font-family:var(--mono);font-size:.78rem;overflow-wrap:anywhere;color:var(--ink-2)}
 .ex-proof__sequence{margin:0;padding:0;list-style:none;border-top:1px solid var(--line-strong)}
 .ex-proof__sequence>li{display:grid;grid-template-columns:clamp(58px,8vw,100px) minmax(0,1fr);gap:clamp(18px,3vw,48px);padding-block:clamp(23px,3.2vw,42px);border-bottom:1px solid var(--line)}
 .ex-proof__number{font-family:var(--mono);font-size:.85rem;color:var(--ember);letter-spacing:.08em}.ex-proof__sequence h2{margin:0 0 16px;font-family:var(--serif);font-weight:400;font-size:clamp(1.5rem,2.7vw,2.25rem);line-height:1}.ex-proof__sequence dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px clamp(18px,3vw,48px);margin:0}.ex-proof__sequence dl>div{display:grid;gap:5px;min-width:0}.ex-proof__code{font-family:var(--mono);font-size:.78rem;letter-spacing:-.02em;word-break:break-all}
 .ex-proof__checks{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,6fr);gap:clamp(26px,5vw,80px);align-items:start;padding-block:clamp(34px,4.6vw,64px);border-bottom:1px solid var(--line-strong)}.ex-proof__checks .ex-eyebrow{margin-bottom:9px}.ex-proof__checks ul{display:grid;margin:0;padding:0;list-style:none;border-top:1px solid var(--line-strong)}.ex-proof__checks li{display:flex;justify-content:space-between;gap:20px;padding-block:13px;border-bottom:1px solid var(--line);font-size:.94rem}.ex-proof__checks li b{font-family:var(--mono);font-size:.8rem;font-weight:400;color:var(--ink-2)}.ex-proof__checks li[data-valid="false"] b,.ex-proof__checks[data-warning="true"] h2{color:var(--ember)}
 
-@media(max-width:900px){.ex-result__head,.ex-result__section-head,.ex-proof__head,.ex-proof__checks{grid-template-columns:minmax(0,1fr)}.ex-result__section-head{align-items:start}.ex-winner{grid-template-columns:auto minmax(0,1fr) minmax(0,1fr)}.ex-winner__claim{grid-column:2 / -1;justify-items:start;text-align:left}.ex-proof__sequence dl{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:560px){.ex-result__head{padding-top:28px}.ex-winner{grid-template-columns:auto minmax(0,1fr);gap:14px}.ex-winner__price{grid-column:2}.ex-winner__meta{grid-column:1 / -1;grid-template-columns:minmax(0,1fr)}.ex-winner__claim{grid-column:1 / -1}.ex-proof__sequence>li{grid-template-columns:40px minmax(0,1fr);gap:14px}.ex-proof__sequence dl{grid-template-columns:minmax(0,1fr)}.ex-proof__checks li{align-items:baseline}.ex-proof__checks li b{white-space:nowrap}}
+@media(max-width:900px){.ex-result__head,.ex-result__section-head,.ex-proof__head,.ex-proof__checks{grid-template-columns:minmax(0,1fr)}.ex-result__section-head{align-items:start}.ex-winner{grid-template-columns:auto minmax(0,1fr) minmax(0,1fr)}.ex-winner__claim{grid-column:2 / -1;justify-items:start;text-align:left}.ex-proof__sequence dl{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* Round, entries and stake are short figures: one row of three instead of
+     three full width rows. Period, source and status keep the full width. */
+  .ex-result__facts{grid-template-columns:repeat(3,minmax(0,1fr))}.ex-result__facts>div:nth-child(-n+3){padding-inline-end:12px;align-content:space-between}.ex-result__facts>div:nth-child(2),.ex-result__facts>div:nth-child(3){padding-inline-start:12px;border-left:1px solid var(--line)}.ex-result__facts>div:nth-child(n+4){grid-column:1 / -1}
+}
+@media(max-width:560px){.ex-result__head{padding-top:28px}.ex-winner{grid-template-columns:auto minmax(0,1fr);gap:14px}.ex-winner__price{grid-column:2}.ex-winner__meta{grid-column:1 / -1;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr)}.ex-winner__claim{grid-column:1 / -1}.ex-proof__sequence>li{grid-template-columns:40px minmax(0,1fr);gap:14px}.ex-proof__sequence dl{grid-template-columns:minmax(0,1fr)}.ex-proof__checks li{align-items:baseline}.ex-proof__checks li b{white-space:nowrap}}
 
 /* Final Result/Verify states and mobile navigation retain the shared paper/ink grammar. */
 .ex-menu-toggle,.ex-mobile-menu{display:none}
@@ -1299,6 +1312,10 @@ img{max-width:100%}
   .ex-tickets__state .ex-btn,
   .ex-wallet-ledger--prompt .ex-btn{justify-self:start}
 }
+/* Stretched on a phone, the label still belongs in the middle of the pill. */
+.ex-tickets__state .ex-btn,
+.ex-wallet-ledger--prompt .ex-btn{justify-content:center}
+.ex-tickets__state>div>.ex-eyebrow{margin-bottom:9px}
 .ex-tickets__empty h2{max-width:18ch}.ex-tickets__empty p{margin:0;max-width:54ch;color:var(--ink-2);line-height:1.6}.ex-tickets__empty a{justify-self:start;font-weight:600;border-bottom:1px solid var(--line-strong);padding-bottom:3px}
 .ex-archive__group{padding-block:clamp(34px,4.6vw,64px);border-bottom:1px solid var(--line-strong)}
 .ex-archive__date{display:flex;align-items:baseline;justify-content:space-between;gap:20px;padding-bottom:18px}.ex-archive__date h2{font-size:clamp(1.8rem,3.2vw,2.7rem)}.ex-archive__date span{font-size:.8rem;color:var(--muted)}
@@ -1306,7 +1323,9 @@ img{max-width:100%}
 .ex-archive-row{display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(145px,1.05fr) minmax(280px,2.2fr) minmax(250px,2fr) minmax(120px,.8fr);gap:clamp(16px,2.2vw,34px);align-items:start;padding-block:clamp(18px,2.3vw,28px);border-bottom:1px solid var(--line)}
 .ex-archive-row__identity{display:grid;gap:7px}.ex-archive-row__asset{display:flex;align-items:center;gap:10px}.ex-archive-row__asset img{width:24px;height:24px;object-fit:contain}.ex-archive-row__asset strong{font-family:var(--serif);font-size:1.55rem;font-weight:400;line-height:1}.ex-archive-row__identity p{margin:0;font-size:.86rem;color:var(--ink-2)}.ex-archive-row__identity>.ex-num{font-size:.78rem;color:var(--muted)}
 .ex-archive-row__result{display:grid;gap:5px}.ex-archive-row__result>span,.ex-archive-row__winners>span{font-size:.7rem;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--muted)}.ex-archive-row__result strong{font-family:var(--serif);font-size:1.35rem;font-weight:400;line-height:1.05}.ex-archive-row__result strong.ex-num{font-family:var(--mono);font-size:1.25rem}.ex-archive-row__result small{font-size:.78rem;color:var(--muted)}
-.ex-archive-row__stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:0}.ex-archive-row__stats>div{display:grid;gap:5px}.ex-archive-row__stats dt{font-size:.68rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.ex-archive-row__stats dd{margin:0;font-size:.82rem;line-height:1.45;overflow-wrap:anywhere}
+/* Entries and pool are short figures, so they take their own width and the
+   period range gets the rest instead of breaking over four lines. */
+.ex-archive-row__stats{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:14px;margin:0}.ex-archive-row__stats>div{display:grid;gap:5px;align-content:start}.ex-archive-row__stats dt{font-size:.68rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.ex-archive-row__stats dd{margin:0;font-size:.82rem;line-height:1.45;overflow-wrap:anywhere;text-wrap:balance}
 .ex-archive-row__winners{display:grid;gap:8px}.ex-archive-row__winners p{margin:0}.ex-archive-row__winners ol{display:grid;gap:6px;margin:0;padding:0;list-style:none}.ex-archive-row__winners li{display:grid;grid-template-columns:26px minmax(72px,1fr) auto auto;gap:8px;align-items:baseline;font-size:.76rem}.ex-archive-row__winners li b{color:var(--ember);font-weight:400}.ex-archive-row__winners li small{color:var(--muted)}
 .ex-archive-row__actions{display:grid;gap:8px;justify-items:end;text-align:right}.ex-archive-row__actions a,.ex-ticket__actions a,.ex-ticket__actions button{border:0;background:transparent;padding:0;font:inherit;font-size:.84rem;font-weight:600;color:var(--ink);border-bottom:1px solid transparent;transition:border-color .18s ease}.ex-archive-row__actions a:hover,.ex-ticket__actions a:hover,.ex-ticket__actions button:hover{border-bottom-color:var(--line-strong)}
 .ex-ticket-notice{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(280px,3fr) auto;gap:clamp(18px,3vw,48px);align-items:center;padding-block:clamp(22px,3vw,36px);border-bottom:1px solid var(--line-strong)}.ex-ticket-notice>div{display:grid;gap:7px}.ex-ticket-notice p{margin:0;color:var(--ink-2);line-height:1.55}.ex-ticket-notice a{font-weight:600;white-space:nowrap}
@@ -1320,7 +1339,7 @@ img{max-width:100%}
 @media(max-width:1040px){.ex-archive-row{grid-template-columns:minmax(140px,1fr) minmax(140px,1fr) minmax(0,2fr)}.ex-archive-row__winners{grid-column:1 / 3}.ex-archive-row__actions{grid-column:3;align-self:end}}
 @media(max-width:900px){.ex-archive__head,.ex-tickets__head{grid-template-columns:minmax(0,1fr);align-items:start}.ex-ticket-notice{grid-template-columns:minmax(0,1fr)}.ex-ticket-notice a{justify-self:start}}
 @media(max-width:700px){.ex-archive-row{grid-template-columns:repeat(2,minmax(0,1fr))}.ex-archive-row__stats,.ex-archive-row__winners,.ex-archive-row__actions{grid-column:1 / -1}.ex-archive-row__actions{justify-items:start;text-align:left}.ex-ticket__head{align-items:flex-start}.ex-ticket__identity{align-items:flex-start}.ex-ticket__status{text-align:right}.ex-ticket__body{grid-template-columns:minmax(0,1fr)}.ex-ticket__meta{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(max-width:520px){.ex-archive-row{grid-template-columns:minmax(0,1fr)}.ex-archive-row__stats,.ex-archive-row__winners,.ex-archive-row__actions{grid-column:auto}.ex-archive-row__stats{grid-template-columns:repeat(2,minmax(0,1fr))}.ex-archive-row__stats>div:last-child{grid-column:1 / -1}.ex-archive-row__winners li{grid-template-columns:24px minmax(64px,1fr) auto}.ex-archive-row__winners li small{grid-column:2 / -1}.ex-ticket-group__head{align-items:start;flex-direction:column}.ex-ticket-group__head>p{text-align:left}.ex-ticket__head{display:grid}.ex-ticket__status{text-align:left}.ex-ticket__meta{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:520px){.ex-archive-row__stats{grid-template-columns:repeat(2,minmax(0,1fr))}.ex-archive-row__stats>div:last-child{grid-column:1 / -1}.ex-archive-row__winners li{grid-template-columns:24px minmax(64px,1fr) auto}.ex-archive-row__winners li small{grid-column:2 / -1}.ex-ticket-group__head{align-items:start;flex-direction:column}.ex-ticket-group__head>p{text-align:left}.ex-ticket__head{display:grid}.ex-ticket__status{text-align:left}.ex-ticket__meta{grid-template-columns:minmax(0,1fr)}}
 
 .ex-archive__query{
   display:flex;align-items:end;justify-content:space-between;gap:20px;
@@ -1367,9 +1386,7 @@ img{max-width:100%}
 
 .ex-leaderboard__state{display:grid;gap:10px;padding-block:clamp(34px,4.4vw,62px);border-bottom:1px solid var(--line-strong)}
 .ex-leaderboard__state[data-tone="error"]{border-bottom-color:var(--ember)}
-.ex-leaderboard__state p{margin:0;color:var(--ink-2);font-size:.98rem;line-height:1.55}
-
-.ex-leaderboard__ledger{border-top:1px solid var(--line-strong)}
+.ex-leaderboard__state p:not(.ex-eyebrow){margin:0;color:var(--ink-2);font-size:.98rem;line-height:1.55}
 
 .ex-leaderboard-row{
   display:grid;
@@ -1380,8 +1397,10 @@ img{max-width:100%}
   padding-inline:clamp(6px,.8vw,10px);
   border-bottom:1px solid var(--line);
 }
+/* The ledger opens straight under the head's bottom rule, so the column
+   labels need their own room above them. */
 .ex-leaderboard-row--head{
-  padding-block:0 10px;
+  padding-block:clamp(14px,1.6vw,18px) 10px;
   font-size:.75rem;
   font-weight:700;
   letter-spacing:.13em;
@@ -1389,6 +1408,7 @@ img{max-width:100%}
   color:var(--muted);
   border-bottom:1px solid var(--line-strong);
 }
+.ex-leaderboard-row--head>:last-child{text-align:right}
 .ex-leaderboard-row__rank{font-size:1.02rem}
 .ex-leaderboard-row[data-podium="true"] .ex-leaderboard-row__rank{color:var(--ember)}
 .ex-leaderboard-row__wallet{display:flex;align-items:baseline;gap:9px;min-width:0;flex-wrap:wrap}
@@ -1422,7 +1442,7 @@ img{max-width:100%}
   .ex-leaderboard-row__wallet{grid-area:wallet}
   .ex-leaderboard-row__prize{grid-area:prize;text-align:right}
   .ex-leaderboard-row__stats{grid-area:stats;display:flex}
-  .ex-leaderboard-row__stat{display:inline-flex}
+  .ex-leaderboard-row__stat{display:inline-flex;align-items:baseline}
   .ex-leaderboard-row__stat + .ex-leaderboard-row__stat{margin-inline-start:20px}
   .ex-leaderboard-row__stat::before{
     content:attr(data-label) " ";
@@ -2100,8 +2120,9 @@ img{max-width:100%}
   margin-top:0;
 }
 
-/* Compact ready-wallet surface */
-.ex-wallet-page .ex-wallet-hero{
+/* Compact ready-wallet surface. The entrance hero keeps padding:0 from the
+   entry grid so its eyebrow lines up with the Access column. */
+.ex-wallet-page .ex-wallet-hero:not(.ex-wallet-hero--entry){
   padding-block:clamp(28px,3.4vw,44px) clamp(20px,2.4vw,30px);
 }
 
@@ -2183,27 +2204,5 @@ img{max-width:100%}
 
   .ex-pool__facts>div:nth-child(n+3){
     grid-column:1 / -1;
-  }
-}
-
-@media(max-width:560px){
-  .ex-book__strip{
-    grid-template-columns:repeat(2,minmax(0,1fr));
-  }
-
-  .ex-book__cell{
-    border-top:1px solid var(--line);
-    padding:12px 0;
-  }
-
-  .ex-book__cell:nth-child(2){
-    border-left:1px solid var(--line);
-    padding-left:14px;
-  }
-
-  .ex-book__cell:nth-child(3){
-    grid-column:1 / -1;
-    border-left:0;
-    padding-left:0;
   }
 }
