@@ -210,15 +210,26 @@ async function resolveSeedWalletUser({ wallet, dbClient } = {}) {
 }
 
 /**
- * Construct the isolated execution interface. LIVE is intentionally compiled
- * as unreachable in this phase: both modes are represented, but no branch can
- * invoke an executor or broadcast. A later integration must deliberately
- * replace this gate and inject the existing entry execution service.
+ * Construct the isolated execution interface. LIVE remains fail-closed unless
+ * an executor is injected deliberately by the caller. Even then, a fresh live
+ * state snapshot is mandatory before the existing backend entry executor can
+ * be reached. This keeps scheduler wiring and transaction enablement separate.
  */
-function createSeedBotExecutionService({ mode = EXECUTION_MODES.DRY_RUN } = {}) {
+function createSeedBotExecutionService({
+  mode = EXECUTION_MODES.DRY_RUN,
+  liveEntryExecutor = null,
+  dbClient,
+  clock = () => Date.now(),
+} = {}) {
   const selectedMode = mode === EXECUTION_MODES.LIVE ? EXECUTION_MODES.LIVE : EXECUTION_MODES.DRY_RUN;
+  const liveEnabled =
+    selectedMode === EXECUTION_MODES.LIVE &&
+    typeof liveEntryExecutor === 'function';
 
-  async function executeDueEntry(entry, { liveState, topology } = {}) {
+  async function executeDueEntry(
+    entry,
+    { liveState, topology, idempotencyKey } = {},
+  ) {
     if (liveState) {
       const eligibility = evaluateLiveEntryEligibility({ entry, liveState, topology });
       if (!eligibility.eligible) {
@@ -231,6 +242,7 @@ function createSeedBotExecutionService({ mode = EXECUTION_MODES.DRY_RUN } = {}) 
         };
       }
     }
+
     if (selectedMode === EXECUTION_MODES.DRY_RUN) {
       return {
         mode: EXECUTION_MODES.DRY_RUN,
@@ -240,19 +252,83 @@ function createSeedBotExecutionService({ mode = EXECUTION_MODES.DRY_RUN } = {}) 
       };
     }
 
-    // Safety gate: LIVE has no reachable executor in Phase 2. Keeping the
-    // explicit result makes accidental scheduler wiring fail closed.
+    if (!liveEnabled) {
+      return {
+        mode: EXECUTION_MODES.LIVE,
+        executed: false,
+        skipped: true,
+        reason: 'live_mode_disabled',
+      };
+    }
+
+    // A scheduler tick cannot reach a signer using only a stale plan. The
+    // caller must explicitly supply a freshly-read live state snapshot.
+    if (!liveState) {
+      return {
+        mode: EXECUTION_MODES.LIVE,
+        executed: false,
+        skipped: true,
+        reason: 'live_state_required',
+      };
+    }
+
+    const user = await resolveSeedWalletUser({
+      wallet: entry.wallet,
+      dbClient,
+    });
+
+    const poolAddress = normalizeAddress(entry.poolAddress);
+    if (!poolAddress) throw new Error('entry_pool_invalid');
+
+    const roundId = Number(entry.roundId);
+    const predictionPriceCents = Number(entry.predictionPriceCents);
+    if (!Number.isSafeInteger(roundId) || roundId <= 0) {
+      throw new Error('entry_round_id_invalid');
+    }
+    if (!Number.isSafeInteger(predictionPriceCents) || predictionPriceCents <= 0) {
+      throw new Error('entry_prediction_invalid');
+    }
+
+    const nowMs = Number(clock());
+    if (!Number.isFinite(nowMs)) throw new Error('seed_execution_time_invalid');
+
+    const nonceSource = String(
+      idempotencyKey ||
+      `${user.walletAddress}:${poolAddress}:${roundId}`,
+    );
+
+    const payload = {
+      action: 'ENTRY',
+      executionMode: 'BACKEND_WALLET',
+      chainId: ARC_CHAIN_ID,
+      amountRaw: STAKE_AMOUNT_RAW.toString(),
+      contract: poolAddress,
+      destination: poolAddress,
+      walletAddress: user.walletAddress,
+      roundId,
+      predictionPriceCents,
+      nonce: `seed:${nonceSource}`,
+      expiresAt: new Date(nowMs + 5 * 60 * 1000).toISOString(),
+    };
+
+    const result = await liveEntryExecutor(user.userId, payload);
+
     return {
       mode: EXECUTION_MODES.LIVE,
-      executed: false,
-      skipped: true,
-      reason: 'live_mode_disabled',
+      executed: true,
+      skipped: false,
+      reason: 'executed',
+      wallet: user.walletAddress,
+      poolAddress,
+      roundId,
+      predictionPriceCents,
+      result,
     };
   }
 
   return Object.freeze({
     mode: selectedMode,
-    liveEnabled: false,
+    liveEnabled,
     executeDueEntry,
     evaluateLiveEntryEligibility,
     resolveSeedWalletUser,

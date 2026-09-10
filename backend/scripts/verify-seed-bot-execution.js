@@ -180,9 +180,72 @@ async function main() {
   const liveExecutor = createSeedBotExecutionService({ mode: EXECUTION_MODES.LIVE });
   const liveResult = await liveExecutor.executeDueEntry(sample);
   assert.equal(liveResult.reason, 'live_mode_disabled');
-  assert.equal(liveResult.executed, false, 'LIVE is unreachable in Phase 2');
+  assert.equal(liveResult.executed, false, 'LIVE remains disabled without an injected executor');
   assert.equal(liveExecutor.liveEnabled, false);
   assert.equal(executorCalls, 0);
+
+  let enabledExecutorCalls = 0;
+  let capturedPayload = null;
+  const enabledLiveExecutor = createSeedBotExecutionService({
+    mode: EXECUTION_MODES.LIVE,
+    clock: () => 1_800_000_000_000,
+    dbClient: {
+      async query() {
+        return {
+          rows: [{
+            user_id: 'seed-user-1',
+            wallet_address: sample.wallet,
+          }],
+        };
+      },
+    },
+    liveEntryExecutor: async (userId, payload) => {
+      enabledExecutorCalls += 1;
+      capturedPayload = { userId, payload };
+      return {
+        walletAddress: payload.walletAddress,
+        poolAddress: payload.contract,
+        roundId: payload.roundId,
+        predictionPriceCents: payload.predictionPriceCents,
+        entryTxHash: `0x${'1'.repeat(64)}`,
+      };
+    },
+  });
+
+  assert.equal(enabledLiveExecutor.liveEnabled, true);
+
+  const missingLiveState = await enabledLiveExecutor.executeDueEntry(sample, {
+    topology,
+    idempotencyKey: planKey(sample),
+  });
+  assert.equal(missingLiveState.reason, 'live_state_required');
+  assert.equal(missingLiveState.executed, false);
+  assert.equal(enabledExecutorCalls, 0);
+
+  const enabledLiveResult = await enabledLiveExecutor.executeDueEntry(sample, {
+    liveState: stateFor(sample),
+    topology,
+    idempotencyKey: planKey(sample),
+  });
+
+  assert.equal(enabledLiveResult.executed, true);
+  assert.equal(enabledLiveResult.reason, 'executed');
+  assert.equal(enabledExecutorCalls, 1);
+  assert.equal(capturedPayload.userId, 'seed-user-1');
+  assert.equal(capturedPayload.payload.action, 'ENTRY');
+  assert.equal(capturedPayload.payload.executionMode, 'BACKEND_WALLET');
+  assert.equal(capturedPayload.payload.chainId, 5042002);
+  assert.equal(capturedPayload.payload.amountRaw, STAKE_AMOUNT_RAW.toString());
+  assert.equal(capturedPayload.payload.walletAddress.toLowerCase(), sample.wallet.toLowerCase());
+  assert.equal(capturedPayload.payload.contract.toLowerCase(), sample.poolAddress.toLowerCase());
+  assert.equal(capturedPayload.payload.destination.toLowerCase(), sample.poolAddress.toLowerCase());
+  assert.equal(capturedPayload.payload.roundId, Number(sample.roundId));
+  assert.equal(capturedPayload.payload.predictionPriceCents, Number(sample.predictionPriceCents));
+  assert.match(capturedPayload.payload.nonce, /^seed:/);
+  assert.equal(
+    capturedPayload.payload.expiresAt,
+    new Date(1_800_000_000_000 + 5 * 60 * 1000).toISOString(),
+  );
 
   const baseDue = {
     ...sample,
