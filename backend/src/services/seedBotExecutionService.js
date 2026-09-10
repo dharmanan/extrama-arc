@@ -137,25 +137,36 @@ function evaluateLiveEntryEligibility({ entry, liveState, topology } = {}) {
 
   if (Boolean(liveState.predictionTaken)) {
     let replacementPredictionPriceCents = null;
-    const markPriceCents = liveState.markPriceCents ?? liveState.marketReferenceCents;
+
     const blockedPriceCents =
-      liveState.takenPredictionCents || liveState.blockedPriceCents || [entry.predictionPriceCents];
-    if (markPriceCents !== undefined && Array.isArray(blockedPriceCents)) {
+      liveState.takenPredictionCents ||
+      liveState.blockedPriceCents ||
+      [entry.predictionPriceCents];
+
+    if (Array.isArray(blockedPriceCents)) {
       try {
-        const marketPeriodStartAt = parseTimestamp(
-          liveState.marketPeriodStartAt || entry.entryOpenAt,
-        );
-        replacementPredictionPriceCents = resolveDeterministicPredictionSlot({
-          markPriceCents,
-          wallet,
-          seed: entry.plannerVersion || liveState.seed || 'extrema-seed-bot-v1',
-          poolKey: `${pool.poolAddress}:${expectedRoundId.toString()}:${marketPeriodStartAt?.toString() || ''}`,
-          blockedPriceCents,
-        });
+        replacementPredictionPriceCents =
+          resolveDeterministicPredictionSlot({
+            predictionPriceCents:
+              entry.predictionPriceCents,
+            markPriceCents:
+              liveState.markPriceCents ??
+              liveState.marketReferenceCents,
+            direction: pool.direction,
+            wallet,
+            seed:
+              entry.plannerVersion ||
+              liveState.seed ||
+              'extrema-seed-bot-v1',
+            poolKey:
+              `${pool.poolAddress}:${expectedRoundId.toString()}`,
+            blockedPriceCents,
+          });
       } catch {
         replacementPredictionPriceCents = null;
       }
     }
+
     return {
       eligible: false,
       reason: 'entry_price_taken',

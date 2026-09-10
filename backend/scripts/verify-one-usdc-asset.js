@@ -181,8 +181,44 @@ async function main() {
   assert.match(claimSource, /parsed\.args\.value === amount/);
   assert.match(claimSource, /claimableRaw/);
 
-  assert.match(source('README.md'), /One economic USDC asset on Arc/);
-  assert.match(source('EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md'), /One economic USDC asset/);
+  const readme = source('README.md');
+
+  // Documentation verification is semantic rather than coupled to one
+  // exact heading or sentence. The README must preserve the actual Arc
+  // one-USDC accounting model.
+  assert.match(
+    readme,
+    /USDC is both the application currency and the native gas currency/i,
+  );
+  assert.match(
+    readme,
+    /same underlying USDC through two technical interfaces/i,
+  );
+  assert.match(
+    readme,
+    /Native USDC\s*\|\s*18\s*\|/i,
+  );
+  assert.match(
+    readme,
+    /ERC-20 USDC\s*\|\s*6\s*\|/i,
+  );
+  assert.match(
+    readme,
+    /never adds them together/i,
+  );
+  assert.match(
+    readme,
+    /Application accounting uses the 6 decimal ERC-20 interface/i,
+  );
+  assert.match(
+    readme,
+    /Native balance reads are used only where EVM gas semantics require them/i,
+  );
+
+  assert.match(
+    source('EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md'),
+    /One economic USDC asset/,
+  );
 
   const activeRuntime = `${collectRuntimeSource('backend/src')}\n${collectRuntimeSource('app')}`;
   const count = (pattern) => (activeRuntime.match(pattern) || []).length;

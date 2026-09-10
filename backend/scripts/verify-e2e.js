@@ -103,6 +103,8 @@ const LAYER3_SCRIPTS = [
   'scripts/verify-round-automation-logging.js',
   'scripts/verify-v2-migration-guards.js',
   'scripts/verify-transaction-reconciliation.js',
+  'scripts/verify-arc-rpc-failover.js',
+  'scripts/verify-arc-rpc-concurrency.js',
   'scripts/verify-market-archive-core.js',
   'scripts/verify-canonical-schedules.js',
   'scripts/verify-gateway-service.js',

@@ -2,6 +2,9 @@
 
 const { ethers } = require('ethers');
 const arcService = require('./arcService');
+const {
+  getArcWriteProvider,
+} = require('./arcRpcProviderService');
 const { isCanonicalV2Round } = require('./canonicalMarketSchedule');
 const walletService = require('./walletService');
 
@@ -59,13 +62,19 @@ function requireSuccessfulReceipt(receipt, errorName) {
 async function executeEntry(userId, payload) {
   assertEntryPayload(payload);
 
+  // All state inspection uses the resilient read provider.
   const provider = arcService.getArcProvider();
   const network = await provider.getNetwork();
   if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) {
     throw new Error('arc_chain_id_mismatch');
   }
 
-  const signer = await walletService.getSignerForUser(userId, provider);
+  // SYSTEM_SEED_WALLET financial broadcasts are primary-RPC only.
+  // The fallback/read queue must never become a transaction runner.
+  const signer = await walletService.getSignerForUser(
+    userId,
+    getArcWriteProvider(),
+  );
   const walletAddress = ethers.getAddress(signer.address);
   const poolAddress = ethers.getAddress(payload.contract);
 
@@ -76,9 +85,17 @@ async function executeEntry(userId, payload) {
   const usdc = new ethers.Contract(
     arcService.ARC_TESTNET_USDC_ADDRESS,
     USDC_ENTRY_ABI,
-    signer,
+    provider,
   );
-  const pool = new ethers.Contract(poolAddress, POOL_ENTRY_ABI, signer);
+  const pool = new ethers.Contract(
+    poolAddress,
+    POOL_ENTRY_ABI,
+    provider,
+  );
+
+  // Separate write runners. Only these two contract objects can broadcast.
+  const writableUsdc = usdc.connect(signer);
+  const writablePool = pool.connect(signer);
 
   const latestBlock = await provider.getBlock('latest');
   if (!latestBlock) throw new Error('arc_latest_block_unavailable');
@@ -128,13 +145,13 @@ async function executeEntry(userId, payload) {
   const allowance = await usdc.allowance(walletAddress, poolAddress);
 
   if (allowance < STAKE_AMOUNT) {
-    const approvalTx = await usdc.approve(poolAddress, STAKE_AMOUNT);
+    const approvalTx = await writableUsdc.approve(poolAddress, STAKE_AMOUNT);
     approvalTxHash = approvalTx.hash;
     const approvalReceipt = await approvalTx.wait();
     requireSuccessfulReceipt(approvalReceipt, 'entry_approval_failed');
   }
 
-  const entryTx = await pool.enterPrediction(
+  const entryTx = await writablePool.enterPrediction(
     payload.roundId,
     payload.predictionPriceCents,
   );

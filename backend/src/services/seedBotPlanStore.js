@@ -71,7 +71,18 @@ function createSeedBotPlanStore({ dbClient } = {}) {
            entry_close_at
          )
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT (plan_key) DO UPDATE
+           SET pool_slug = EXCLUDED.pool_slug,
+               planner_version = EXCLUDED.planner_version,
+               prediction_price_cents = EXCLUDED.prediction_price_cents,
+               planned_execution_at = EXCLUDED.planned_execution_at,
+               entry_close_at = EXCLUDED.entry_close_at
+         WHERE seed_bot_plans.planner_version <> EXCLUDED.planner_version
+           AND NOT EXISTS (
+             SELECT 1
+               FROM seed_bot_dispatches
+              WHERE seed_bot_dispatches.plan_key = seed_bot_plans.plan_key
+           )`,
         [
           key,
           wallet,
@@ -91,8 +102,24 @@ function createSeedBotPlanStore({ dbClient } = {}) {
     return { inserted };
   }
 
-  async function loadOpenEntries({ now = new Date() } = {}) {
-    const at = requireDate(now, 'seed_plan_now_invalid');
+  async function loadOpenEntries({
+    now = new Date(),
+    plannerVersion = null,
+  } = {}) {
+    const at =
+      requireDate(
+        now,
+        'seed_plan_now_invalid',
+      );
+
+    const requestedPlannerVersion =
+      plannerVersion === null ||
+      plannerVersion === undefined
+        ? null
+        : requireText(
+            plannerVersion,
+            'seed_plan_version_invalid',
+          );
 
     const { rows } = await database.query(
       `SELECT
@@ -107,8 +134,15 @@ function createSeedBotPlanStore({ dbClient } = {}) {
          entry_close_at
        FROM seed_bot_plans
        WHERE entry_close_at > $1
+         AND (
+           $2::text IS NULL
+           OR planner_version = $2
+         )
        ORDER BY planned_execution_at ASC, plan_key ASC`,
-      [at.toISOString()],
+      [
+        at.toISOString(),
+        requestedPlannerVersion,
+      ],
     );
 
     return rows.map((row) => ({

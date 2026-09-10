@@ -4,7 +4,7 @@ const DEFAULT_TICK_INTERVAL_MS = 60 * 1000;
 const DEFAULT_INITIAL_DELAY_MS = 15 * 1000;
 const DEFAULT_PLAN_REFRESH_MS = 15 * 60 * 1000;
 const ADVISORY_LOCK_ID = '5042002072';
-const PLANNER_VERSION = 'extrema-seed-bot-v2';
+const PLANNER_VERSION = 'extrema-seed-bot-v3';
 
 function normalizeNowMs(clock) {
   const raw = typeof clock === 'function' ? clock() : Date.now();
@@ -155,6 +155,7 @@ function createSeedBotAutomationService({
 
       let entries = await planStore.loadOpenEntries({
         now,
+        plannerVersion: PLANNER_VERSION,
       });
 
       let insertedPlans = 0;
@@ -205,6 +206,7 @@ function createSeedBotAutomationService({
 
         entries = await planStore.loadOpenEntries({
           now,
+          plannerVersion: PLANNER_VERSION,
         });
       }
 

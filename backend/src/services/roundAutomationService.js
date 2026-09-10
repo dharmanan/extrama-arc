@@ -5,6 +5,10 @@ const config = require('../config');
 const db = require('../db');
 const { decrypt } = require('./cryptoService');
 const arcService = require('./arcService');
+const {
+  getArcReadProvider,
+  getArcWriteProvider,
+} = require('./arcRpcProviderService');
 const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
@@ -121,7 +125,19 @@ function isTransientReadError(error) {
 
   if (error.info?.error?.code === -32005) return true;
   if (message.includes('rate limit') || infoMessage.includes('rate limit')) return true;
-  if (['NETWORK_ERROR', 'SERVER_ERROR', 'TIMEOUT', 'UNKNOWN_ERROR'].includes(error.code)) {
+  if ([
+    'NETWORK_ERROR',
+    'SERVER_ERROR',
+    'TIMEOUT',
+    'UNKNOWN_ERROR',
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EAI_AGAIN',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_SOCKET',
+  ].includes(error.code)) {
     return true;
   }
   if (error.code === 'CALL_EXCEPTION' && (error.data === null || error.data === undefined)) {
@@ -160,11 +176,7 @@ async function safeRead(operation, context = {}) {
 }
 
 function getAutomationProvider() {
-  return new ethers.JsonRpcProvider(
-    config.ARC_TESTNET_RPC_URL,
-    { chainId: Number(ARC_CHAIN_ID), name: 'Arc Testnet' },
-    { staticNetwork: true },
-  );
+  return getArcReadProvider();
 }
 
 async function readChainNow(provider) {
@@ -199,7 +211,14 @@ async function getPoolOwnerSigner(provider, ownerAddress) {
   );
   if (!rows.length) throw new Error('pool_owner_wallet_not_found_in_backend');
 
-  const signer = new ethers.Wallet(decrypt(rows[0].private_key_encrypted), provider);
+  // Lifecycle reads may fail over between RPC endpoints.
+  // Transaction signing and broadcasting remain pinned to
+  // the configured primary Arc RPC only.
+  void provider;
+  const signer = new ethers.Wallet(
+    decrypt(rows[0].private_key_encrypted),
+    getArcWriteProvider(),
+  );
   if (signer.address.toLowerCase() !== ownerAddress.toLowerCase()) {
     throw new Error('pool_owner_signer_mismatch');
   }
@@ -974,7 +993,7 @@ async function executeResolverActionsInternal(provider, now, dueCancel, dueSettl
 
   let signer;
   try {
-    signer = resolverSignerService.getResolverSigner(provider);
+    signer = resolverSignerService.getResolverSigner(getArcWriteProvider());
   } catch (error) {
     return {
       executed: [],
@@ -1074,7 +1093,7 @@ async function verifyResolverConfiguration() {
 
   let signerAddress;
   try {
-    signerAddress = resolverSignerService.getResolverSigner(provider).address;
+    signerAddress = resolverSignerService.getResolverSigner(getArcWriteProvider()).address;
   } catch (error) {
     return { configured: true, ok: false, reason: error.message };
   }

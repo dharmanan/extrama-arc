@@ -75,12 +75,22 @@ async function main() {
   let executorCalls = 0;
 
   const planStoreFactory = () => ({
-    async loadOpenEntries({ now }) {
-      const timestamp = new Date(now).getTime();
+    async loadOpenEntries({
+      now,
+      plannerVersion = null,
+    }) {
+      const timestamp =
+        new Date(now).getTime();
 
       return storedPlans.filter(
         entry =>
-          new Date(entry.entryCloseAt).getTime() > timestamp,
+          new Date(
+            entry.entryCloseAt,
+          ).getTime() > timestamp &&
+          (
+            plannerVersion === null ||
+            entry.plannerVersion === plannerVersion
+          ),
       );
     },
 
@@ -117,7 +127,7 @@ async function main() {
           pool: 'btc-daily-high',
           poolAddress,
           roundId: '8',
-          plannerVersion: 'extrema-seed-bot-v2',
+          plannerVersion: 'extrema-seed-bot-v3',
           predictionPriceCents: '6500000',
           plannedExecutionAt:
             '2030-01-01T09:00:00.000Z',
@@ -133,7 +143,7 @@ async function main() {
           pool: 'btc-daily-high',
           poolAddress,
           roundId: '8',
-          plannerVersion: 'extrema-seed-bot-v2',
+          plannerVersion: 'extrema-seed-bot-v3',
           predictionPriceCents: '6600000',
           plannedExecutionAt:
             '2030-01-01T09:01:00.000Z',

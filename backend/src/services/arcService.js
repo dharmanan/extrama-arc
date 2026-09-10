@@ -2,6 +2,9 @@
 
 const { ethers } = require('ethers');
 const config = require('../config');
+const {
+  getArcReadProvider,
+} = require('./arcRpcProviderService');
 const { getLiveMarkPrices } = require('./binanceResolverService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
@@ -109,11 +112,7 @@ function nativeUsdcRawToErc20Raw(nativeRaw) {
 }
 
 function getProvider() {
-  return new ethers.JsonRpcProvider(
-    config.ARC_TESTNET_RPC_URL,
-    { chainId: Number(ARC_TESTNET_CHAIN_ID), name: 'Arc Testnet' },
-    { staticNetwork: true },
-  );
+  return getArcReadProvider();
 }
 
 function toIso(seconds) {
@@ -163,7 +162,19 @@ function isTransientRpcError(error) {
   if (!error) return false;
   if (isRateLimitError(error)) return true;
 
-  if (['NETWORK_ERROR', 'SERVER_ERROR', 'TIMEOUT', 'UNKNOWN_ERROR'].includes(error.code)) {
+  if ([
+    'NETWORK_ERROR',
+    'SERVER_ERROR',
+    'TIMEOUT',
+    'UNKNOWN_ERROR',
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EAI_AGAIN',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_SOCKET',
+  ].includes(error.code)) {
     return true;
   }
 

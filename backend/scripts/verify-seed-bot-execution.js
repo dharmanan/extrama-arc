@@ -14,6 +14,9 @@ const {
   createSeedBotExecutionService,
 } = require('../src/services/seedBotExecutionService');
 const {
+  createSeedBotProductionExecutor,
+} = require('../src/services/seedBotProductionExecutor');
+const {
   createIdempotencyStore,
   createPostgresIdempotencyStore,
   createSeedBotScheduler,
@@ -55,10 +58,38 @@ const roundsState = {
 };
 
 const marketReferences = {
-  BTC: { available: true, markPriceCents: '6500000' },
-  ETH: { available: true, markPriceCents: '250000' },
-  SOL: { available: true, markPriceCents: '15000' },
-  HYPE: { available: true, markPriceCents: '4200' },
+  BTC: {
+    available: true,
+    markPriceCents: '6500000',
+    observedHighCents: '6600000',
+    observedLowCents: '6400000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
+  ETH: {
+    available: true,
+    markPriceCents: '250000',
+    observedHighCents: '255000',
+    observedLowCents: '245000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
+  SOL: {
+    available: true,
+    markPriceCents: '15000',
+    observedHighCents: '15300',
+    observedLowCents: '14700',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
+  HYPE: {
+    available: true,
+    markPriceCents: '4200',
+    observedHighCents: '4300',
+    observedLowCents: '4100',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
 };
 
 const funding = new Map(
@@ -80,6 +111,12 @@ function stateFor(entry, overrides = {}) {
     entryCloseAt: entry.entryCloseAt,
     hasEntered: false,
     predictionTaken: false,
+    marketReferenceCents:
+      entry.marketReferenceCents ?? null,
+    observedHighCents:
+      entry.observedHighCents ?? null,
+    observedLowCents:
+      entry.observedLowCents ?? null,
     usdcRaw: (STAKE_AMOUNT_RAW * 100n).toString(),
     nativeRaw: '1000000000000000000',
     ...overrides,
@@ -153,23 +190,338 @@ async function main() {
     liveState: collisionState,
     topology,
   });
-  assert.equal(collisionEligibility.replacementPredictionPriceCents === sample.predictionPriceCents, false);
-  assert.equal(typeof collisionEligibility.replacementPredictionPriceCents, 'string');
+  assert.equal(
+    collisionEligibility.replacementPredictionPriceCents ===
+      sample.predictionPriceCents,
+    false,
+  );
+  assert.equal(
+    typeof collisionEligibility.replacementPredictionPriceCents,
+    'string',
+  );
+  assert.equal(
+    BigInt(collisionEligibility.replacementPredictionPriceCents) >
+      BigInt(sample.predictionPriceCents),
+    true,
+    'HIGH collision replacement moves outward',
+  );
 
-  const collisionA = generateDeterministicPredictions({
-    markPriceCents: '1',
+  const highA = generateDeterministicPredictions({
+    markPriceCents: '100000',
+    observedHighCents: '102000',
+    observedLowCents: '98000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+    direction: 'HIGH',
     wallets: APPROVED_SEED_WALLETS,
-    seed: 'collision-v1',
-    poolKey: 'tiny-round',
+    seed: 'collision-high-v1',
+    poolKey: 'high-round',
   });
-  const collisionB = generateDeterministicPredictions({
-    markPriceCents: '1',
+
+  const highB = generateDeterministicPredictions({
+    markPriceCents: '100000',
+    observedHighCents: '102000',
+    observedLowCents: '98000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+    direction: 'HIGH',
     wallets: APPROVED_SEED_WALLETS,
-    seed: 'collision-v1',
-    poolKey: 'tiny-round',
+    seed: 'collision-high-v1',
+    poolKey: 'high-round',
   });
-  assert.deepEqual(collisionA, collisionB, 'collision resolution is deterministic');
-  assert.equal(new Set(Object.values(collisionA)).size, 9, 'collision resolution keeps nine unique slots');
+
+  assert.deepEqual(
+    highA,
+    highB,
+    'HIGH generation is deterministic',
+  );
+
+  assert.equal(
+    new Set(Object.values(highA)).size,
+    9,
+    'HIGH keeps nine unique slots',
+  );
+
+  assert.equal(
+    Object.values(highA).every(
+      value => BigInt(value) > 102000n,
+    ),
+    true,
+    'every HIGH prediction extends observed high',
+  );
+
+  const lowA = generateDeterministicPredictions({
+    markPriceCents: '100000',
+    observedHighCents: '102000',
+    observedLowCents: '98000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+    direction: 'LOW',
+    wallets: APPROVED_SEED_WALLETS,
+    seed: 'collision-low-v1',
+    poolKey: 'low-round',
+  });
+
+  const lowB = generateDeterministicPredictions({
+    markPriceCents: '100000',
+    observedHighCents: '102000',
+    observedLowCents: '98000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+    direction: 'LOW',
+    wallets: APPROVED_SEED_WALLETS,
+    seed: 'collision-low-v1',
+    poolKey: 'low-round',
+  });
+
+  assert.deepEqual(
+    lowA,
+    lowB,
+    'LOW generation is deterministic',
+  );
+
+  assert.equal(
+    new Set(Object.values(lowA)).size,
+    9,
+    'LOW keeps nine unique slots',
+  );
+
+  assert.equal(
+    Object.values(lowA).every(
+      value => BigInt(value) < 98000n,
+    ),
+    true,
+    'every LOW prediction extends observed low',
+  );
+
+  const productionReads = [];
+  const productionExecutions = [];
+
+  const productionMarketFixtures = {
+    BTCUSDT: {
+      mark: '65000',
+      high: '6700000',
+      low: '6300000',
+    },
+    ETHUSDT: {
+      mark: '2500',
+      high: '260000',
+      low: '240000',
+    },
+    SOLUSDT: {
+      mark: '150',
+      high: '15500',
+      low: '14500',
+    },
+    HYPEUSDT: {
+      mark: '42',
+      high: '4400',
+      low: '4000',
+    },
+  };
+
+  const productionExecutor =
+    createSeedBotProductionExecutor({
+      topology,
+
+      arcService: {
+        ARC_POOL_TOPOLOGY:
+          topology,
+
+        async getStandardRoundsState() {
+          return roundsState;
+        },
+      },
+
+      marketLayer: {
+        async getLiveMarkPrices() {
+          return {
+            source:
+              'Binance verifier fixture',
+            prices:
+              Object.fromEntries(
+                Object.entries(
+                  productionMarketFixtures,
+                ).map(
+                  ([symbol, value]) => [
+                    symbol,
+                    {
+                      symbol,
+                      markPrice:
+                        value.mark,
+                      source:
+                        'Binance USDⓈ-M Futures Mark Price',
+                      isSettlementSource:
+                        true,
+                    },
+                  ],
+                ),
+              ),
+          };
+        },
+
+        async fetchMarkPriceWindow({
+          symbol,
+        }) {
+          return { symbol };
+        },
+
+        calculateExtrema(window) {
+          const value =
+            productionMarketFixtures[
+              window.symbol
+            ];
+
+          return {
+            high: {
+              resolvedPriceCents:
+                value.high,
+            },
+            low: {
+              resolvedPriceCents:
+                value.low,
+            },
+          };
+        },
+      },
+
+      liveStateService: {
+        async readFreshSeedEntryState(entry) {
+          productionReads.push({
+            predictionPriceCents:
+              entry.predictionPriceCents,
+          });
+
+          const firstRead =
+            productionReads.length === 1;
+
+          return {
+            liveState: stateFor(entry, {
+              predictionTaken: firstRead,
+              takenPredictionCents:
+                firstRead
+                  ? [entry.predictionPriceCents]
+                  : [],
+            }),
+          };
+        },
+      },
+
+      entryExecutionService: {
+        async executeEntry(userId, payload) {
+          productionExecutions.push({
+            userId,
+            predictionPriceCents:
+              String(
+                payload.predictionPriceCents,
+              ),
+          });
+
+          return {
+            walletAddress:
+              payload.walletAddress,
+            poolAddress:
+              payload.contract,
+            roundId:
+              payload.roundId,
+            predictionPriceCents:
+              payload.predictionPriceCents,
+            entryTxHash:
+              `0x${'2'.repeat(64)}`,
+          };
+        },
+      },
+
+      dbClient: {
+        async query(sql, params) {
+          assert.match(
+            sql,
+            /extrema_wallets/,
+          );
+
+          return {
+            rows: [{
+              user_id:
+                'seed-production-user',
+              wallet_address:
+                params[0],
+            }],
+          };
+        },
+      },
+    });
+
+  const productionSample = {
+    ...sample,
+    plannerVersion:
+      'extrema-seed-bot-v3',
+  };
+
+  const productionResult =
+    await productionExecutor.executeDueEntry(
+      productionSample,
+      {
+        idempotencyKey:
+          planKey(productionSample),
+      },
+    );
+
+  assert.equal(
+    productionResult.executed,
+    true,
+    'production executor eventually executes replacement',
+  );
+
+  assert.equal(
+    productionReads.length,
+    2,
+    'collision replacement requires a second fresh read',
+  );
+
+  assert.equal(
+    productionExecutions.length,
+    1,
+    'only the replacement reaches transaction executor',
+  );
+
+  assert.equal(
+    productionReads[0]
+      .predictionPriceCents ===
+      sample.predictionPriceCents,
+    false,
+    'persisted prediction is refreshed before first live read',
+  );
+
+  assert.equal(
+    BigInt(
+      productionReads[0]
+        .predictionPriceCents,
+    ) >
+      6700000n,
+    true,
+    'fresh BTC HIGH prediction extends the latest observed high',
+  );
+
+  assert.equal(
+    BigInt(
+      productionReads[1]
+        .predictionPriceCents,
+    ) >
+      BigInt(
+        productionReads[0]
+          .predictionPriceCents,
+      ),
+    true,
+    'HIGH collision replacement moves farther outward',
+  );
+
+  assert.equal(
+    productionExecutions[0]
+      .predictionPriceCents,
+    productionReads[1]
+      .predictionPriceCents,
+    'fresh-checked replacement is the only executed price',
+  );
 
   let executorCalls = 0;
   const dryExecutor = createSeedBotExecutionService({ mode: EXECUTION_MODES.DRY_RUN });

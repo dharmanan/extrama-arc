@@ -7,6 +7,7 @@ const {
   STAKE_AMOUNT_RAW,
   loadApprovedSeedWallets,
   resolveCanonicalDailyPools,
+  readObservedMarketReferences,
   participationKey,
   createSeedBotDryRunPlan,
 } = require('../src/services/seedBotCore');
@@ -46,10 +47,38 @@ const roundsState = {
 };
 
 const marketReferences = {
-  BTC: { available: true, markPriceCents: '6500000' },
-  ETH: { available: true, markPriceCents: '250000' },
-  SOL: { available: true, markPriceCents: '15000' },
-  HYPE: { available: true, markPriceCents: '4200' },
+  BTC: {
+    available: true,
+    markPriceCents: '6500000',
+    observedHighCents: '6600000',
+    observedLowCents: '6400000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
+  ETH: {
+    available: true,
+    markPriceCents: '250000',
+    observedHighCents: '255000',
+    observedLowCents: '245000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
+  SOL: {
+    available: true,
+    markPriceCents: '15000',
+    observedHighCents: '15300',
+    observedLowCents: '14700',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
+  HYPE: {
+    available: true,
+    markPriceCents: '4200',
+    observedHighCents: '4300',
+    observedLowCents: '4100',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  },
 };
 
 const healthyFunding = new Map(
@@ -76,6 +105,269 @@ async function main() {
 
   const dailyPools = resolveCanonicalDailyPools(topology);
   assert.equal(dailyPools.length, 8, 'exactly eight canonical daily pools');
+
+  const observedFixtures = {
+    BTCUSDT: { mark: '65000', high: '6600000', low: '6400000' },
+    ETHUSDT: { mark: '2500', high: '255000', low: '245000' },
+    SOLUSDT: { mark: '150', high: '15300', low: '14700' },
+    HYPEUSDT: { mark: '42', high: '4300', low: '4100' },
+  };
+
+  const observedRead = await readObservedMarketReferences({
+    topology,
+    roundsState,
+    now: entryOpenAt + 60,
+    marketLayer: {
+      async getLiveMarkPrices() {
+        return {
+          source: 'Binance verifier fixture',
+          refreshedAtIso: new Date(entryOpenAt * 1000).toISOString(),
+          prices: Object.fromEntries(
+            Object.entries(observedFixtures).map(([symbol, value]) => [
+              symbol,
+              {
+                symbol,
+                markPrice: value.mark,
+                source: 'Binance USDⓈ-M Futures Mark Price',
+                sourceTimeIso: new Date(entryOpenAt * 1000).toISOString(),
+                isSettlementSource: true,
+              },
+            ]),
+          ),
+        };
+      },
+
+      async fetchMarkPriceWindow({ symbol }) {
+        return { symbol };
+      },
+
+      calculateExtrema(window) {
+        const value = observedFixtures[window.symbol];
+        return {
+          high: { resolvedPriceCents: value.high },
+          low: { resolvedPriceCents: value.low },
+        };
+      },
+    },
+  });
+
+  for (const [asset, expected] of Object.entries({
+    BTC: { high: '6600000', low: '6400000' },
+    ETH: { high: '255000', low: '245000' },
+    SOL: { high: '15300', low: '14700' },
+    HYPE: { high: '4300', low: '4100' },
+  })) {
+    assert.equal(observedRead[asset].available, true);
+    assert.equal(observedRead[asset].observedHighCents, expected.high);
+    assert.equal(observedRead[asset].observedLowCents, expected.low);
+  }
+
+  // Seed predictions may use only an explicitly confirmed settlement
+  // source. CoinGecko display fallback and an unlabeled source both fail
+  // closed before any historical-window read is attempted.
+  for (const sourceCase of [
+    {
+      name: 'coingecko-fallback',
+      includeFlag: true,
+      settlementFlag: false,
+      source: 'CoinGecko aggregated spot price',
+    },
+    {
+      name: 'unlabeled-source',
+      includeFlag: false,
+      settlementFlag: undefined,
+      source: 'unlabeled verifier fixture',
+    },
+  ]) {
+    let windowReads = 0;
+
+    const rejected =
+      await readObservedMarketReferences({
+        topology,
+        roundsState,
+        now: entryOpenAt + 60,
+        marketLayer: {
+          async getLiveMarkPrices() {
+            return {
+              source: sourceCase.source,
+              refreshedAtIso:
+                new Date(
+                  entryOpenAt * 1000,
+                ).toISOString(),
+              prices: Object.fromEntries(
+                Object.entries(
+                  observedFixtures,
+                ).map(
+                  ([symbol, value]) => {
+                    const mark = {
+                      symbol,
+                      markPrice: value.mark,
+                      source:
+                        sourceCase.source,
+                      sourceTimeIso:
+                        new Date(
+                          entryOpenAt *
+                            1000,
+                        ).toISOString(),
+                    };
+
+                    if (
+                      sourceCase.includeFlag
+                    ) {
+                      mark.isSettlementSource =
+                        sourceCase.settlementFlag;
+                    }
+
+                    return [
+                      symbol,
+                      mark,
+                    ];
+                  },
+                ),
+              ),
+            };
+          },
+
+          async fetchMarkPriceWindow() {
+            windowReads += 1;
+
+            throw new Error(
+              'non_settlement_source_must_not_read_window',
+            );
+          },
+
+          calculateExtrema() {
+            throw new Error(
+              'non_settlement_source_must_not_calculate_extrema',
+            );
+          },
+        },
+      });
+
+    for (const asset of [
+      'BTC',
+      'ETH',
+      'SOL',
+      'HYPE',
+    ]) {
+      assert.equal(
+        rejected[asset].available,
+        false,
+        `${sourceCase.name} must be rejected for ${asset}`,
+      );
+
+      assert.equal(
+        rejected[asset].reason,
+        'market_reference_unavailable',
+      );
+    }
+
+    assert.equal(
+      windowReads,
+      0,
+      `${sourceCase.name} must fail before Binance window reads`,
+    );
+  }
+
+  const driftedRoundsState =
+    structuredClone(roundsState);
+
+  driftedRoundsState.pools[1].round.marketPeriodStartAt =
+    new Date(
+      (entryOpenAt + 60) * 1000,
+    ).toISOString();
+
+  const pairMismatchRead =
+    await readObservedMarketReferences({
+      topology,
+      roundsState:
+        driftedRoundsState,
+      now:
+        entryOpenAt + 120,
+      marketLayer: {
+        async getLiveMarkPrices() {
+          return {
+            source:
+              'Binance verifier fixture',
+            refreshedAtIso:
+              new Date(
+                entryOpenAt * 1000,
+              ).toISOString(),
+            prices:
+              Object.fromEntries(
+                Object.entries(
+                  observedFixtures,
+                ).map(
+                  ([symbol, value]) => [
+                    symbol,
+                    {
+                      symbol,
+                      markPrice:
+                        value.mark,
+                      source:
+                        'Binance USDⓈ-M Futures Mark Price',
+                      sourceTimeIso:
+                        new Date(
+                          entryOpenAt *
+                            1000,
+                        ).toISOString(),
+                      isSettlementSource:
+                        true,
+                    },
+                  ],
+                ),
+              ),
+          };
+        },
+
+        async fetchMarkPriceWindow({
+          symbol,
+        }) {
+          return { symbol };
+        },
+
+        calculateExtrema(window) {
+          const value =
+            observedFixtures[
+              window.symbol
+            ];
+
+          return {
+            high: {
+              resolvedPriceCents:
+                value.high,
+            },
+            low: {
+              resolvedPriceCents:
+                value.low,
+            },
+          };
+        },
+      },
+    });
+
+  assert.equal(
+    pairMismatchRead.BTC.available,
+    false,
+    'BTC HIGH/LOW window drift must fail closed',
+  );
+
+  assert.equal(
+    pairMismatchRead.BTC.reason,
+    'market_period_mismatch',
+  );
+
+  for (const asset of [
+    'ETH',
+    'SOL',
+    'HYPE',
+  ]) {
+    assert.equal(
+      pairMismatchRead[asset].available,
+      true,
+      `${asset} must remain available when only BTC pair drifts`,
+    );
+  }
 
   const existing = new Set([
     participationKey(wallets[0], dailyPools[0].poolAddress, 900),
@@ -153,38 +445,49 @@ async function main() {
     const predictions = poolEntries.map((entry) => BigInt(entry.predictionPriceCents));
     assert.equal(new Set(predictions.map(String)).size, 9);
 
-    const mark = BigInt(
-      marketReferences[pool.asset].markPriceCents,
-    );
-    const spreadUnit =
-      mark / 250n > 0n ? mark / 250n : 1n;
-    const minimumGap =
-      spreadUnit / 2n > 0n ? spreadUnit / 2n : 1n;
+    const reference = marketReferences[pool.asset];
+    const observedHigh = BigInt(reference.observedHighCents);
+    const observedLow = BigInt(reference.observedLowCents);
+
+    for (const entry of poolEntries) {
+      assert.equal(
+        entry.observedHighCents,
+        reference.observedHighCents,
+      );
+      assert.equal(
+        entry.observedLowCents,
+        reference.observedLowCents,
+      );
+
+      const prediction = BigInt(entry.predictionPriceCents);
+
+      if (pool.direction === 'HIGH') {
+        assert.equal(
+          prediction > observedHigh,
+          true,
+          `${pool.asset} HIGH prediction must extend observed high`,
+        );
+      } else {
+        assert.equal(
+          prediction < observedLow,
+          true,
+          `${pool.asset} LOW prediction must extend observed low`,
+        );
+      }
+    }
 
     const sortedPredictions =
-      predictions.map(BigInt).sort((a, b) =>
+      [...predictions].sort((a, b) =>
         a < b ? -1 : a > b ? 1 : 0
       );
 
-    for (
-      let index = 1;
-      index < sortedPredictions.length;
-      index += 1
-    ) {
+    for (let index = 1; index < sortedPredictions.length; index += 1) {
       assert.equal(
-        sortedPredictions[index] -
-          sortedPredictions[index - 1] >= minimumGap,
+        sortedPredictions[index] > sortedPredictions[index - 1],
         true,
-        `${pool.asset} ${pool.direction} seed predictions are too close`,
+        `${pool.asset} ${pool.direction} predictions remain unique`,
       );
     }
-    assert.equal(predictions.some((value) => value < mark), true);
-    assert.equal(predictions.some((value) => value > mark), true);
-    const predictionSpread = predictions.reduce((minMax, value) => ({
-      min: value < minMax.min ? value : minMax.min,
-      max: value > minMax.max ? value : minMax.max,
-    }), { min: predictions[0], max: predictions[0] });
-    assert.equal(predictionSpread.max - predictionSpread.min > mark / 100n, true, 'predictions are broadly distributed');
   }
 
   const unfunded = await createSeedBotDryRunPlan({

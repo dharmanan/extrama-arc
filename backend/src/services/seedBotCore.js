@@ -163,6 +163,7 @@ function resolveCanonicalDailyPools(topology) {
   return daily.sort((left, right) => order.get(`${left.asset}:${left.direction}`) - order.get(`${right.asset}:${right.direction}`));
 }
 
+
 async function readLatestMarketReferences({ marketLayer, forceFresh = true } = {}) {
   const layer = marketLayer || require('./binanceResolverService');
   if (!layer || typeof layer.getLiveMarkPrices !== 'function') {
@@ -175,25 +176,302 @@ async function readLatestMarketReferences({ marketLayer, forceFresh = true } = {
   for (const asset of DAILY_ASSETS) {
     const symbol = SOURCE_SYMBOLS[asset];
     const mark = live?.prices?.[symbol];
-    if (!mark || mark.unavailable || mark.markPrice === undefined || mark.markPrice === null) {
-      references[asset] = { available: false, reason: 'market_reference_unavailable' };
+
+    if (
+      !mark ||
+      mark.unavailable ||
+      mark.markPrice === undefined ||
+      mark.markPrice === null
+    ) {
+      references[asset] = {
+        available: false,
+        reason: 'market_reference_unavailable',
+      };
       continue;
     }
 
     try {
       const markPrice = String(mark.markPrice);
-      const markPriceCents = decimalToCentsHalfUp(markPrice).toString();
+      const markPriceCents =
+        decimalToCentsHalfUp(markPrice).toString();
+
       references[asset] = {
         available: true,
         symbol,
         markPrice,
         markPriceCents,
-        source: mark.source || live.source || 'EXTREMA live display price',
+        source:
+          mark.source ||
+          live.source ||
+          'EXTREMA live display price',
         sourceTimeIso: mark.sourceTimeIso || null,
         refreshedAtIso: live.refreshedAtIso || null,
+        isSettlementSource:
+          mark.isSettlementSource === true,
       };
     } catch {
-      references[asset] = { available: false, reason: 'market_reference_invalid' };
+      references[asset] = {
+        available: false,
+        reason: 'market_reference_invalid',
+      };
+    }
+  }
+
+  return references;
+}
+
+async function readObservedMarketReferences({
+  marketLayer,
+  roundsState,
+  topology,
+  now,
+  forceFresh = true,
+} = {}) {
+  const layer =
+    marketLayer ||
+    require('./binanceResolverService');
+
+  if (
+    !layer ||
+    typeof layer.getLiveMarkPrices !== 'function' ||
+    typeof layer.fetchMarkPriceWindow !== 'function' ||
+    typeof layer.calculateExtrema !== 'function'
+  ) {
+    throw new Error('seed_market_layer_unavailable');
+  }
+
+  const latest = await readLatestMarketReferences({
+    marketLayer: layer,
+    forceFresh,
+  });
+
+  const dailyPools =
+    resolveCanonicalDailyPools(topology);
+
+  const stateByPool =
+    indexRoundStates(roundsState);
+
+  const nowAt = parseTimestamp(
+    now ?? roundsState?.chain?.timestamp,
+    'seed_now_invalid',
+  );
+
+  const references = {};
+
+  for (const asset of DAILY_ASSETS) {
+    const liveReference =
+      marketReferenceForAsset(latest, asset);
+
+    if (
+      !liveReference ||
+      liveReference.isSettlementSource !== true
+    ) {
+      references[asset] = {
+        available: false,
+        reason: 'market_reference_unavailable',
+      };
+      continue;
+    }
+
+    const assetPools =
+      dailyPools.filter(
+        (pool) => pool.asset === asset,
+      );
+
+    const assetRounds =
+      assetPools.map((pool) =>
+        extractRoundState(
+          stateByPool.get(
+            addressKey(
+              pool.poolAddress,
+            ),
+          ),
+        ),
+      );
+
+    if (
+      assetPools.length !== 2 ||
+      assetRounds.length !== 2 ||
+      assetRounds.some(
+        (round) =>
+          !round ||
+          round.invalidTimes,
+      )
+    ) {
+      references[asset] = {
+        available: false,
+        reason: 'market_period_unavailable',
+      };
+      continue;
+    }
+
+    const [round, pairedRound] =
+      assetRounds;
+
+    const pairMatches =
+      round.entryOpenAt ===
+        pairedRound.entryOpenAt &&
+      round.entryCloseAt ===
+        pairedRound.entryCloseAt &&
+      round.marketPeriodStartAt ===
+        pairedRound.marketPeriodStartAt &&
+      round.marketPeriodEndAt ===
+        pairedRound.marketPeriodEndAt;
+
+    if (!pairMatches) {
+      references[asset] = {
+        available: false,
+        reason: 'market_period_mismatch',
+      };
+      continue;
+    }
+
+    if (nowAt < round.marketPeriodStartAt) {
+      references[asset] = {
+        available: false,
+        reason: 'market_period_not_started',
+      };
+      continue;
+    }
+
+    try {
+      const markCents =
+        liveReference.markPriceCents;
+
+      let observedHighCents = markCents;
+      let observedLowCents = markCents;
+
+      const effectiveNow =
+        nowAt < round.marketPeriodEndAt
+          ? nowAt
+          : round.marketPeriodEndAt;
+
+      // Include the currently-open Binance 1m mark-price
+      // candle as well as all completed candles. Binance exposes
+      // the candle's high/low while it is still forming, so an
+      // intraminute spike that already happened cannot be ignored.
+      const observedWindowEnd =
+        effectiveNow >= round.marketPeriodEndAt
+          ? round.marketPeriodEndAt
+          : (
+              (effectiveNow + 59n) /
+              60n
+            ) * 60n;
+
+      if (
+        observedWindowEnd >
+        round.marketPeriodStartAt
+      ) {
+        const window =
+          await layer.fetchMarkPriceWindow({
+            symbol: SOURCE_SYMBOLS[asset],
+            cadence: 'DAILY',
+            observationStartAt:
+              new Date(
+                Number(
+                  round.marketPeriodStartAt,
+                ) * 1000,
+              ).toISOString(),
+            observationEndAt:
+              new Date(
+                Number(
+                  observedWindowEnd,
+                ) * 1000,
+              ).toISOString(),
+          });
+
+        const extrema =
+          layer.calculateExtrema(window);
+
+        observedHighCents = parseBigInt(
+          extrema.high.resolvedPriceCents,
+          'seed_observed_high_invalid',
+        );
+
+        observedLowCents = parseBigInt(
+          extrema.low.resolvedPriceCents,
+          'seed_observed_low_invalid',
+        );
+
+        // Also include the instantaneous mark. This protects the
+        // exact execution instant even if the current kline payload
+        // and premium-index read are a few milliseconds apart.
+        if (nowAt < round.marketPeriodEndAt) {
+          if (markCents > observedHighCents) {
+            observedHighCents = markCents;
+          }
+
+          if (markCents < observedLowCents) {
+            observedLowCents = markCents;
+          }
+        }
+      }
+
+      if (
+        observedLowCents <= 0n ||
+        observedHighCents < observedLowCents
+      ) {
+        throw new Error(
+          'seed_observed_extrema_invalid',
+        );
+      }
+
+      const totalSeconds =
+        round.marketPeriodEndAt -
+        round.marketPeriodStartAt;
+
+      let elapsedSeconds =
+        effectiveNow -
+        round.marketPeriodStartAt;
+
+      if (elapsedSeconds < 60n) {
+        elapsedSeconds = 60n;
+      }
+
+      if (elapsedSeconds > totalSeconds) {
+        elapsedSeconds = totalSeconds;
+      }
+
+      const remainingSeconds =
+        round.marketPeriodEndAt >
+        effectiveNow
+          ? round.marketPeriodEndAt -
+            effectiveNow
+          : 0n;
+
+      references[asset] = {
+        ...liveReference,
+        observedHighCents:
+          observedHighCents.toString(),
+        observedLowCents:
+          observedLowCents.toString(),
+        observedRangeCents:
+          (
+            observedHighCents -
+            observedLowCents
+          ).toString(),
+        elapsedSeconds:
+          elapsedSeconds.toString(),
+        remainingSeconds:
+          remainingSeconds.toString(),
+        marketPeriodStartAt:
+          new Date(
+            Number(
+              round.marketPeriodStartAt,
+            ) * 1000,
+          ).toISOString(),
+        marketPeriodEndAt:
+          new Date(
+            Number(
+              round.marketPeriodEndAt,
+            ) * 1000,
+          ).toISOString(),
+      };
+    } catch {
+      references[asset] = {
+        available: false,
+        reason: 'market_history_unavailable',
+      };
     }
   }
 
@@ -245,35 +523,86 @@ function roundIdKey(value) {
   return String(value);
 }
 
+
 function extractRoundState(state) {
   const round = state?.round || state;
   if (!round) return null;
 
   let roundId;
   try {
-    roundId = normalizeRoundId(round.roundId ?? state.roundId);
+    roundId = normalizeRoundId(
+      round.roundId ?? state.roundId,
+    );
   } catch {
     return null;
   }
 
-  const status = round.contractStatus || (
-    Number(round.status) === 0 ? 'ENTRY_OPEN' :
-      Number(round.status) === 1 ? 'LOCKED' :
-        Number(round.status) === 2 ? 'SETTLED' :
-          Number(round.status) === 3 ? 'CANCELLED' : null
-  );
+  const status =
+    round.contractStatus ||
+    (
+      Number(round.status) === 0
+        ? 'ENTRY_OPEN'
+        : Number(round.status) === 1
+          ? 'LOCKED'
+          : Number(round.status) === 2
+            ? 'SETTLED'
+            : Number(round.status) === 3
+              ? 'CANCELLED'
+              : null
+    );
 
   let entryOpenAt;
   let entryCloseAt;
   let marketPeriodStartAt;
+  let marketPeriodEndAt;
+
   try {
-    entryOpenAt = parseTimestamp(round.entryOpenAt, 'seed_round_time_invalid');
-    entryCloseAt = parseTimestamp(round.entryCloseAt, 'seed_round_time_invalid');
-    marketPeriodStartAt = round.marketPeriodStartAt === undefined || round.marketPeriodStartAt === null
-      ? entryOpenAt
-      : parseTimestamp(round.marketPeriodStartAt, 'seed_round_time_invalid');
+    entryOpenAt = parseTimestamp(
+      round.entryOpenAt,
+      'seed_round_time_invalid',
+    );
+
+    entryCloseAt = parseTimestamp(
+      round.entryCloseAt,
+      'seed_round_time_invalid',
+    );
+
+    marketPeriodStartAt =
+      round.marketPeriodStartAt === undefined ||
+      round.marketPeriodStartAt === null
+        ? entryOpenAt
+        : parseTimestamp(
+            round.marketPeriodStartAt,
+            'seed_round_time_invalid',
+          );
+
+    const explicitMarketEnd =
+      round.marketPeriodEndAt ??
+      round.observationEndAt;
+
+    // seedBotCore only operates on DAILY pools. Canonical
+    // DAILY market periods are exactly one UTC day.
+    marketPeriodEndAt =
+      explicitMarketEnd === undefined ||
+      explicitMarketEnd === null
+        ? marketPeriodStartAt + 24n * 60n * 60n
+        : parseTimestamp(
+            explicitMarketEnd,
+            'seed_round_time_invalid',
+          );
+
+    if (
+      marketPeriodEndAt <=
+      marketPeriodStartAt
+    ) {
+      throw new Error();
+    }
   } catch {
-    return { roundId, status, invalidTimes: true };
+    return {
+      roundId,
+      status,
+      invalidTimes: true,
+    };
   }
 
   return {
@@ -282,6 +611,7 @@ function extractRoundState(state) {
     entryOpenAt,
     entryCloseAt,
     marketPeriodStartAt,
+    marketPeriodEndAt,
     canEnter: round.canEnter,
   };
 }
@@ -298,98 +628,417 @@ function indexRoundStates(roundsState) {
   return byPool;
 }
 
-function marketReferenceForAsset(references, asset) {
-  const value = references?.[asset] || references?.[SOURCE_SYMBOLS[asset]];
-  if (!value || value.available === false) return null;
+
+function marketReferenceForAsset(
+  references,
+  asset,
+) {
+  const value =
+    references?.[asset] ||
+    references?.[SOURCE_SYMBOLS[asset]] ||
+    null;
+
+  if (!value || value.available === false) {
+    return null;
+  }
+
   try {
-    const rawCents = typeof value === 'object' ? value.markPriceCents : value;
-    const cents = parseBigInt(rawCents, 'seed_market_reference_invalid');
-    if (cents <= 0n) return null;
+    const rawCents =
+      typeof value === 'object'
+        ? value.markPriceCents
+        : value;
+
+    const markPriceCents = parseBigInt(
+      rawCents,
+      'seed_market_reference_invalid',
+    );
+
+    if (markPriceCents <= 0n) {
+      return null;
+    }
+
+    const observedHighCents = parseBigInt(
+      value?.observedHighCents ??
+        markPriceCents,
+      'seed_observed_high_invalid',
+    );
+
+    const observedLowCents = parseBigInt(
+      value?.observedLowCents ??
+        markPriceCents,
+      'seed_observed_low_invalid',
+    );
+
+    if (
+      observedLowCents <= 0n ||
+      observedHighCents < observedLowCents
+    ) {
+      return null;
+    }
+
+    const elapsedSeconds = parseBigInt(
+      value?.elapsedSeconds ?? 60n,
+      'seed_elapsed_time_invalid',
+    );
+
+    const remainingSeconds = parseBigInt(
+      value?.remainingSeconds ?? 0n,
+      'seed_remaining_time_invalid',
+    );
+
     return {
-      ...(typeof value === 'object' ? value : {}),
+      ...(typeof value === 'object'
+        ? value
+        : {}),
       available: true,
-      markPriceCents: cents,
+      markPriceCents,
+      observedHighCents,
+      observedLowCents,
+      observedRangeCents:
+        observedHighCents -
+        observedLowCents,
+      elapsedSeconds:
+        elapsedSeconds > 0n
+          ? elapsedSeconds
+          : 60n,
+      remainingSeconds,
     };
   } catch {
     return null;
   }
 }
 
-function buildPredictionCents(markCents, wallets, seed, poolKey) {
+const SEED_RISK_PROFILE_BPS =
+  Object.freeze([
+    1000n,
+    1750n,
+    2500n,
+    3500n,
+    4500n,
+    5750n,
+    7250n,
+    9000n,
+    11000n,
+  ]);
+
+function integerSqrt(value) {
+  if (value < 0n) {
+    throw new Error(
+      'seed_sqrt_negative',
+    );
+  }
+
+  if (value < 2n) return value;
+
+  let left = value;
+  let right =
+    (left + value / left) / 2n;
+
+  while (right < left) {
+    left = right;
+    right =
+      (left + value / left) / 2n;
+  }
+
+  return left;
+}
+
+function projectedExtensionBudget(reference) {
+  const mark =
+    reference.markPriceCents;
+
+  const observedRange =
+    reference.observedRangeCents;
+
+  // A flat first few minutes still need a small usable
+  // volatility floor. 0.10% of current mark is deliberately
+  // modest and only applies when observed range is smaller.
+  const rangeFloor =
+    mark / 1000n > 0n
+      ? mark / 1000n
+      : 1n;
+
+  const baseRange =
+    observedRange > rangeFloor
+      ? observedRange
+      : rangeFloor;
+
+  const elapsed =
+    reference.elapsedSeconds > 0n
+      ? reference.elapsedSeconds
+      : 60n;
+
+  const remaining =
+    reference.remainingSeconds;
+
+  // sqrt(remaining / elapsed), represented in basis points.
+  // Clamp extreme early/late values so a tiny sample cannot
+  // create absurd predictions.
+  let timeScaleBps =
+    remaining > 0n
+      ? integerSqrt(
+          (
+            remaining *
+            100_000_000n
+          ) /
+            elapsed,
+        )
+      : 2500n;
+
+  if (timeScaleBps < 2500n) {
+    timeScaleBps = 2500n;
+  }
+
+  if (timeScaleBps > 25000n) {
+    timeScaleBps = 25000n;
+  }
+
+  let budget =
+    (
+      baseRange *
+      timeScaleBps
+    ) /
+    10_000n;
+
+  const minimumBudget =
+    mark / 2000n > 0n
+      ? mark / 2000n
+      : 1n;
+
+  if (budget < minimumBudget) {
+    budget = minimumBudget;
+  }
+
+  return budget;
+}
+
+function buildPredictionCents({
+  reference,
+  direction,
+  wallets,
+  seed,
+  poolKey,
+}) {
+  if (
+    direction !== 'HIGH' &&
+    direction !== 'LOW'
+  ) {
+    throw new Error(
+      'seed_direction_invalid',
+    );
+  }
+
   const used = new Set();
-  const spreadUnit = markCents / 250n > 0n ? markCents / 250n : 1n;
-  // Keep agent predictions visibly separated instead of merely unique.
-  // This is approximately 0.2% of the market reference, with a one-cent
-  // floor for tiny-price fixtures.
-  const minimumGap =
-    spreadUnit / 2n > 0n ? spreadUnit / 2n : 1n;
   const predictions = new Map();
+
+  const budget =
+    projectedExtensionBudget(reference);
+
+  const anchor =
+    direction === 'HIGH'
+      ? reference.observedHighCents
+      : reference.observedLowCents;
+
+  const markGap =
+    reference.markPriceCents /
+      10_000n >
+    0n
+      ? reference.markPriceCents /
+        10_000n
+      : 1n;
+
+  const budgetGap =
+    budget / 20n > 0n
+      ? budget / 20n
+      : 1n;
+
+  const minimumGap =
+    markGap > budgetGap
+      ? markGap
+      : budgetGap;
 
   function isTooClose(candidate) {
     for (const existingText of used) {
-      const existing = BigInt(existingText);
+      const existing =
+        BigInt(existingText);
+
       const distance =
         candidate >= existing
           ? candidate - existing
           : existing - candidate;
 
-      if (distance < minimumGap) return true;
+      if (distance < minimumGap) {
+        return true;
+      }
     }
 
     return false;
   }
 
   wallets.forEach((wallet, index) => {
-    const side = index % 2 === 0 ? -1n : 1n;
-    const step = BigInt(Math.floor(index / 2) + 1);
-    const jitter = deterministicModulo(
-      `${seed}|prediction|${poolKey}|${wallet}`,
-      spreadUnit + 1n,
-    );
-    const magnitude = spreadUnit * step + jitter;
+    const profileBps =
+      SEED_RISK_PROFILE_BPS[index];
 
-    let candidate = side < 0n
-      ? markCents - (
-        magnitude > markCents - 1n
-          ? markCents - 1n
-          : magnitude
-      )
-      : markCents + magnitude;
+    // Small deterministic variation prevents every round from
+    // using identical profile percentages while preserving
+    // stable replay for the same round and wallet.
+    const jitterBps =
+      deterministicModulo(
+        `${seed}|risk|${poolKey}|${wallet}`,
+        501n,
+      ) - 250n;
 
-    if (candidate <= 0n) {
-      candidate = markCents + magnitude;
+    let effectiveProfileBps =
+      profileBps + jitterBps;
+
+    if (effectiveProfileBps < 1n) {
+      effectiveProfileBps = 1n;
     }
 
-    // Deterministically move farther from the mark until the candidate is
-    // both positive and sufficiently separated from every prior seed slot.
+    let extension =
+      (
+        budget *
+        effectiveProfileBps
+      ) /
+      10_000n;
+
+    const profileFloor =
+      minimumGap *
+      BigInt(index + 1);
+
+    if (extension < profileFloor) {
+      extension = profileFloor;
+    }
+
+    let candidate;
+
+    if (direction === 'HIGH') {
+      candidate = anchor + extension;
+    } else {
+      candidate =
+        extension < anchor
+          ? anchor - extension
+          : 1n;
+    }
+
     let attempts = 0;
-    while (candidate <= 0n || isTooClose(candidate)) {
+
+    while (
+      candidate <= 0n ||
+      isTooClose(candidate)
+    ) {
       attempts += 1;
-      if (attempts > wallets.length * 32) return;
 
-      const delta = minimumGap * BigInt(attempts);
+      if (
+        attempts >
+        wallets.length * 32
+      ) {
+        throw new Error(
+          'seed_prediction_generation_failed',
+        );
+      }
 
-      candidate = side < 0n
-        ? markCents - magnitude - delta
-        : markCents + magnitude + delta;
+      const delta =
+        minimumGap *
+        BigInt(attempts);
 
-      if (candidate <= 0n) {
-        candidate = markCents + magnitude + delta;
+      if (direction === 'HIGH') {
+        candidate =
+          anchor +
+          extension +
+          delta;
+      } else {
+        candidate =
+          anchor >
+          extension + delta
+            ? anchor -
+              extension -
+              delta
+            : 1n;
       }
     }
 
+    // Hard economic invariants. A prediction may extend an
+    // already-observed extreme, never contradict it.
+    if (
+      direction === 'HIGH' &&
+      candidate <
+        reference.observedHighCents
+    ) {
+      throw new Error(
+        'seed_high_prediction_below_observed_high',
+      );
+    }
+
+    if (
+      direction === 'LOW' &&
+      candidate >
+        reference.observedLowCents
+    ) {
+      throw new Error(
+        'seed_low_prediction_above_observed_low',
+      );
+    }
+
     used.add(candidate.toString());
-    predictions.set(addressKey(wallet), candidate.toString());
+
+    predictions.set(
+      addressKey(wallet),
+      candidate.toString(),
+    );
   });
 
   return predictions;
 }
 
-function generateDeterministicPredictions({ markPriceCents, wallets, seed, poolKey }) {
-  const normalizedWallets = assertSeedWalletSet(wallets);
-  const markCents = parseBigInt(markPriceCents, 'seed_market_reference_invalid');
-  if (markCents <= 0n) throw new Error('seed_market_reference_invalid');
-  return Object.fromEntries(buildPredictionCents(markCents, normalizedWallets, String(seed), String(poolKey)));
+function generateDeterministicPredictions({
+  markPriceCents,
+  observedHighCents,
+  observedLowCents,
+  elapsedSeconds = '60',
+  remainingSeconds = '0',
+  direction,
+  wallets,
+  seed,
+  poolKey,
+}) {
+  const normalizedWallets =
+    assertSeedWalletSet(wallets);
+
+  const reference =
+    marketReferenceForAsset(
+      {
+        TEST: {
+          available: true,
+          markPriceCents,
+          observedHighCents:
+            observedHighCents ??
+            markPriceCents,
+          observedLowCents:
+            observedLowCents ??
+            markPriceCents,
+          elapsedSeconds,
+          remainingSeconds,
+        },
+      },
+      'TEST',
+    );
+
+  if (!reference) {
+    throw new Error(
+      'seed_market_reference_invalid',
+    );
+  }
+
+  return Object.fromEntries(
+    buildPredictionCents({
+      reference,
+      direction,
+      wallets: normalizedWallets,
+      seed: String(seed),
+      poolKey: String(poolKey),
+    }),
+  );
 }
 
 /**
@@ -398,37 +1047,114 @@ function generateDeterministicPredictions({ markPriceCents, wallets, seed, poolK
  * wallet, pool/round key, seed and taken-slot set; it never calls a runtime
  * random source.
  */
+
 function resolveDeterministicPredictionSlot({
+  predictionPriceCents,
   markPriceCents,
+  direction,
   wallet,
   seed,
   poolKey,
   blockedPriceCents = [],
 } = {}) {
-  const normalizedWallet = normalizeAddress(wallet, 'seed_wallet_address_invalid');
-  if (!normalizeApprovedWallets().some((address) => addressKey(address) === addressKey(normalizedWallet))) {
-    throw new Error('seed_wallet_allowlist_mismatch');
-  }
-  const predictions = generateDeterministicPredictions({
-    markPriceCents,
-    wallets: normalizeApprovedWallets(),
-    seed,
-    poolKey,
-  });
-  const initial = parseBigInt(predictions[addressKey(normalizedWallet)], 'seed_prediction_invalid');
-  const mark = parseBigInt(markPriceCents, 'seed_market_reference_invalid');
-  const blocked = new Set(blockedPriceCents.map((value) => String(value)));
-  if (!blocked.has(initial.toString())) return initial.toString();
+  const normalizedWallet =
+    normalizeAddress(
+      wallet,
+      'seed_wallet_address_invalid',
+    );
 
-  const direction = initial < mark ? -1n : 1n;
-  for (let attempt = 1; attempt <= 256; attempt += 1) {
-    const delta = BigInt(attempt);
-    let candidate = direction < 0n ? initial - delta : initial + delta;
-    if (candidate <= 0n) candidate = mark + delta;
-    if (!blocked.has(candidate.toString())) return candidate.toString();
+  if (
+    !normalizeApprovedWallets().some(
+      (address) =>
+        addressKey(address) ===
+        addressKey(normalizedWallet),
+    )
+  ) {
+    throw new Error(
+      'seed_wallet_allowlist_mismatch',
+    );
   }
 
-  throw new Error('seed_prediction_collision_unresolved');
+  const initial = parseBigInt(
+    predictionPriceCents ??
+      markPriceCents,
+    'seed_prediction_invalid',
+  );
+
+  if (initial <= 0n) {
+    throw new Error(
+      'seed_prediction_invalid',
+    );
+  }
+
+  let resolvedDirection = direction;
+
+  if (
+    resolvedDirection !== 'HIGH' &&
+    resolvedDirection !== 'LOW'
+  ) {
+    const mark =
+      markPriceCents === undefined
+        ? null
+        : parseBigInt(
+            markPriceCents,
+            'seed_market_reference_invalid',
+          );
+
+    resolvedDirection =
+      mark !== null &&
+      initial < mark
+        ? 'LOW'
+        : 'HIGH';
+  }
+
+  const blocked = new Set(
+    blockedPriceCents.map(String),
+  );
+
+  if (!blocked.has(initial.toString())) {
+    return initial.toString();
+  }
+
+  // Collision replacement always moves farther outward.
+  // It therefore cannot violate a valid HIGH/LOW bound
+  // established by the planner.
+  for (
+    let attempt = 1;
+    attempt <= 256;
+    attempt += 1
+  ) {
+    let candidate;
+
+    if (resolvedDirection === 'HIGH') {
+      candidate =
+        initial +
+        BigInt(attempt);
+    } else {
+      candidate =
+        initial -
+        BigInt(attempt);
+
+      if (candidate <= 0n) {
+        break;
+      }
+    }
+
+    if (
+      !blocked.has(candidate.toString())
+    ) {
+      return candidate.toString();
+    }
+  }
+
+  // Keep otherwise-unused deterministic inputs explicit:
+  // collision scanning itself needs no randomness.
+  void seed;
+  void poolKey;
+
+  throw new Error(
+    'seed_prediction_collision_unresolved',
+  );
 }
 
 function participationKey(wallet, poolAddress, roundId) {
@@ -565,8 +1291,8 @@ async function createSeedBotDryRunPlan({
 } = {}) {
   const selectedWallets = wallets ? assertSeedWalletSet(wallets) : await loadApprovedSeedWallets({ dbClient });
   const dailyPools = resolveCanonicalDailyPools(topology);
-  const references = marketReferences || await readLatestMarketReferences({ marketLayer });
   const stateByPool = indexRoundStates(roundsState);
+
   let nowAt = null;
   if (now !== undefined && now !== null) {
     try {
@@ -582,6 +1308,15 @@ async function createSeedBotDryRunPlan({
     }
   }
 
+  const references =
+    marketReferences ||
+    await readObservedMarketReferences({
+      marketLayer,
+      roundsState,
+      topology,
+      now: nowAt,
+    });
+
   const entries = [];
   const metadata = new Map();
   const insufficientWallets = new Map();
@@ -594,7 +1329,13 @@ async function createSeedBotDryRunPlan({
       ? `${pool.poolAddress}:${roundIdKey(round.roundId)}:${round.marketPeriodStartAt.toString()}`
       : `${pool.poolAddress}:none`;
     const predictions = round && reference
-      ? buildPredictionCents(reference.markPriceCents, selectedWallets, seed, roundKey)
+      ? buildPredictionCents({
+          reference,
+          direction: pool.direction,
+          wallets: selectedWallets,
+          seed,
+          poolKey: roundKey,
+        })
       : new Map();
     for (const wallet of selectedWallets) {
       const alreadyEntered = round
@@ -640,6 +1381,14 @@ async function createSeedBotDryRunPlan({
         entryCloseAt: round ? new Date(Number(round.entryCloseAt) * 1000).toISOString() : null,
         asset: pool.asset,
         direction: pool.direction,
+        marketReferenceCents:
+          reference?.markPriceCents?.toString() ?? null,
+        observedHighCents:
+          reference?.observedHighCents?.toString() ?? null,
+        observedLowCents:
+          reference?.observedLowCents?.toString() ?? null,
+        observedRangeCents:
+          reference?.observedRangeCents?.toString() ?? null,
         predictionPriceCents,
         plannedExecutionAt: plannedAt,
         alreadyEntered,
@@ -705,6 +1454,7 @@ module.exports = {
   loadApprovedSeedWallets,
   resolveCanonicalDailyPools,
   readLatestMarketReferences,
+  readObservedMarketReferences,
   generateDeterministicPredictions,
   resolveDeterministicPredictionSlot,
   participationKey,

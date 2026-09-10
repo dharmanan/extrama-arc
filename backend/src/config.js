@@ -14,6 +14,11 @@ const schema = z.object({
   // credential is configured; the browser never receives it.
   CIRCLE_API_KEY: z.string().min(1).optional(),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
+  ARC_TESTNET_RPC_FALLBACK_URL: z.string().url().default("https://rpc.solidrpc.io/public/evm/5042002"),
+  // Maximum simultaneous HTTP reads PER Arc RPC endpoint.
+  // Financial transaction broadcasts use a separate primary-only provider
+  // and are deliberately not routed through this queue.
+  ARC_RPC_READ_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(8),
   EXTREMA_FACTORY_ADDRESS: z.string().default("0xa7Bff22811Bb1BA9297DFaA611De58E3bc186D7A"),
   // Canonical Arc Testnet deployment (deploy tx 0x9b35faa5a16d46056c833ac5b7cb6186f37200e0e3d5c0b8ce0f328914474304),
   // post-deploy verified: USDC()/FACTORY() match the canonical addresses above, nextListingId()==1.

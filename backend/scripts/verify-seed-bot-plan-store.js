@@ -5,6 +5,7 @@ const { createSeedBotPlanStore } = require('../src/services/seedBotPlanStore');
 
 async function main() {
   const rows = new Map();
+  const dispatched = new Set();
 
   const fakeDb = {
     async query(sql, params = []) {
@@ -23,11 +24,7 @@ async function main() {
           entryCloseAt,
         ] = params;
 
-        if (rows.has(planKey)) {
-          return { rowCount: 0, rows: [] };
-        }
-
-        rows.set(planKey, {
+        const nextRow = {
           plan_key: planKey,
           wallet_address: walletAddress,
           pool_address: poolAddress,
@@ -37,19 +34,45 @@ async function main() {
           prediction_price_cents: predictionPriceCents,
           planned_execution_at: plannedExecutionAt,
           entry_close_at: entryCloseAt,
-        });
+        };
+
+        const existing = rows.get(planKey);
+
+        if (existing) {
+          if (
+            existing.planner_version !== plannerVersion &&
+            !dispatched.has(planKey)
+          ) {
+            rows.set(planKey, nextRow);
+            return { rowCount: 1, rows: [] };
+          }
+
+          return { rowCount: 0, rows: [] };
+        }
+
+        rows.set(planKey, nextRow);
 
         return { rowCount: 1, rows: [] };
       }
 
       if (compact.startsWith('SELECT plan_key,')) {
-        const now = new Date(params[0]).getTime();
+        const now =
+          new Date(params[0]).getTime();
+
+        const plannerVersion =
+          params[1] ?? null;
 
         return {
           rows: [...rows.values()]
             .filter(
               row =>
-                new Date(row.entry_close_at).getTime() > now
+                new Date(
+                  row.entry_close_at,
+                ).getTime() > now &&
+                (
+                  plannerVersion === null ||
+                  row.planner_version === plannerVersion
+                )
             )
             .sort((a, b) => {
               const timeDiff =
@@ -121,6 +144,87 @@ async function main() {
   assert.equal(open[0].roundId, '8');
   assert.equal(open[0].eligible, true);
   assert.equal(open[0].alreadyEntered, false);
+
+  const v3 = {
+    ...original,
+    plannerVersion:
+      'extrema-seed-bot-v3',
+    predictionPriceCents:
+      '245099',
+    plannedExecutionAt:
+      '2026-09-11T04:00:00.000Z',
+  };
+
+  const superseded =
+    await store.persistEntries([v3]);
+
+  assert.equal(
+    superseded.inserted,
+    1,
+    'new planner generation supersedes an undispatched plan',
+  );
+
+  assert.equal(
+    rows.size,
+    1,
+    'planner generation change preserves the same plan key',
+  );
+
+  const current =
+    await store.loadOpenEntries({
+      now:
+        '2026-09-11T02:00:00.000Z',
+      plannerVersion:
+        'extrema-seed-bot-v3',
+    });
+
+  assert.equal(
+    current.length,
+    1,
+    'only the requested planner generation is loaded',
+  );
+
+  assert.equal(
+    current[0].plannerVersion,
+    'extrema-seed-bot-v3',
+  );
+
+  assert.equal(
+    current[0].predictionPriceCents,
+    '245099',
+  );
+
+  const durablePlanKey =
+    [...rows.keys()][0];
+
+  dispatched.add(durablePlanKey);
+
+  const v4 = {
+    ...v3,
+    plannerVersion:
+      'extrema-seed-bot-v4',
+    predictionPriceCents:
+      '999999',
+  };
+
+  const blockedAfterDispatch =
+    await store.persistEntries([v4]);
+
+  assert.equal(
+    blockedAfterDispatch.inserted,
+    0,
+    'a dispatched plan cannot be superseded',
+  );
+
+  assert.equal(
+    rows.get(durablePlanKey).planner_version,
+    'extrema-seed-bot-v3',
+  );
+
+  assert.equal(
+    rows.get(durablePlanKey).prediction_price_cents,
+    '245099',
+  );
 
   const closed = await store.loadOpenEntries({
     now: '2026-09-11T21:00:00.000Z',
