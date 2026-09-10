@@ -629,7 +629,7 @@ img{max-width:100%}
   grid-template-columns:minmax(0,7fr) minmax(0,5fr);
   gap:clamp(24px,4vw,64px);
   align-items:end;
-  padding-block:clamp(34px,4.8vw,68px);
+  padding-block:clamp(26px,3vw,42px);
 }
 .ex-pools__intro{display:grid;gap:clamp(13px,1.5vw,19px);align-content:start;min-width:0}
 
@@ -775,7 +775,7 @@ img{max-width:100%}
 }
 
 /* The instrument matrix: horizon down the side, direction across the top. */
-.ex-matrix{display:grid;grid-template-columns:minmax(74px,.46fr) minmax(0,1fr) minmax(0,1fr)}
+.ex-matrix{display:grid;grid-template-columns:minmax(92px,.26fr) minmax(0,1fr) minmax(0,1fr)}
 
 .ex-matrix__head{
   display:flex;
