@@ -259,11 +259,13 @@ export default function PoolDetailPage() {
   // failure there must never take the round view down with it.
   const refreshEntries = useCallback(async (pool: LivePool) => {
     const requestId = ++entriesRequestId.current;
+
     try {
-      const [result, walletState] = await Promise.all([
-        backendApi.rounds.entries(pool.slug, pool.round.roundId),
-        backendApi.wallet.get(),
-      ]);
+      const result =
+        await backendApi.rounds.entries(
+          pool.slug,
+          pool.round.roundId,
+        );
 
       if (
         result.pool.slug !== pool.slug ||
@@ -272,40 +274,103 @@ export default function PoolDetailPage() {
       ) {
         throw new Error("round_entries_identity_mismatch");
       }
+
       if (requestId !== entriesRequestId.current) return;
 
-      const authoritativeAddress = walletState.wallet?.address ?? address;
-      setAuthoritativeWalletAddress(authoritativeAddress);
+      // Public round entries are authoritative for the distribution view.
+      // An authenticated wallet lookup must never make public data unavailable.
+      setEntriesState(result);
+      setEntriesError(false);
 
-      const ownEntry = authoritativeAddress
-        ? result.entries.find(
-            (entry) =>
-              entry.originalEntrant.toLowerCase() === authoritativeAddress.toLowerCase(),
-          ) ?? null
-        : null;
+      let authoritativeAddress =
+        address ?? null;
 
-      if (executionMode === "CIRCLE_USER_WALLET" && ownEntry) {
-        const recovery = readCircleEntryRecovery();
-        const predictionPriceCents = Number(ownEntry.predictionPriceCents);
+      setAuthoritativeWalletAddress(
+        authoritativeAddress,
+      );
 
-        if (
-          recovery &&
-          Number.isSafeInteger(predictionPriceCents) &&
-          matchesCircleEntryRecovery(recovery, {
-            poolAddress: pool.poolAddress,
-            roundId: pool.round.roundId,
-            predictionPriceCents,
-          })
-        ) {
-          clearCircleEntryRecovery();
-          circleEntryRequestId.current = null;
+      if (address) {
+        try {
+          const walletState =
+            await backendApi.wallet.get();
+
+          if (
+            requestId !==
+            entriesRequestId.current
+          ) {
+            return;
+          }
+
+          authoritativeAddress =
+            walletState.wallet?.address ??
+            address;
+
+          setAuthoritativeWalletAddress(
+            authoritativeAddress,
+          );
+        } catch {
+          // Public distribution remains available when wallet/session
+          // state is absent, expired, or temporarily unreadable.
+          if (
+            requestId !==
+            entriesRequestId.current
+          ) {
+            return;
+          }
         }
       }
 
-      setEntriesState(result);
-      setEntriesError(false);
+      const ownEntry =
+        authoritativeAddress
+          ? result.entries.find(
+              (entry) =>
+                entry.originalEntrant.toLowerCase() ===
+                authoritativeAddress.toLowerCase(),
+            ) ?? null
+          : null;
+
+      if (
+        executionMode ===
+          "CIRCLE_USER_WALLET" &&
+        ownEntry
+      ) {
+        const recovery =
+          readCircleEntryRecovery();
+
+        const predictionPriceCents =
+          Number(
+            ownEntry.predictionPriceCents,
+          );
+
+        if (
+          recovery &&
+          Number.isSafeInteger(
+            predictionPriceCents,
+          ) &&
+          matchesCircleEntryRecovery(
+            recovery,
+            {
+              poolAddress:
+                pool.poolAddress,
+              roundId:
+                pool.round.roundId,
+              predictionPriceCents,
+            },
+          )
+        ) {
+          clearCircleEntryRecovery();
+          circleEntryRequestId.current =
+            null;
+        }
+      }
     } catch {
-      if (requestId !== entriesRequestId.current) return;
+      if (
+        requestId !==
+        entriesRequestId.current
+      ) {
+        return;
+      }
+
       setEntriesState(null);
       setEntriesError(true);
     }
