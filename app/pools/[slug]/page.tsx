@@ -381,6 +381,20 @@ export default function PoolDetailPage() {
       return;
     }
 
+    // External wallets must be on Arc before any backend action is created.
+    // Circle user wallets use their own execution path and are intentionally
+    // unaffected by this browser-wallet network guard.
+    if (executionMode === "EXTERNAL_WALLET") {
+      if (!connectedAddress) {
+        setEntryError("Reconnect the wallet bound to this EXTREMA session.");
+        return;
+      }
+      if (connectedChainId !== 5042002) {
+        setEntryError("Switch your connected wallet to Arc Testnet.");
+        return;
+      }
+    }
+
     setEntryBusy("Confirming…");
     try {
       const result = await confirmEntry({

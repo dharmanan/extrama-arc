@@ -776,9 +776,9 @@ async function initializeExternalEntryState(userId, actionId, walletAddress, sta
 
   const { rows } = await db.query(
     `UPDATE action_authorizations
-        SET external_state = $4,
+        SET external_state = $4::varchar,
             authorization_expires_at = CASE
-              WHEN $4 = 'ENTRY_READY' THEN NOW() + INTERVAL '10 minutes'
+              WHEN $4::varchar = 'ENTRY_READY'::varchar THEN NOW() + INTERVAL '10 minutes'
               ELSE authorization_expires_at
             END
       WHERE id = $1
