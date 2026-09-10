@@ -652,8 +652,10 @@ async function lockDueRoundsInternal(provider, now, dueLock) {
   );
   const signer = await getPoolOwnerSigner(provider, ownerAddress);
 
-  const gasBalance = await safeRead(() => provider.getBalance(signer.address));
-  if (gasBalance === 0n) {
+  // Technical native-interface read of the same underlying Arc USDC asset;
+  // this is only a fee-availability guard, never a second economic balance.
+  const nativeUsdcGasBalance = await safeRead(() => provider.getBalance(signer.address));
+  if (nativeUsdcGasBalance === 0n) {
     throw new Error('automation_signer_insufficient_gas');
   }
 

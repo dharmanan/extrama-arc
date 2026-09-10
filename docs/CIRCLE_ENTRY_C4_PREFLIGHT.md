@@ -108,7 +108,9 @@ return.
 
 ## Gateway is not part of C4
 
-The entry path uses native Arc USDC only. Gateway is a separate, currently
-unwired capability; see [`GATEWAY_C3_READINESS.md`](GATEWAY_C3_READINESS.md).
-Precondition 6 must be satisfied with real Arc USDC, from the Circle faucet if
-needed.
+The entry path uses the canonical Arc USDC balance through its ERC-20
+interface. Arc's native 18-decimal read is the same underlying USDC and is
+used only to confirm fee availability; it is not a second asset balance. Gateway
+is a separate, currently unwired capability; see
+[`GATEWAY_C3_READINESS.md`](GATEWAY_C3_READINESS.md). Precondition 6 must be
+satisfied with real Arc USDC, from the Circle faucet if needed.

@@ -89,7 +89,7 @@ async function executeEntry(userId, payload) {
     priceTaken,
     walletUsdcBefore,
     poolUsdcBefore,
-    nativeBalance,
+    nativeUsdcGasBalance,
     ticketAddressRaw,
   ] = await Promise.all([
     pool.getRound(payload.roundId),
@@ -97,6 +97,9 @@ async function executeEntry(userId, payload) {
     pool.predictionTaken(payload.roundId, payload.predictionPriceCents),
     usdc.balanceOf(walletAddress),
     usdc.balanceOf(poolAddress),
+    // Native-interface read of the same underlying Arc USDC balance. It is
+    // only a technical fee-availability check; never add it to the ERC-20
+    // balance when evaluating the 1 USDC application stake.
     provider.getBalance(walletAddress),
     pool.TICKET(),
   ]);
@@ -119,7 +122,7 @@ async function executeEntry(userId, payload) {
   if (hasEntered) throw new Error('entry_already_entered');
   if (priceTaken) throw new Error('entry_price_taken');
   if (walletUsdcBefore < STAKE_AMOUNT) throw new Error('entry_insufficient_usdc');
-  if (nativeBalance === 0n) throw new Error('entry_insufficient_gas');
+  if (nativeUsdcGasBalance === 0n) throw new Error('entry_insufficient_gas');
 
   let approvalTxHash = null;
   const allowance = await usdc.allowance(walletAddress, poolAddress);
@@ -169,8 +172,8 @@ async function executeEntry(userId, payload) {
 
   const walletSpentRaw = walletUsdcBefore - walletUsdcAfter;
 
-  // Arc uses one underlying USDC balance for both the native gas token and the
-  // 6-decimal ERC-20 interface. Approval and entry gas therefore also reduce
+  // Arc uses one underlying USDC balance for both the native fee interface and
+  // the 6-decimal ERC-20 interface. Approval and entry fees therefore also reduce
   // balanceOf(wallet). The wallet delta must be AT LEAST the 1 USDC stake,
   // while the pool/round accounting must increase by EXACTLY 1 USDC.
   if (

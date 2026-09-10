@@ -23,6 +23,12 @@ same full lifecycle. `SYSTEM_SEED_WALLET` is an autonomous-agent identity.
 `BACKEND_WALLET` and passkey/WebAuthn references in older proof records are
 legacy historical evidence, not active human runtime paths.
 
+Layer 3 is reported as two distinct proof classes: `SERVICE_STATE_MACHINE`
+covers direct deterministic service/action tests, while
+`HTTP_ROUTE_MIDDLEWARE` covers the real local Express routes, `express.json()`,
+auth middleware, Zod validation, and route limiters. API E2E is not marked from
+direct service tests alone; the HTTP class must pass independently.
+
 ---
 
 ## How to run it
@@ -42,8 +48,10 @@ npm --prefix backend run check
 ```
 forge test:        NOT_RUN_LOCAL_TOOL_MISSING
 Layer 1 scripts:   0/1 passed (advisory live-RPC failure)
-Layer 3 scripts:   24/24 passed
+Layer 3 scripts:   25/25 passed
 Root scripts:      1/1 passed
+One-USDC guard:    PASS
+Active runtime audit: passkey 0, human BACKEND_WALLET 0, Circle unsupported-by-design 0, Circle wallet not configured 0
 Matrix rows:       16 PASS, 0 FAIL, 35 NOT_RUN_LOCAL_TOOL_MISSING, 0 NOT_YET_TESTABLE
 
 EXTREMA_E2E=PASS
@@ -84,6 +92,7 @@ result).
 | hosted challenge FAILED/EXPIRED handling | PASS | `verify-circle-entry-behavior.js::testHostedChallengeResult` |
 | real installed Circle SDK / local fake server boundary | PASS | `verify-circle-sdk-runtime.js` |
 | Circle transfer/refund/claim/marketplace lifecycle | PASS (deterministic) | `verify-circle-actions.js`, `verify-circle-action-behavior.js`, `verify-http-actions-e2e.js` |
+| One economic USDC asset / native+ERC-20 interface guard | PASS (deterministic) | `verify-one-usdc-asset.js` |
 
 ## B. TICKET TRANSFER
 

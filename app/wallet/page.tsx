@@ -390,7 +390,7 @@ export default function WalletPage() {
                   </div>
 
                   <div className="ex-wallet-summary__item">
-                    <span>USDC balance</span>
+                    <span>{t.wallet.usdcBalance}</span>
                     <strong className="ex-num">
                       {chainState.usdc.balanceFormatted} {chainState.usdc.symbol}
                     </strong>

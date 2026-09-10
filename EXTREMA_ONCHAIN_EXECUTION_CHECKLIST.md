@@ -35,6 +35,16 @@ The current runtime has exactly three execution identities:
 
 There is no active human `BACKEND_WALLET` path and no active passkey/WebAuthn runtime. References below to passkeys, WebAuthn, `BACKEND_WALLET`, per-user EXTREMA wallets, or a backend signer are retained only as **legacy historical proof records** for transactions and tests executed before this migration. They do not describe the current human product.
 
+### One economic USDC asset
+
+Arc Testnet uses one underlying USDC balance. The native currency interface
+uses 18 decimals for network fees and the ERC-20 interface uses 6 decimals for
+application amounts. The interfaces are technical views of the same asset;
+native and ERC-20 values are never summed. The API's canonical application
+balance is `usdc`; `nativeUsdcGasInterface` is a diagnostic-only native read
+explicitly marked `sameUnderlyingAsset: true`, and the UI renders only the
+single Arc USDC balance.
+
 ---
 
 ## Status legend
@@ -167,23 +177,24 @@ time; they are not an active passkey or backend-wallet implementation claim.
 - Verification date: 2026-09-04
 - Notes: Backend RPC state read and wallet UI both reported Arc Testnet / chain ID 5042002. Wrong-network rejection/switch still requires explicit test.
 
-## 1.2 Real native balance
+## 1.2 One Arc USDC asset (native + ERC-20 interfaces)
 
 Implementation status: verified on Arc Testnet.
 
-- [x] Read EXTREMA wallet native Arc Testnet balance through RPC
-- [x] Remove any mock/native demo balance from the product path
-- [x] UI displays the real RPC result only
+- [x] Read the native Arc USDC interface through RPC for technical fee checks
+- [x] Read the canonical ERC-20 USDC `balanceOf` in 6-decimal raw units
+- [x] Keep native and ERC-20 reads as one underlying asset (never summed)
+- [x] UI displays one canonical Arc USDC balance only
 
 ### Proof record
 
 - Wallet: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
 - RPC: `https://rpc.testnet.arc.network`
 - Balance: `40.0 USDC`
-- Native decimals: `18`
+- Native-interface decimals: `18` (same USDC asset)
 - Balance raw: `40000000000000000000`
 - Block number: `60464221`
-- Verification: `backend/scripts/verify-native-balance.js` returned `verified: true`, chain ID `5042002`, native currency `USDC`, and formatted balance `40.0`.
+- Verification: `backend/scripts/verify-native-balance.js` returned `verified: true`, chain ID `5042002`, native currency `USDC`, and formatted balance `40.0`; this is a technical interface read, not a second token balance.
 
 ## 1.3 Real Arc Testnet USDC balance
 
@@ -496,7 +507,7 @@ Target: **24 standard pool templates**, each creating distinct onchain rounds.
 - Result: `STANDARD_ROUND_SIMULATION=PASS`
 - Broadcast: **NO**
 - Estimated gas: `2,650,904`
-- Estimated native gas cost: `0.131219748 USDC`
+- Estimated native-interface fee cost (same underlying USDC): `0.131219748 USDC`
 - Daily Round #1 plan:
   - entry close: `2026-09-05T20:00:00Z`
   - observation: `2026-09-06T00:00:00Z -> 2026-09-07T00:00:00Z`
@@ -658,7 +669,8 @@ QUARTERLY intentionally has no fixed duration constant because calendar quarters
 - [x] Entry amount is exactly 1 USDC
 - [x] User must have sufficient real Arc Testnet USDC
 - [x] Approval/permit/transfer flow finalized
-- [x] Fresh passkey step-up required before backend signs
+- [x] Human entry authorization uses the user's own connected wallet or a Circle hosted challenge
+- [x] No human passkey/WebAuthn or `BACKEND_WALLET` signer is active; earlier proof is retained in the legacy record below
 - [x] Prediction is submitted in a real Arc Testnet transaction
 - [x] Contract stores:
   - `roundId`
@@ -836,7 +848,7 @@ QUARTERLY intentionally has no fixed duration constant because calendar quarters
 - Owner before transfer: `0xd63f29329f3F34E1F0Bc9D74500E6C33D352083b`
 - Destination / owner wallet: `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
 - Transfer method: `safeTransferFrom`
-- Fresh passkey step-up: PASS
+- Historical pre-migration passkey step-up: PASS (legacy proof only)
 - Transfer tx: `0xc6e5bd0e02b825e84e570bb9ba25f3c381ebd33e14aeb423e446ffdbb3450fee`
 - Transfer block: `60612578`
 - Owner after transfer: `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321`
@@ -1209,13 +1221,13 @@ The core payout path is now live-proven by ETH Daily High Round #4 settlement an
 
 # 10. Real claim flow
 
-The backend claim flow and its negative authorization gates are verified, and a successful live Arc Testnet claim is now recorded below. Browser passkey UI evidence and a deliberate live duplicate-claim rejection remain separate open proof items.
+The backend claim flow and its negative authorization gates are verified, and a successful live Arc Testnet claim is now recorded below. A legacy browser-passkey UI record is not evidence for the current human runtime, and a deliberate live duplicate-claim rejection remains intentionally open.
 
 - [x] Claim requires settled round
   - Pre-settlement negative gate was already live-proven; Ticket #2 later claimed successfully only after Round #4 was `SETTLED`.
 - [x] Successful live claim sender matched the current winning NFT owner
   - Non-owner rejection remains separately proven by deterministic contract/E2E tests.
-- [ ] Fresh browser passkey step-up for the historical live claim separately recorded as UI evidence
+- [ ] Legacy browser passkey step-up for the historical live claim separately recorded as UI evidence (not a current-runtime requirement)
   - Action authorization binding and single-use replay protection are proven; this checklist does not infer missing browser evidence.
 - [x] Real Arc Testnet claim transaction submitted
 - [x] USDC leaves pool/contract
@@ -1393,11 +1405,13 @@ Live `cancelRound` is proven. ETH Daily Low Round #1 was cancelled by the config
 #### Refund authorization + execution code readiness (no chain evidence)
 
 - `POST /actions/refund/start|finish|verify` now exist in
-  `backend/src/routes/actions.js`, backed by a new
-  `backend/src/services/refundExecutionService.js`, mirroring the existing
-  `TRANSFER_TICKET` step-up pattern. Server derives `executionMode`
-  (`BACKEND_WALLET` vs `EXTERNAL_OWNER`) from on-chain `currentOwner` only —
-  never from client input.
+  `backend/src/routes/actions.js`, backed by
+  `backend/src/services/refundExecutionService.js`. The server derives the
+  human execution mode from on-chain `currentOwner` and the authenticated
+  session; current human execution is `EXTERNAL_OWNER` or
+  `CIRCLE_USER_WALLET`, never a backend-held signer.
+- Historical pre-migration refund records may mention `BACKEND_WALLET` and a
+  passkey step-up. Those labels describe only the old proof, not this runtime.
 - `script/smoke-transferred-refund-fork.sh` was hardened this session:
   `TRANSFERRED_REFUND_ACCESS_CONTROL_FORK=PASS` is reported for the
   ownership-gating half independently of the USDC-movement half. The
@@ -1445,7 +1459,7 @@ Resolver operational readiness:
 - Resolver keystore imported locally as Foundry account `extrema-resolver`.
 - `cast wallet address --account extrema-resolver` resolved to the deployed resolver `0x1EDC4594195fFb134315c3258DE974563Ed9762A`.
 - Both ETH Daily High and ETH Daily Low pools report that exact resolver address onchain.
-- Resolver was funded from the Arc testnet faucet and shows 20 USDC in both the native gas view and ERC-20 USDC view.
+- Resolver was funded from the Arc testnet faucet and shows 20 USDC in both the native-interface view and ERC-20 USDC view; these are two technical views of one asset.
 - No private key was added to the repository or environment files.
 
 ETH Daily High Round #1:

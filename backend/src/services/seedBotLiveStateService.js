@@ -107,6 +107,10 @@ function createSeedBotLiveStateService({
         hasEntered: Boolean(hasEntered),
         predictionTaken: Boolean(predictionTaken),
         usdcRaw: usdcRaw.toString(),
+        // Technical native-interface read of the same underlying USDC asset.
+        nativeUsdcRaw: nativeRaw.toString(),
+        // Keep the historical field as an internal compatibility alias while
+        // callers migrate to the explicit name above.
         nativeRaw: nativeRaw.toString(),
       },
     };

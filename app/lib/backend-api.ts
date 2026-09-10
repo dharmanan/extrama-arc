@@ -1327,13 +1327,18 @@ export const backendApi = {
           explorerUrl: string;
           blockNumber: number;
         };
-        native: {
+        nativeUsdcGasInterface: {
+          asset: "USDC";
+          interface: "native";
+          sameUnderlyingAsset: boolean;
           symbol: string;
           decimals: number;
           balanceRaw: string;
           balanceFormatted: string;
         };
         usdc: {
+          asset: "USDC";
+          interface: "erc20";
           address: string;
           name: string;
           symbol: string;

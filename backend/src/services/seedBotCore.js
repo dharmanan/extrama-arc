@@ -456,25 +456,33 @@ async function fundingForWallet({ fundingByWallet, wallet, requiredGasRaw }) {
   if (!funding || typeof funding !== 'object') return { eligible: false, reason: 'funding_unavailable' };
 
   const usdcValue = funding.usdcRaw ?? funding.usdcBalanceRaw;
-  const nativeValue = funding.nativeRaw ?? funding.nativeBalanceRaw;
+  // Seed planning receives both technical interfaces for one economic USDC
+  // balance. They are checked independently (stake through ERC-20, fee
+  // availability through native units); they must never be summed.
+  const nativeUsdcValue =
+    funding.nativeUsdcRaw ?? funding.nativeRaw ?? funding.nativeBalanceRaw;
   const requiredGasValue = funding.requiredGasRaw ?? requiredGasRaw;
-  if (usdcValue === undefined || nativeValue === undefined || requiredGasValue === undefined) {
+  if (
+    usdcValue === undefined ||
+    nativeUsdcValue === undefined ||
+    requiredGasValue === undefined
+  ) {
     return { eligible: false, reason: 'funding_unavailable' };
   }
 
   let usdcRaw;
-  let nativeRaw;
+  let nativeUsdcRaw;
   let minimumGasRaw;
   try {
     usdcRaw = parseBigInt(usdcValue, 'funding_invalid');
-    nativeRaw = parseBigInt(nativeValue, 'funding_invalid');
+    nativeUsdcRaw = parseBigInt(nativeUsdcValue, 'funding_invalid');
     minimumGasRaw = parseBigInt(requiredGasValue, 'funding_invalid');
   } catch {
     return { eligible: false, reason: 'funding_unavailable' };
   }
 
   if (usdcRaw < STAKE_AMOUNT_RAW) return { eligible: false, reason: 'insufficient_usdc' };
-  if (nativeRaw < minimumGasRaw) return { eligible: false, reason: 'insufficient_gas' };
+  if (nativeUsdcRaw < minimumGasRaw) return { eligible: false, reason: 'insufficient_gas' };
   return { eligible: true, reason: 'eligible' };
 }
 

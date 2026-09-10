@@ -188,7 +188,7 @@ function createSeedBotAutomationService({
           roundsState,
           fundingByWallet: () => ({
             usdcRaw: '100000000',
-            nativeRaw: '1000000000000000000',
+            nativeUsdcRaw: '1000000000000000000',
             requiredGasRaw: '1',
           }),
           requiredGasRaw: '1',

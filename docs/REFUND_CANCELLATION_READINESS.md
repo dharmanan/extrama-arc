@@ -23,6 +23,11 @@ owner. The final human runtime has no passkey/WebAuthn ceremony and no human
 The deterministic Circle lifecycle suite covers the refund path. A live
 Circle refund has not been sent and is not claimed here.
 
+Arc uses one economic USDC asset for this flow. `pool.refund(tokenId)` moves
+the exact 6-decimal ERC-20 amount (`1,000,000` raw); the sender's native
+18-decimal read is only the technical fee interface for that same USDC and is
+never added to the payout or treated as a second balance.
+
 ## Legacy readiness record (pre-final human-wallet migration)
 
 The refund action authorization foundation (`REFUND_TICKET` canonical payload,
@@ -83,7 +88,7 @@ adds the remaining authorization + execution surface, mirroring the existing
   authenticated owner wallet's tickets are discovered via the existing
   `arcService.readOwnedTickets()` scanner (no duplicate scanner), kept
   distinct from the backend-managed wallet's tickets rather than merged.
-- Frontend (`app/tickets/page.tsx`): a "Claim refund" action appears only
+- Legacy frontend record (`app/tickets/page.tsx`): a "Claim refund" action appears only
   when `roundStatus === 'CANCELLED' && !isRefunded`. For backend-owned
   tickets it completes in one passkey step. For externally-owned tickets it
   additionally requires the connected wallet to match the authorized
@@ -220,10 +225,9 @@ repository, in `.env.example`, or in this document.
 - Expected sequence once eligible: the lifecycle engine cancels both rounds,
   each round moves to `CANCELLED` with its `escrowRemaining` preserved, and
   the two ticket owners then claim their refunds through the user-initiated
-  flow. ETH Daily Low Ticket #1 is backend-owned and takes the
-  `BACKEND_WALLET` path; ETH Daily High Ticket #1 was transferred to
-  `0xafbB6Cc5C0a9C0eB1BfF8dB2eD807e83aAB8e321` and takes the
-  `EXTERNAL_OWNER` path.
+  flow. Historical pre-migration records may identify ETH Daily Low Ticket
+  #1 as `BACKEND_WALLET`; that label is retained only as history. The current
+  runtime uses `EXTERNAL_OWNER` or `CIRCLE_USER_WALLET` for every human refund.
 - ETH Weekly High Round #1 has 3 entries, meets `MIN_ENTRIES`, and is
   therefore expected to **settle** rather than cancel, after
   `2026-09-14T00:00:00Z`.

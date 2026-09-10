@@ -75,6 +75,9 @@ async function buildTransferTransactionRequest(payload, allowedModes) {
     throw new Error('transfer_ticket_not_found');
   }
   if (owner.toLowerCase() !== walletAddress.toLowerCase()) throw new Error('transfer_not_ticket_owner');
+  // Arc uses USDC for both the native fee interface and ERC-20 application
+  // transfers. A positive native-interface read only proves fee availability;
+  // it is not a separate asset balance.
   if (await provider.getBalance(walletAddress) === 0n) throw new Error('transfer_insufficient_gas');
   return {
     chainId: Number(network.chainId),

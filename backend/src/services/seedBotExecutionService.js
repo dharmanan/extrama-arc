@@ -167,9 +167,14 @@ function evaluateLiveEntryEligibility({ entry, liveState, topology } = {}) {
   if (usdcRaw === null) return { eligible: false, reason: 'entry_funding_unavailable' };
   if (usdcRaw < STAKE_AMOUNT_RAW) return { eligible: false, reason: 'entry_insufficient_usdc' };
 
-  const nativeRaw = parseBigInt(liveState.nativeRaw ?? liveState.nativeBalanceRaw);
-  if (nativeRaw === null) return { eligible: false, reason: 'entry_funding_unavailable' };
-  if (nativeRaw <= 0n) return { eligible: false, reason: 'entry_insufficient_gas' };
+  // Arc's native interface is the same underlying USDC asset as the ERC-20
+  // balance above. Keep this as an independent technical fee check; never
+  // add native and ERC-20 values together.
+  const nativeUsdcRaw = parseBigInt(
+    liveState.nativeUsdcRaw ?? liveState.nativeRaw ?? liveState.nativeBalanceRaw,
+  );
+  if (nativeUsdcRaw === null) return { eligible: false, reason: 'entry_funding_unavailable' };
+  if (nativeUsdcRaw <= 0n) return { eligible: false, reason: 'entry_insufficient_gas' };
 
   return {
     eligible: true,

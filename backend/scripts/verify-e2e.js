@@ -96,6 +96,7 @@ const LAYER3_SCRIPTS = [
   'scripts/verify-circle-sdk-runtime.js',
   'scripts/verify-circle-entry-behavior.js',
   'scripts/verify-http-actions-e2e.js',
+  'scripts/verify-one-usdc-asset.js',
   'scripts/verify-circle-support-matrix.js',
   'scripts/verify-circle-actions.js',
   'scripts/verify-circle-action-behavior.js',

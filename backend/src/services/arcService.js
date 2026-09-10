@@ -12,6 +12,16 @@ const {
 
 const ARC_TESTNET_CHAIN_ID = 5042002n;
 const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
+// Arc exposes the same economic USDC balance through two technical
+// interfaces: the native currency uses 18 decimals while the ERC-20
+// contract uses 6 decimals. Keep the conversion integer-only and conservative
+// (flooring any sub-6-decimal remainder) so a derived amount can never be
+// overstated.
+const ARC_NATIVE_USDC_DECIMALS = 18;
+const ARC_ERC20_USDC_DECIMALS = 6;
+const ARC_NATIVE_TO_ERC20_SCALE = 10n ** BigInt(
+  ARC_NATIVE_USDC_DECIMALS - ARC_ERC20_USDC_DECIMALS,
+);
 const ARCHIVE_RETENTION_SECONDS = 90 * 24 * 60 * 60;
 const MAX_ROUND_ENTRY_READS = 200;
 
@@ -86,6 +96,17 @@ const SOURCE_SYMBOLS = {
   SOL: 'SOLUSDT',
   HYPE: 'HYPEUSDT',
 };
+
+function nativeUsdcRawToErc20Raw(nativeRaw) {
+  let value;
+  try {
+    value = BigInt(nativeRaw);
+  } catch {
+    throw new Error('native_usdc_balance_invalid');
+  }
+  if (value < 0n) throw new Error('native_usdc_balance_invalid');
+  return value / ARC_NATIVE_TO_ERC20_SCALE;
+}
 
 function getProvider() {
   return new ethers.JsonRpcProvider(
@@ -247,13 +268,21 @@ async function readArcWalletState(address) {
       explorerUrl: 'https://testnet.arcscan.app',
       blockNumber,
     },
-    native: {
+    // This is a technical read of the same underlying USDC balance exposed
+    // by the native-currency interface. It is deliberately named so API
+    // consumers cannot mistake it for a second asset or add it to `usdc`.
+    nativeUsdcGasInterface: {
+      asset: 'USDC',
+      interface: 'native',
+      sameUnderlyingAsset: true,
       symbol: 'USDC',
-      decimals: 18,
+      decimals: ARC_NATIVE_USDC_DECIMALS,
       balanceRaw: nativeBalanceRaw.toString(),
-      balanceFormatted: ethers.formatUnits(nativeBalanceRaw, 18),
+      balanceFormatted: ethers.formatUnits(nativeBalanceRaw, ARC_NATIVE_USDC_DECIMALS),
     },
     usdc: {
+      asset: 'USDC',
+      interface: 'erc20',
       address: ARC_TESTNET_USDC_ADDRESS,
       name,
       symbol,
@@ -1938,6 +1967,10 @@ function warmStandardRoundsCache() {
 module.exports = {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_USDC_ADDRESS,
+  ARC_NATIVE_USDC_DECIMALS,
+  ARC_ERC20_USDC_DECIMALS,
+  ARC_NATIVE_TO_ERC20_SCALE,
+  nativeUsdcRawToErc20Raw,
   ARC_POOL_TOPOLOGY,
   getArcProvider: getProvider,
   readArcWalletState,

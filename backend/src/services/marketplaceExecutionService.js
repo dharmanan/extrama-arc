@@ -364,6 +364,8 @@ async function prepareCircleListApproval(payload) {
 
   const { provider, network, marketplaceAddress, ticketAddress, sellerAddress, approval } =
     await readListableTicket(payload);
+  // Arc's native interface is the same underlying USDC asset. This is only a
+  // technical fee-availability check, not a second balance to add to USDC.
   if (await provider.getBalance(sellerAddress) === 0n) throw new Error('marketplace_insufficient_gas');
   if (approval.isApproved) return { required: false, transactionRequest: null };
 
@@ -741,12 +743,14 @@ function exactAskApprovalCalldata(marketplaceAddress, expectedAskUsdc) {
 
 async function assertBuyerFunds(provider, buyerAddress, expectedAskUsdc) {
   const usdc = new ethers.Contract(arcService.ARC_TESTNET_USDC_ADDRESS, USDC_ABI, provider);
-  const [usdcBalance, nativeBalance] = await Promise.all([
+  const [usdcBalance, nativeUsdcGasBalance] = await Promise.all([
     usdc.balanceOf(buyerAddress),
     provider.getBalance(buyerAddress),
   ]);
   if (usdcBalance < expectedAskUsdc) throw new Error('marketplace_insufficient_usdc');
-  if (nativeBalance === 0n) throw new Error('marketplace_insufficient_gas');
+  // The ask is charged through the ERC-20 interface; network fees are paid
+  // through the native interface of that same USDC balance. Never sum them.
+  if (nativeUsdcGasBalance === 0n) throw new Error('marketplace_insufficient_gas');
 }
 
 async function buildBuyTransactionRequest(payload, allowedModes) {

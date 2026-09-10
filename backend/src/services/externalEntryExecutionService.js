@@ -79,7 +79,7 @@ async function readLiveState(payload) {
   const block = await provider.getBlock('latest');
   if (!block) throw new Error('arc_latest_block_unavailable');
 
-  const [round, hasEntered, predictionTaken, balance, allowance, nativeBalance, ticketAddress] =
+  const [round, hasEntered, predictionTaken, balance, allowance, nativeUsdcGasBalance, ticketAddress] =
     await Promise.all([
       pool.getRound(payload.roundId),
       pool.hasEntered(payload.roundId, walletAddress),
@@ -104,7 +104,10 @@ async function readLiveState(payload) {
     predictionTaken,
     balance,
     allowance,
-    nativeBalance,
+    // Technical native-interface read of the same underlying USDC balance;
+    // this is not an additional gas asset and must never be summed with
+    // `balance`.
+    nativeUsdcGasBalance,
   };
 }
 
@@ -119,7 +122,11 @@ function assertEntryAvailable(payload, state) {
   if (state.hasEntered) throw new Error('entry_already_entered');
   if (state.predictionTaken) throw new Error('entry_price_taken');
   if (state.balance < STAKE_AMOUNT) throw new Error('entry_insufficient_usdc');
-  if (state.nativeBalance === 0n) throw new Error('entry_insufficient_gas');
+  const nativeUsdcGasBalance =
+    state.nativeUsdcGasBalance ?? state.nativeBalance;
+  if (nativeUsdcGasBalance === undefined || nativeUsdcGasBalance === 0n) {
+    throw new Error('entry_insufficient_gas');
+  }
   if (payload.walletAddress.toLowerCase() !== state.walletAddress.toLowerCase()) {
     throw new Error('entry_wallet_mismatch');
   }
