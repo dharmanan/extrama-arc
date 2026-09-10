@@ -58,6 +58,17 @@ const BURN_INTENT_EIP712_TYPES = {
 const TRANSFER_SPEC_VERSION = 1;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+function gatewayHeaders() {
+  const headers = { 'content-type': 'application/json' };
+  // Gateway is a server-side Circle API. Keep the credential out of every
+  // client payload and omit the header in deterministic local tests where no
+  // credential is configured.
+  if (process.env.CIRCLE_API_KEY) {
+    headers.authorization = `Bearer ${process.env.CIRCLE_API_KEY}`;
+  }
+  return headers;
+}
+
 // A burn intent must name the USDC contract on the source chain, and that
 // address differs per chain. Every EVM testnet domain that Circle Gateway
 // currently supports is listed, with the token address taken from Circle's
@@ -108,7 +119,7 @@ async function readUnifiedUsdcBalance(depositor, fetchImpl = fetch) {
   try {
     response = await fetchImpl(`${GATEWAY_API_URL}/v1/balances`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: gatewayHeaders(),
       body: JSON.stringify({
         token: TOKEN,
         sources: [{ depositor: normalizedDepositor }],
@@ -190,6 +201,163 @@ function assertPositiveIntegerString(value, errorName) {
   return value;
 }
 
+function buildArcFundingTransferSpec({
+  walletAddress,
+  sourceDomain,
+  valueRaw,
+  salt = ethers.hexlify(crypto.randomBytes(32)),
+}) {
+  if (!ethers.isAddress(walletAddress)) throw new Error('gateway_wallet_invalid');
+  if (!Number.isInteger(sourceDomain) || sourceDomain < 0) {
+    throw new Error('gateway_source_domain_invalid');
+  }
+  if (sourceDomain === ARC_GATEWAY_DOMAIN) {
+    throw new Error('gateway_source_domain_is_destination');
+  }
+  if (!SOURCE_USDC_BY_DOMAIN.has(sourceDomain)) {
+    throw new Error('gateway_source_domain_unsupported');
+  }
+  assertPositiveIntegerString(valueRaw, 'gateway_value_invalid');
+  if (!/^0x[0-9a-fA-F]{64}$/.test(salt)) throw new Error('gateway_salt_invalid');
+
+  const wallet = ethers.getAddress(walletAddress);
+  return Object.freeze({
+    version: TRANSFER_SPEC_VERSION,
+    sourceDomain,
+    destinationDomain: ARC_GATEWAY_DOMAIN,
+    sourceContract: toBytes32(GATEWAY_WALLET_CONTRACT),
+    destinationContract: toBytes32(GATEWAY_MINTER_CONTRACT),
+    sourceToken: toBytes32(SOURCE_USDC_BY_DOMAIN.get(sourceDomain)),
+    destinationToken: toBytes32(ARC_TESTNET_USDC_ADDRESS),
+    sourceDepositor: toBytes32(wallet),
+    destinationRecipient: toBytes32(wallet),
+    sourceSigner: toBytes32(wallet),
+    destinationCaller: toBytes32(ZERO_ADDRESS),
+    value: valueRaw,
+    salt,
+    hookData: '0x',
+  });
+}
+
+// Estimate is a preparation read. Submission below is kept as a separate
+// explicit financial boundary and is only reached by the durable service when
+// the server-side broadcast gate is enabled.
+async function estimateArcFunding(spec, fetchImpl = fetch) {
+  let response;
+  try {
+    response = await fetchImpl(`${GATEWAY_API_URL}/v1/estimate?enableForwarder=true`, {
+      method: 'POST',
+      headers: gatewayHeaders(),
+      body: JSON.stringify([{ spec }]),
+    });
+  } catch {
+    throw new Error('gateway_service_unavailable');
+  }
+  if (!response.ok) throw new Error('gateway_estimate_unavailable');
+
+  let body;
+  try { body = await response.json(); } catch { throw new Error('gateway_response_invalid'); }
+  const burnIntent = body?.body?.[0]?.burnIntent;
+  if (
+    !burnIntent ||
+    !/^\d+$/.test(String(burnIntent.maxFee)) ||
+    !/^[1-9]\d*$/.test(String(burnIntent.maxBlockHeight))
+  ) {
+    throw new Error('gateway_response_invalid');
+  }
+  return {
+    maxFeeRaw: String(burnIntent.maxFee),
+    maxBlockHeight: String(burnIntent.maxBlockHeight),
+    fees: body?.fees && typeof body.fees === 'object' ? body.fees : null,
+  };
+}
+
+function gatewayError(code, metadata = {}) {
+  const error = new Error(code);
+  Object.assign(error, metadata);
+  return error;
+}
+
+// Submit exactly one already-signed burn intent to Circle's forwarding
+// service. The durable request id is validated by the caller/state machine;
+// the body below is the official forwarding shape and the state machine never
+// retries this mutation after an uncertain response.
+async function submitArcFunding({ burnIntent, signature, requestId }, fetchImpl = fetch) {
+  if (!burnIntent || typeof burnIntent !== 'object') {
+    throw new Error('gateway_burn_intent_invalid');
+  }
+  if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new Error('gateway_signature_invalid');
+  }
+  if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) {
+    throw new Error('gateway_request_id_invalid');
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(`${GATEWAY_API_URL}/v1/transfer?enableForwarder=true`, {
+      method: 'POST',
+      headers: gatewayHeaders(),
+      body: JSON.stringify([{ burnIntent, signature }]),
+    });
+  } catch {
+    throw gatewayError('gateway_transfer_submit_unknown');
+  }
+
+  if (!response.ok) {
+    // A deterministic 4xx is a remote rejection before acceptance. 5xx and
+    // throttling remain ambiguous because the transfer may already exist.
+    if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+      throw gatewayError('gateway_transfer_rejected', { status: response.status });
+    }
+    throw gatewayError('gateway_transfer_submit_unknown', { status: response.status });
+  }
+
+  let body;
+  try { body = await response.json(); } catch {
+    throw new Error('gateway_transfer_submit_unknown');
+  }
+  const transferId = body?.transferId || body?.body?.transferId || body?.body?.[0]?.transferId || body?.id;
+  if (typeof transferId !== 'string' || !/^[0-9a-f-]{36}$/i.test(transferId)) {
+    throw new Error('gateway_transfer_submit_unknown');
+  }
+  return { transferId };
+}
+
+async function readArcFundingTransferStatus(transferId, fetchImpl = fetch) {
+  if (typeof transferId !== 'string' || !/^[0-9a-f-]{36}$/i.test(transferId)) {
+    throw new Error('gateway_transfer_id_invalid');
+  }
+  let response;
+  try {
+    response = await fetchImpl(`${GATEWAY_API_URL}/v1/transfer/${encodeURIComponent(transferId)}`, {
+      headers: gatewayHeaders(),
+    });
+  } catch {
+    throw new Error('gateway_status_unknown');
+  }
+  if (!response.ok) {
+    if (response.status === 404) throw new Error('gateway_transfer_not_found');
+    throw new Error('gateway_status_unknown');
+  }
+  let body;
+  try { body = await response.json(); } catch { throw new Error('gateway_status_unknown'); }
+  const status = String(body?.status || body?.body?.status || body?.body?.[0]?.status || '').toLowerCase();
+  if (!status) throw new Error('gateway_status_unknown');
+  const forwardingDetails = body?.forwardingDetails || body?.body?.forwardingDetails || body?.body?.[0]?.forwardingDetails;
+  return {
+    status,
+    transactionHash: typeof body?.transactionHash === 'string'
+      ? body.transactionHash
+      : typeof body?.body?.transactionHash === 'string'
+        ? body.body.transactionHash
+        : typeof body?.body?.[0]?.transactionHash === 'string' ? body.body[0].transactionHash : null,
+    forwardingFailure: typeof forwardingDetails?.failureReason === 'string'
+      ? forwardingDetails.failureReason.slice(0, 120)
+      : null,
+  };
+}
+
 /**
  * Builds the burn intent that moves part of a unified balance to Arc Testnet.
  *
@@ -217,22 +385,9 @@ function buildArcFundingBurnIntent({
   maxBlockHeight,
   salt = ethers.hexlify(crypto.randomBytes(32)),
 }) {
-  if (!ethers.isAddress(walletAddress)) {
-    throw new Error('gateway_wallet_invalid');
-  }
-  if (!Number.isInteger(sourceDomain) || sourceDomain < 0) {
-    throw new Error('gateway_source_domain_invalid');
-  }
-  if (sourceDomain === ARC_GATEWAY_DOMAIN) {
-    // Burning an Arc balance to mint back onto Arc costs a fee and delivers
-    // nothing, so it is rejected rather than silently offered to the user.
-    throw new Error('gateway_source_domain_is_destination');
-  }
-  if (!SOURCE_USDC_BY_DOMAIN.has(sourceDomain)) {
-    throw new Error('gateway_source_domain_unsupported');
-  }
-
-  assertPositiveIntegerString(valueRaw, 'gateway_value_invalid');
+  // Preserve the original fail-closed precedence: identity/source/value/salt
+  // are invalid independently of any estimate values supplied alongside them.
+  const spec = buildArcFundingTransferSpec({ walletAddress, sourceDomain, valueRaw, salt });
   assertPositiveIntegerString(maxBlockHeight, 'gateway_max_block_height_invalid');
 
   if (typeof maxFeeRaw !== 'string' || !/^\d+$/.test(maxFeeRaw)) {
@@ -241,34 +396,6 @@ function buildArcFundingBurnIntent({
   if (BigInt(maxFeeRaw) >= BigInt(valueRaw)) {
     throw new Error('gateway_max_fee_exceeds_value');
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(salt)) {
-    throw new Error('gateway_salt_invalid');
-  }
-
-  const wallet = ethers.getAddress(walletAddress);
-
-  // The canonical Gateway spec. Address shaped fields are bytes32 throughout,
-  // which is both what the EIP-712 types declare and what is submitted.
-  const spec = Object.freeze({
-    version: TRANSFER_SPEC_VERSION,
-    sourceDomain,
-    destinationDomain: ARC_GATEWAY_DOMAIN,
-    sourceContract: toBytes32(GATEWAY_WALLET_CONTRACT),
-    destinationContract: toBytes32(GATEWAY_MINTER_CONTRACT),
-    sourceToken: toBytes32(SOURCE_USDC_BY_DOMAIN.get(sourceDomain)),
-    destinationToken: toBytes32(ARC_TESTNET_USDC_ADDRESS),
-    sourceDepositor: toBytes32(wallet),
-    destinationRecipient: toBytes32(wallet),
-    sourceSigner: toBytes32(wallet),
-    // Zero means any caller may present the attestation on Arc, which includes
-    // Circle's forwarder. It does not by itself enable forwarding: that is
-    // requested separately with ?enableForwarder=true on estimate and transfer.
-    destinationCaller: toBytes32(ZERO_ADDRESS),
-    value: valueRaw,
-    salt,
-    hookData: '0x',
-  });
-
   const burnIntent = Object.freeze({ maxBlockHeight, maxFee: maxFeeRaw, spec });
 
   return {
@@ -317,7 +444,11 @@ module.exports = {
   GATEWAY_MINTER_CONTRACT,
   GATEWAY_WALLET_CONTRACT,
   SOURCE_USDC_BY_DOMAIN,
+  buildArcFundingTransferSpec,
   buildArcFundingBurnIntent,
+  estimateArcFunding,
+  submitArcFunding,
+  readArcFundingTransferStatus,
   isTransferableSourceDomain,
   readUnifiedUsdcBalance,
   recoverBurnIntentSigner,

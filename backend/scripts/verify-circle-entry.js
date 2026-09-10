@@ -667,10 +667,17 @@ async function main() {
     'verifyCircleEntryOnce must be called from exactly two places: the ENTRY_CHALLENGE probe and the ENTRY_PENDING poll',
   );
 
-  const approvalProbeIndex = frontendSource.search(APPROVAL_ONCE_CALL_SITE);
-  const entryProbeIndex = frontendSource.search(ENTRY_ONCE_CALL_SITE);
+  // Scope the execution count to the entry recovery function. Gateway also
+  // uses the shared hosted-challenge helper for a non-transaction signature;
+  // that must not dilute this ENTRY-specific exactly-once assertion.
+  const entryRecoverySource = frontendSource.slice(
+    frontendSource.indexOf('async function resumeCircleEntry'),
+    frontendSource.indexOf('async function waitForCircleResult'),
+  );
+  const approvalProbeIndex = entryRecoverySource.search(APPROVAL_ONCE_CALL_SITE);
+  const entryProbeIndex = entryRecoverySource.search(ENTRY_ONCE_CALL_SITE);
   const executeHostedChallengeIndices = [
-    ...frontendSource.matchAll(/executeHostedChallenge\(recovery\.challengeId\)/g),
+    ...entryRecoverySource.matchAll(/executeHostedChallenge\(recovery\.challengeId\)/g),
   ].map((match) => match.index);
   assert.equal(
     executeHostedChallengeIndices.length,

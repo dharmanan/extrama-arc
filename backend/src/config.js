@@ -29,6 +29,10 @@ const schema = z.object({
   // Seed agents remain fail-closed unless Railway explicitly opts in.
   // LIVE execution also retains its separate executor + fresh-chain-state gates.
   EXTREMA_ENABLE_SEED_BOTS: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
+  // Gateway transfer submission is a separately approved financial boundary.
+  // It remains disabled in every normal environment unless the server-side
+  // deployment explicitly opts in.
+  EXTREMA_ENABLE_GATEWAY_BROADCAST: z.enum(["true", "false"]).default("false").transform((value) => value === "true"),
   // AES-256-GCM envelope (v1.iv.ct.tag) of the resolver private key, produced
   // with the same ENCRYPTION_KEY used for wallet material. Optional: when it is
   // absent, resolver signing stays disabled and the rest of the lifecycle runs

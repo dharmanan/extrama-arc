@@ -6,8 +6,15 @@ import { ProductHeader } from "../product-components";
 import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
 import { arcTestnet } from "../lib/web3";
 import { shortAddress, useWalletSession } from "../wallet-session";
-import { backendApi, isAuthSessionError } from "../lib/backend-api";
-import { readCircleTabAuth } from "../lib/circle-auth";
+import { backendApi, isAuthSessionError, type GatewayFundingResponse } from "../lib/backend-api";
+import {
+  readCircleGatewayFundingRecovery,
+  readCircleTabAuth,
+  type CircleGatewayFundingRecovery,
+} from "../lib/circle-auth";
+import {
+  confirmCircleGatewayFunding,
+} from "../lib/circle-actions";
 import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
@@ -45,6 +52,22 @@ function formatWalletMarketPrice(value: string, locale: "en" | "tr") {
 // this project's ES2017 target does not allow as a literal.
 function hasPositiveRawAmount(value: string) {
   return /^\d+$/.test(value) && !/^0+$/.test(value);
+}
+
+function parseGatewayUsdcRaw(value: string): string | null {
+  const match = /^(?:0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/.exec(value.trim());
+  if (!match) return null;
+  const [whole] = value.trim().split(".");
+  const fraction = (match[1] || "").padEnd(6, "0");
+  const raw = `${whole}${fraction}`.replace(/^0+(?=\d)/, "");
+  return hasPositiveRawAmount(raw) ? raw : null;
+}
+
+function formatGatewayUsdcRaw(valueRaw: string) {
+  const padded = valueRaw.padStart(7, "0");
+  const whole = padded.slice(0, -6).replace(/^0+(?=\d)/, "") || "0";
+  const fraction = padded.slice(-6).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
 }
 
 function WalletLiveMarket() {
@@ -128,6 +151,7 @@ function WalletLiveMarket() {
 
 export default function WalletPage() {
   const t = useCopy();
+  const { locale } = useLocale();
   const { openConnectModal } = useConnectModal();
 
   const {
@@ -152,6 +176,13 @@ export default function WalletPage() {
   const [chainBusy, setChainBusy] = useState("");
   const [chainError, setChainError] = useState("");
   const [gateway, setGateway] = useState<Awaited<ReturnType<typeof backendApi.wallet.gatewayBalance>> | null>(null);
+  const [gatewaySourceDomain, setGatewaySourceDomain] = useState("");
+  const [gatewayAmount, setGatewayAmount] = useState("");
+  const [gatewayFundingBusy, setGatewayFundingBusy] = useState(false);
+  const [gatewayFundingNotice, setGatewayFundingNotice] = useState("");
+  const [gatewayFundingError, setGatewayFundingError] = useState("");
+  const [gatewayFundingRecovery, setGatewayFundingRecovery] = useState<CircleGatewayFundingRecovery | null>(null);
+  const [gatewayFundingStatus, setGatewayFundingStatus] = useState<GatewayFundingResponse | null>(null);
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
   const [walletNotice, setWalletNotice] = useState("");
@@ -275,6 +306,45 @@ export default function WalletPage() {
     setGateway(null);
   }, [step, walletStatus, walletAddress, executionMode]);
 
+  useEffect(() => {
+    if (executionMode !== "CIRCLE_USER_WALLET") {
+      setGatewayFundingRecovery(null);
+      setGatewayFundingStatus(null);
+      return;
+    }
+    const recovery = readCircleGatewayFundingRecovery();
+    if (!recovery) return;
+    setGatewayFundingRecovery(recovery);
+    setGatewaySourceDomain(String(recovery.sourceDomain));
+    setGatewayAmount(formatGatewayUsdcRaw(recovery.valueRaw));
+  }, [executionMode]);
+
+  useEffect(() => {
+    const actionId = gatewayFundingRecovery?.actionId;
+    if (executionMode !== "CIRCLE_USER_WALLET" || !actionId) return;
+    const recoveredActionId = actionId;
+    let cancelled = false;
+    let timer: number | undefined;
+    async function poll() {
+      try {
+        const current = await backendApi.wallet.gatewayFunding(recoveredActionId);
+        if (cancelled) return;
+        setGatewayFundingStatus(current);
+        if (["SUBMITTING", "SUBMITTED", "RECONCILIATION_REQUIRED"].includes(current.state)) {
+          timer = window.setTimeout(poll, 5000);
+        }
+      } catch {
+        // Recovery remains durable locally; a transient status read must not
+        // clear it or create a new funding request.
+      }
+    }
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [executionMode, gatewayFundingRecovery?.actionId]);
+
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
     await switchChainAsync({ chainId: arcTestnet.id });
@@ -321,6 +391,57 @@ export default function WalletPage() {
   }
 
   const gatewayFunded = gateway !== null && hasPositiveRawAmount(gateway.totalRaw);
+  const gatewaySources = gateway?.balances.filter(
+    (item) => item.transferable && hasPositiveRawAmount(item.balanceRaw),
+  ) || [];
+  const selectedGatewaySource = gatewaySources.find(
+    (item) => String(item.domain) === gatewaySourceDomain,
+  ) || gatewaySources[0] || null;
+
+  async function handleGatewayFunding() {
+    if (!selectedGatewaySource && !gatewayFundingRecovery) return;
+    const valueRaw = gatewayFundingRecovery?.valueRaw || parseGatewayUsdcRaw(gatewayAmount);
+    if (!valueRaw) {
+      setGatewayFundingError(locale === "tr" ? "6 ondalığa kadar geçerli bir USDC tutarı gir." : "Enter a valid USDC amount with up to 6 decimals.");
+      return;
+    }
+    const sourceDomain = gatewayFundingRecovery?.sourceDomain ?? selectedGatewaySource!.domain;
+    if (
+      !gatewayFundingRecovery &&
+      BigInt(valueRaw) > BigInt(selectedGatewaySource!.balanceRaw)
+    ) {
+      setGatewayFundingError(locale === "tr" ? "Tutar seçili kaynak bakiyesini aşıyor." : "Amount exceeds the selected source balance.");
+      return;
+    }
+
+    setGatewayFundingBusy(true);
+    setGatewayFundingError("");
+    setGatewayFundingNotice("");
+    try {
+      const result = await confirmCircleGatewayFunding({
+        requestId: gatewayFundingRecovery?.requestId || crypto.randomUUID(),
+        sourceDomain,
+        valueRaw,
+      });
+      setGatewayFundingStatus(result);
+      if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
+        throw new Error("gateway_signature_challenge_unavailable");
+      }
+      setGatewayFundingNotice(
+        locale === "tr"
+          ? "İmza doğrulandı. Transfer gönderilmedi; yayınlama için ayrı onay gerekir."
+          : "Signature verified. No transfer was submitted; broadcasting requires separate approval.",
+      );
+    } catch (cause) {
+      setGatewayFundingError(
+        cause instanceof Error
+          ? cause.message
+          : (locale === "tr" ? "Gateway hazırlığı tamamlanamadı." : "Gateway preparation could not be completed."),
+      );
+    } finally {
+      setGatewayFundingBusy(false);
+    }
+  }
 
   if (step === "ready" && walletStatus === "ready" && walletAddress) {
     return (
@@ -410,6 +531,68 @@ export default function WalletPage() {
               )}
 
               {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
+
+              {executionMode === "CIRCLE_USER_WALLET" && (gatewaySources.length > 0 || gatewayFundingRecovery) && (
+                <section className="ex-wallet-gateway" aria-label="Gateway funding preparation">
+                  <div>
+                    <p className="ex-eyebrow">Gateway</p>
+                    <h3>{locale === "tr" ? "Arc için USDC hazırla." : "Prepare USDC for Arc."}</h3>
+                    <p>
+                      {locale === "tr"
+                        ? "Tek bir kaynak domain seç. Bu adım sadece EIP-712 imzasını hazırlar; USDC yakmaz veya transfer göndermez."
+                        : "Choose one source domain. This only prepares an EIP-712 signature; it does not burn USDC or submit a transfer."}
+                    </p>
+                  </div>
+                  <div className="ex-wallet-gateway__controls">
+                    <label>
+                      <span>{locale === "tr" ? "Kaynak" : "Source"}</span>
+                      <select
+                        value={selectedGatewaySource ? String(selectedGatewaySource.domain) : ""}
+                        onChange={(event) => setGatewaySourceDomain(event.target.value)}
+                        disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
+                      >
+                        {gatewaySources.map((item) => (
+                          <option key={item.domain} value={item.domain}>
+                            {`Domain ${item.domain} · ${item.balance} USDC`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{locale === "tr" ? "USDC tutarı" : "USDC amount"}</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="0.000000"
+                        value={gatewayAmount}
+                        onChange={(event) => setGatewayAmount(event.target.value)}
+                        disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
+                      />
+                    </label>
+                    <button
+                      className="ex-btn ex-btn--ink"
+                      type="button"
+                      onClick={handleGatewayFunding}
+                      disabled={gatewayFundingBusy || Boolean(gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING")}
+                    >
+                      {gatewayFundingBusy
+                        ? (locale === "tr" ? "İmza hazırlanıyor…" : "Preparing signature…")
+                        : gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING"
+                          ? (locale === "tr" ? `Gateway durumu: ${gatewayFundingStatus.state}` : `Gateway status: ${gatewayFundingStatus.state}`)
+                        : gatewayFundingRecovery
+                          ? (locale === "tr" ? "Gateway imzasına devam et" : "Resume Gateway signature")
+                          : (locale === "tr" ? "Gateway imzasını hazırla" : "Prepare Gateway signature")}
+                    </button>
+                  </div>
+                  {gatewayFundingNotice && <p className="ex-entry__msg" data-tone="ok">{gatewayFundingNotice}</p>}
+                  {gatewayFundingError && <p className="ex-entry__msg" data-tone="error">{gatewayFundingError}</p>}
+                  {gatewayFundingStatus && (
+                    <p className="ex-entry__msg" aria-live="polite">
+                      {locale === "tr" ? `Gateway durumu: ${gatewayFundingStatus.state}` : `Gateway status: ${gatewayFundingStatus.state}`}
+                      {gatewayFundingStatus.transferId ? ` · ${gatewayFundingStatus.transferId}` : ""}
+                    </p>
+                  )}
+                </section>
+              )}
 
               <div className="ex-wallet-actions">
                 {executionMode === "EXTERNAL_WALLET" && chain?.id !== arcTestnet.id && (

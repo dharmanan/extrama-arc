@@ -1,12 +1,39 @@
 'use strict';
 
 const express = require('express');
+const { rateLimit } = require('express-rate-limit');
+const { z } = require('zod');
 const { requireAuth } = require('../middleware/auth');
 const arcService = require('../services/arcService');
 const gatewayService = require('../services/gatewayService');
+const gatewayFundingService = require('../services/gatewayFundingService');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
 const router = express.Router();
+
+const gatewayFundingStartLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 6,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+});
+const gatewayFundingVerifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+});
+
+const gatewayFundingStartSchema = z.object({
+  requestId: z.string().uuid(),
+  sourceDomain: z.number().int().nonnegative(),
+  valueRaw: z.string().regex(/^[1-9][0-9]*$/),
+  circleUserToken: z.string().min(16).max(8192),
+});
+const gatewayFundingVerifySchema = z.object({
+  circleUserToken: z.string().min(16).max(8192),
+  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/).optional(),
+});
 
 router.use(requireAuth);
 
@@ -71,6 +98,39 @@ router.get('/gateway-balance', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+router.post('/gateway-funding/start', gatewayFundingStartLimiter, async (req, res, next) => {
+  try {
+    const input = gatewayFundingStartSchema.parse(req.body);
+    res.json(await gatewayFundingService.start({ auth: req.auth, ...input }));
+  } catch (error) { next(error); }
+});
+
+router.get('/gateway-funding/:actionId', async (req, res, next) => {
+  try {
+    res.json(await gatewayFundingService.status({ auth: req.auth, actionId: req.params.actionId }));
+  } catch (error) { next(error); }
+});
+
+// Exists for an explicitly enabled server deployment only. The default config
+// rejects it before any Gateway network call, and the durable CAS in the
+// service prevents retries from posting a second financial operation.
+router.post('/gateway-funding/:actionId/submit', gatewayFundingStartLimiter, async (req, res, next) => {
+  try {
+    res.json(await gatewayFundingService.submit({ auth: req.auth, actionId: req.params.actionId }));
+  } catch (error) { next(error); }
+});
+
+router.post('/gateway-funding/:actionId/verify', gatewayFundingVerifyLimiter, async (req, res, next) => {
+  try {
+    const input = gatewayFundingVerifySchema.parse(req.body);
+    res.json(await gatewayFundingService.verifySignature({
+      auth: req.auth,
+      actionId: req.params.actionId,
+      ...input,
+    }));
+  } catch (error) { next(error); }
 });
 
 router.get('/tickets', async (req, res, next) => {

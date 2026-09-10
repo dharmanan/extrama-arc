@@ -11,8 +11,12 @@ const {
   GATEWAY_WALLET_CONTRACT,
   SOURCE_USDC_BY_DOMAIN,
   buildArcFundingBurnIntent,
+  buildArcFundingTransferSpec,
+  estimateArcFunding,
   isTransferableSourceDomain,
   readUnifiedUsdcBalance,
+  submitArcFunding,
+  readArcFundingTransferStatus,
   recoverBurnIntentSigner,
 } = require('../src/services/gatewayService');
 
@@ -252,6 +256,85 @@ async function verifyBurnIntent() {
   console.log('GATEWAY_BURN_INTENT=PASS');
 }
 
+async function verifyEstimate() {
+  const spec = buildArcFundingTransferSpec({
+    walletAddress: ADDRESS,
+    sourceDomain: BASE_SEPOLIA_DOMAIN,
+    valueRaw: '1000000',
+    salt: `0x${'cd'.repeat(32)}`,
+  });
+  let capturedUrl = null;
+  let capturedBody = null;
+  const result = await estimateArcFunding(spec, async (url, init) => {
+    capturedUrl = url;
+    capturedBody = JSON.parse(init.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          body: [{ burnIntent: { maxFee: '10000', maxBlockHeight: '123456' } }],
+          fees: { token: 'USDC', forwardingFee: '0.2' },
+        };
+      },
+    };
+  });
+  assert.equal(capturedUrl, `${GATEWAY_API_URL}/v1/estimate?enableForwarder=true`);
+  assert.deepEqual(capturedBody, [{ spec }]);
+  assert.deepEqual(result, {
+    maxFeeRaw: '10000', maxBlockHeight: '123456', fees: { token: 'USDC', forwardingFee: '0.2' },
+  });
+}
+
+async function verifyForwardingClient() {
+  const transferId = '55555555-5555-4555-8555-555555555555';
+  const burnIntent = buildArcFundingBurnIntent(burnIntentInput()).burnIntent;
+  const signature = `0x${'ab'.repeat(65)}`;
+  const requestId = '66666666-6666-4666-8666-666666666666';
+  let submitUrl = '';
+  let submitInit = null;
+  let statusUrl = '';
+  const submitted = await submitArcFunding(
+    { burnIntent, signature, requestId },
+    async (url, init) => {
+      submitUrl = url;
+      submitInit = init;
+      return { ok: true, async json() { return { transferId }; } };
+    },
+  );
+  assert.equal(submitUrl, `${GATEWAY_API_URL}/v1/transfer?enableForwarder=true`);
+  assert.equal(submitInit.method, 'POST');
+  assert.equal(submitInit.headers['content-type'], 'application/json');
+  assert.deepEqual(JSON.parse(submitInit.body), [{ burnIntent, signature }]);
+  const forwardedBody = JSON.parse(submitInit.body)[0];
+  assert.equal(forwardedBody.burnIntent.spec.destinationDomain, ARC_GATEWAY_DOMAIN);
+  assert.equal(forwardedBody.burnIntent.spec.value, '1000000');
+  assert.equal(Object.prototype.hasOwnProperty.call(forwardedBody, 'value'), false, 'Gateway body must not introduce native ETH');
+  assert.deepEqual(submitted, { transferId });
+
+  const status = await readArcFundingTransferStatus(transferId, async (url, init) => {
+    statusUrl = url;
+    assert.equal(init.method, undefined);
+    assert.equal(init.headers['content-type'], 'application/json');
+    return {
+      ok: true,
+      async json() {
+        return { status: 'complete', transactionHash: `0x${'cd'.repeat(32)}` };
+      },
+    };
+  });
+  assert.equal(statusUrl, `${GATEWAY_API_URL}/v1/transfer/${transferId}`);
+  assert.deepEqual(status, { status: 'complete', transactionHash: `0x${'cd'.repeat(32)}`, forwardingFailure: null });
+
+  await assert.rejects(
+    () => submitArcFunding({ burnIntent, signature, requestId }, async () => ({ ok: false, status: 503 })),
+    /gateway_transfer_submit_unknown/,
+  );
+  await assert.rejects(
+    () => readArcFundingTransferStatus(transferId, async () => ({ ok: false, status: 404 })),
+    /gateway_transfer_not_found/,
+  );
+}
+
 (async () => {
   let capturedUrl = '';
   let capturedBody = null;
@@ -322,11 +405,19 @@ async function verifyBurnIntent() {
 
   const gatewaySection = walletRoutes.slice(
     walletRoutes.indexOf("router.get('/gateway-balance'"),
-    walletRoutes.indexOf("router.get('/tickets'"),
+    walletRoutes.indexOf("router.post('/gateway-funding/start'"),
   );
 
   assert.ok(!gatewaySection.includes('req.body'));
   assert.ok(!gatewaySection.includes('req.query'));
+  assert.match(walletRoutes, /router\.post\('\/gateway-funding\/start'/);
+  assert.match(walletRoutes, /router\.get\('\/gateway-funding\/:actionId'/);
+  assert.match(walletRoutes, /router\.post\('\/gateway-funding\/:actionId\/submit'/);
+  assert.match(walletRoutes, /router\.post\('\/gateway-funding\/:actionId\/verify'/);
+  assert.match(walletRoutes, /gatewayFundingService\.start/);
+  assert.match(walletRoutes, /gatewayFundingService\.submit/);
+  assert.match(walletRoutes, /gatewayFundingService\.status/);
+  assert.match(walletRoutes, /gatewayFundingService\.verifySignature/);
 
   const walletPage = fs.readFileSync(
     path.join(__dirname, '../../app/wallet/page.tsx'),
@@ -359,8 +450,11 @@ async function verifyBurnIntent() {
     /const gatewayFunded = gateway !== null && hasPositiveRawAmount\(gateway\.totalRaw\);/,
   );
   assert.match(walletPage, /\{gateway && gatewayFunded && \(/);
+  assert.equal(walletPage.includes('submitGatewayFunding'), false, 'wallet UI must not expose live broadcast control');
 
   await verifyBurnIntent();
+  await verifyEstimate();
+  await verifyForwardingClient();
 
   console.log('GATEWAY_SERVICE=PASS');
   console.log('GATEWAY_ROUTE=PASS');

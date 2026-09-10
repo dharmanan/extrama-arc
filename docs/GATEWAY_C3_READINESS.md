@@ -90,6 +90,27 @@ No new dependency is required to sign a burn intent.
   another chain, token or recipient.
 - `gatewayService.recoverBurnIntentSigner()` — recovers the signer locally so a
   malformed or swapped signature is never submitted to Circle.
+- `gatewayFundingService` and `/api/wallet/gateway-funding/*` — a durable,
+  Circle-EOA-only preparation state machine. It derives the wallet from the
+  authenticated session, spends against exactly one transferable source domain
+  (never an aggregated cross-domain value), obtains `maxFee` and
+  `maxBlockHeight` from `POST /v1/estimate?enableForwarder=true`, then creates
+  a `SIGN_TYPEDDATA` challenge for that exact, pinned burn intent.
+- The signed result is verified locally against the session wallet and retained
+  as `READY_TO_BROADCAST`. The wallet UI has a source-domain selector, canonical
+  six-decimal amount input, clear status/error display, and an in-tab recovery
+  record that resumes the same action/challenge after refresh.
+- The durable state machine implements the complete forwarding path after
+  `READY_TO_BROADCAST`: `SUBMITTING`, `SUBMITTED`, `COMPLETED`, `FAILED`, and
+  `RECONCILIATION_REQUIRED`. It submits the exact `{ burnIntent, signature }`
+  body to Circle's forwarding endpoint once, under the server's durable
+  request identity, and
+  reads `GET /v1/transfer/{transferId}` for recovery and polling.
+- `EXTREMA_ENABLE_GATEWAY_BROADCAST` is a server-side gate and defaults to
+  `false`. The wallet UI does not expose a broadcast control, and refreshes or
+  repeated frontend requests cannot bypass the persisted compare-and-set
+  reservation. The code path is therefore implemented and mock-tested without
+  executing a live transfer in this task.
 
 `verify-gateway-service.js` covers this with real cryptography, not mocks: it
 signs a built intent with a generated key, recovers the address, and asserts a
@@ -98,22 +119,30 @@ destination fields, that the submitted intent is strictly the signed message
 with every address field bytes32 padded, and that every unsafe
 input fails closed.
 
-## What is deliberately NOT implemented
+`verify-gateway-funding.js` runs the real durable preparation service against
+in-memory DB/Circle/forwarding adapters. It proves same-request replay returns
+the same action and challenge, the selected source balance is checked before
+estimate (without aggregating domains), the Circle completion first reports
+pending, the resulting signature must recover the session wallet, a successful
+mocked submission is one-shot and reaches `COMPLETED`, and an ambiguous submit
+stays `RECONCILIATION_REQUIRED` without retrying.
 
-There is no Gateway funding action, no route, no database state and no UI
-button. `buildArcFundingBurnIntent` is a foundation module that nothing calls
-yet. Three things block the user facing flow, and none of them are code
-problems:
+## Live broadcast remains disabled by default
 
-1. **No fee source is wired.** `maxFee` must come from
-   `POST /v1/estimate?enableForwarder=true`. Its request and response shapes are
-   documented, but the values have never been observed live, because that call
-   is only meaningful for a wallet that actually holds a unified balance.
-2. **Nothing to test against.** No EXTREMA wallet currently holds a Gateway
-   balance, so the burn intent wire format cannot be proven end to end without
-   an approved real testnet transaction. A wrong signature fails safely (Gateway
-   rejects it and no funds move), but "fails safely" is not the same as
-   "verified".
+The forwarding-service submission and reconciliation path is implemented, but
+the production gate remains closed unless a server deployment explicitly opts
+in. This is a deliberate financial control, not an omitted code path: the first
+`POST /v1/transfer?enableForwarder=true` can cause a real burn and therefore
+requires separate approval plus an approved testnet proof.
+
+1. **No real Gateway funding broadcast has been authorized.** The estimate and
+   signature flow are deterministic and locally verified, but no Gateway
+   transfer ID, burn transaction, forwarded mint, or Arc balance increase is
+   claimed.
+2. **No live transfer proof is claimed.** No EXTREMA wallet currently holds a
+   Gateway balance, so the signed payload and Gateway response are proven here
+   only through deterministic local fakes, not an approved real testnet
+   transaction.
 3. **The precondition is external to EXTREMA.** A unified balance only exists if
    the user has already deposited USDC into GatewayWallet on another supported
    chain, which needs USDC *and* native gas on that chain. A freshly onboarded
@@ -172,17 +201,13 @@ flag and the response carries `transferableTotalRaw` alongside `totalRaw`. A
 future execution path must spend against the transferable total, never the raw
 unified total.
 
-## To finish C3
+## Broadcast authorization gate
 
-Needs a decision from Koray, because both options touch his standing rules:
-
-- **Hand rolled**, continuing the module above: add estimate, submit and poll
-  calls, a persisted funding intent for idempotency and recovery, a
-  `SIGN_TYPEDDATA` challenge reusing the existing Circle challenge pattern, and
-  the contextual wallet action. Uses only `ethers`, which is already installed.
-- **Official SDK**, `@circle-fin/unified-balance-kit`: Circle maintains the
-  wire format, but it is a new dependency, and adding one needs explicit
-  approval first.
-
-Either way the first real transfer is a financial action and requires the same
-explicit approval as C4.
+When a separately approved server deployment enables
+`EXTREMA_ENABLE_GATEWAY_BROADCAST=true`, the service submits the persisted
+`{ burnIntent, signature }` once to `POST /v1/transfer?enableForwarder=true`,
+stores the returned `transferId`, and reconciles
+`GET /v1/transfer/{id}` to a terminal forwarding outcome. `SUBMITTING` is
+durable before the mutation; an ambiguous timeout becomes
+`RECONCILIATION_REQUIRED` and never triggers an automatic second submission.
+The current task leaves this gate disabled and makes no live transfer claim.

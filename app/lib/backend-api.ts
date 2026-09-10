@@ -633,6 +633,22 @@ export type GatewayBalanceResponse = {
   executionMode: "CIRCLE_USER_WALLET";
 };
 
+export type GatewayFundingResponse = {
+  actionId: string;
+  requestId: string;
+  sourceDomain: number;
+  valueRaw: string;
+  payloadHash: string | null;
+  challengeId: string | null;
+  state: "PREPARING" | "SIGN_CHALLENGE_CREATING" | "SIGNATURE_PENDING" | "READY_TO_BROADCAST" | "SUBMITTING" | "SUBMITTED" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "SIGNATURE_FAILED" | "EXPIRED";
+  pending: boolean;
+  readyToBroadcast: boolean;
+  broadcast: "NOT_SUBMITTED" | "SUBMITTED" | "COMPLETED";
+  transferId: string | null;
+  transactionHash: string | null;
+  expiresAt: string;
+};
+
 export type EntryActionPayload = {
   action: "ENTRY";
   chainId: 5042002;
@@ -1317,6 +1333,26 @@ export const backendApi = {
     },
     gatewayBalance() {
       return request<GatewayBalanceResponse>("/wallet/gateway-balance");
+    },
+    startGatewayFunding(input: {
+      requestId: string;
+      sourceDomain: number;
+      valueRaw: string;
+      circleUserToken: string;
+    }) {
+      return post<GatewayFundingResponse>("/wallet/gateway-funding/start", input);
+    },
+    gatewayFunding(actionId: string) {
+      return request<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}`);
+    },
+    submitGatewayFunding(actionId: string) {
+      return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/submit`, {});
+    },
+    verifyGatewayFunding(actionId: string, input: {
+      circleUserToken: string;
+      signature?: string;
+    }) {
+      return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/verify`, input);
     },
     chainState() {
       return request<{

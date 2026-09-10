@@ -346,6 +346,54 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
+  // Gateway burn intents are EIP-712 signatures, not Arc transactions. The
+  // Circle-hosted challenge returns its signature to the browser after user
+  // approval; the backend only creates and later checks the challenge state.
+  async function createTypedDataChallenge({
+    userToken, walletId, typedData, idempotencyKey, memo,
+  }) {
+    try {
+      if (
+        !userToken || !walletId || !typedData ||
+        typeof idempotencyKey !== 'string' || !idempotencyKey
+      ) throw new Error('circle_request_invalid');
+
+      const response = await getClient().signTypedData({
+        userToken,
+        walletId,
+        data: JSON.stringify(typedData),
+        memo: typeof memo === 'string' ? memo.slice(0, 512) : undefined,
+        xRequestId: idempotencyKey,
+      });
+      const challengeId = response?.data?.challengeId;
+      if (typeof challengeId !== 'string' || !challengeId) {
+        throw new Error('circle_response_invalid');
+      }
+      return { challengeId };
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
+  }
+
+  async function getTypedDataChallenge({ userToken, challengeId }) {
+    try {
+      if (!userToken || typeof challengeId !== 'string' || !challengeId) {
+        throw new Error('circle_request_invalid');
+      }
+      const response = await getClient().getUserChallenge({ userToken, challengeId });
+      const challenge = response?.data?.challenge;
+      if (!challenge) return null;
+      if (challenge.id !== challengeId || challenge.type !== 'SIGN_TYPEDDATA') {
+        throw new Error('circle_challenge_mismatch');
+      }
+      return { id: challenge.id, status: challenge.status, type: challenge.type };
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
+  }
+
   async function findContractExecutionTransaction({ userToken, walletId, refId, contractAddress }) {
     try {
       // The transaction was just created for this wallet. Query only the
@@ -417,6 +465,8 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     listArcEoa,
     createContractExecutionChallenge,
     getContractExecutionChallenge,
+    createTypedDataChallenge,
+    getTypedDataChallenge,
     findContractExecutionTransaction,
     getContractExecutionTransaction,
   };

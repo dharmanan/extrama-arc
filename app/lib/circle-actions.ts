@@ -34,16 +34,20 @@ import {
   matchesCircleEntryRecovery,
   readCircleActionRecovery,
   readCircleEntryRecovery,
+  readCircleGatewayFundingRecovery,
   readCircleTabAuth,
   storeCircleActionRecovery,
   storeCircleEntryRecovery,
+  storeCircleGatewayFundingRecovery,
   type CircleActionRecovery,
   type CircleEntryRecovery,
+  type CircleGatewayFundingRecovery,
 } from "./circle-auth";
 
 type CircleChallengeResult = {
   type?: string;
   status?: string;
+  data?: { signature?: string };
 };
 
 type CircleSdk = {
@@ -145,7 +149,7 @@ async function executeHostedChallenge(challengeId: string) {
     throw new Error("circle_transaction_failed");
   }
 
-  return auth.userToken;
+  return result;
 }
 
 function recoveryFor(
@@ -390,6 +394,86 @@ export async function confirmCircleEntry(input: {
     clearRecoveryForTerminalError(error);
     throw error;
   }
+}
+
+function isGatewayFundingRecoveryFor(
+  recovery: CircleGatewayFundingRecovery,
+  input: { sourceDomain: number; valueRaw: string },
+) {
+  return recovery.sourceDomain === input.sourceDomain && recovery.valueRaw === input.valueRaw;
+}
+
+function gatewayRecoveryFrom(
+  input: { requestId: string; sourceDomain: number; valueRaw: string },
+  started: {
+    actionId: string;
+    payloadHash: string | null;
+    challengeId: string | null;
+    expiresAt: string;
+  },
+): CircleGatewayFundingRecovery {
+  return {
+    ...input,
+    actionId: started.actionId,
+    payloadHash: started.payloadHash,
+    challengeId: started.challengeId,
+    expiresAtMs: Date.parse(started.expiresAt),
+  };
+}
+
+// The browser prepares and verifies the exact Gateway signature, then stops at
+// READY_TO_BROADCAST. Submission is a server-side gated operation; the client
+// never gets a broadcast control and refreshes only recover the same action.
+export async function confirmCircleGatewayFunding(input: {
+  requestId: string;
+  sourceDomain: number;
+  valueRaw: string;
+}) {
+  const auth = readCircleTabAuth();
+  if (!auth) throw new Error("circle_reauthentication_required");
+
+  let recovery = readCircleGatewayFundingRecovery();
+  if (recovery && !isGatewayFundingRecoveryFor(recovery, input)) {
+    throw new Error("circle_pending_action_for_different_intent");
+  }
+
+  if (!recovery) {
+    const started = await withFreshExtremaCircleSession(
+      auth.userToken,
+      () => backendApi.wallet.startGatewayFunding({
+        ...input,
+        circleUserToken: auth.userToken,
+      }),
+    );
+    recovery = gatewayRecoveryFrom(input, started);
+    storeCircleGatewayFundingRecovery(recovery);
+  }
+
+  const current = await withFreshExtremaCircleSession(
+    auth.userToken,
+    () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
+      circleUserToken: auth.userToken,
+    }),
+  );
+  if (current.readyToBroadcast) {
+    return current;
+  }
+  if (!current.pending || !recovery.challengeId) {
+    throw new Error("gateway_signature_challenge_unavailable");
+  }
+
+  const result = await executeHostedChallenge(recovery.challengeId);
+  const signature = result?.data?.signature;
+  if (typeof signature !== "string") throw new Error("gateway_signature_required");
+  const completed = await withFreshExtremaCircleSession(
+    auth.userToken,
+    () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
+      circleUserToken: auth.userToken,
+      signature,
+    }),
+  );
+  if (!completed.readyToBroadcast) throw new Error("gateway_signature_challenge_unavailable");
+  return completed;
 }
 
 // ---------------------------------------------------------------------------

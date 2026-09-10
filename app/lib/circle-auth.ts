@@ -87,6 +87,51 @@ export function clearCircleEntryRecovery() {
   window.sessionStorage.removeItem(CIRCLE_ENTRY_RECOVERY_KEY);
 }
 
+// Gateway preparation has a distinct recovery record. It deliberately stores
+// only public action identity and a challenge id; Circle credentials stay in
+// CIRCLE_AUTH_KEY and a completed signature is stored server-side only after
+// local signer recovery.
+export const CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY = "extrema-circle-gateway-funding-recovery-v1";
+
+export type CircleGatewayFundingRecovery = {
+  requestId: string;
+  actionId: string;
+  payloadHash: string | null;
+  sourceDomain: number;
+  valueRaw: string;
+  challengeId: string | null;
+  expiresAtMs: number;
+};
+
+export function readCircleGatewayFundingRecovery(): CircleGatewayFundingRecovery | null {
+  try {
+    const value = window.sessionStorage.getItem(CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as Partial<CircleGatewayFundingRecovery>;
+    if (
+      typeof parsed.requestId !== "string" || !parsed.requestId ||
+      typeof parsed.actionId !== "string" || !parsed.actionId ||
+      !(typeof parsed.payloadHash === "string" || parsed.payloadHash === null) ||
+      typeof parsed.sourceDomain !== "number" ||
+      !Number.isInteger(parsed.sourceDomain) || parsed.sourceDomain < 0 ||
+      typeof parsed.valueRaw !== "string" || !/^[1-9][0-9]*$/.test(parsed.valueRaw) ||
+      !(typeof parsed.challengeId === "string" || parsed.challengeId === null) ||
+      typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
+    ) return null;
+    return parsed as CircleGatewayFundingRecovery;
+  } catch {
+    return null;
+  }
+}
+
+export function storeCircleGatewayFundingRecovery(recovery: CircleGatewayFundingRecovery) {
+  window.sessionStorage.setItem(CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY, JSON.stringify(recovery));
+}
+
+export function clearCircleGatewayFundingRecovery() {
+  window.sessionStorage.removeItem(CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY);
+}
+
 // ---------------------------------------------------------------------------
 // Durable recovery for every other Circle financial action (transfer, refund,
 // claim, and the four marketplace actions). One record per tab, one intent at

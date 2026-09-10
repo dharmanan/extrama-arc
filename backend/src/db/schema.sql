@@ -143,6 +143,70 @@ CREATE UNIQUE INDEX IF NOT EXISTS action_authorizations_circle_entry_request_idx
   ON action_authorizations(user_id, action_type, circle_request_id)
   WHERE circle_request_id IS NOT NULL;
 
+-- Gateway funding never stores a Circle user token or encryption key. It is a
+-- durable record for one user-signed burn intent and its one-shot forwarding
+-- lifecycle. The server-side broadcast gate is disabled by default; SUBMITTING
+-- is persisted before any forwarding-service mutation so ambiguous outcomes
+-- reconcile instead of silently retrying.
+CREATE TABLE IF NOT EXISTS gateway_funding_actions (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  circle_wallet_id UUID NOT NULL,
+  wallet_address VARCHAR(42) NOT NULL,
+  request_id UUID NOT NULL,
+  source_domain INTEGER NOT NULL,
+  value_raw TEXT NOT NULL,
+  payload_hash CHAR(64),
+  burn_intent_json JSONB,
+  burn_intent_json_text TEXT,
+  typed_data_json JSONB,
+  max_fee_raw TEXT,
+  max_block_height TEXT,
+  estimate_fees_json JSONB,
+  circle_sign_challenge_id TEXT,
+  circle_sign_request_id UUID NOT NULL,
+  signature TEXT,
+  gateway_transfer_id UUID,
+  gateway_transaction_hash VARCHAR(66),
+  state VARCHAR(40) NOT NULL,
+  last_error VARCHAR(80),
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT gateway_funding_actions_value_raw_check
+    CHECK (value_raw ~ '^[1-9][0-9]*$'),
+  CONSTRAINT gateway_funding_actions_state_check
+    CHECK (state IN (
+      'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING',
+      'READY_TO_BROADCAST', 'SUBMITTING', 'SUBMITTED', 'COMPLETED',
+      'FAILED', 'RECONCILIATION_REQUIRED', 'SIGNATURE_FAILED', 'EXPIRED'
+    )),
+  UNIQUE (user_id, request_id)
+);
+
+-- The table was introduced during the preparation-only phase. Keep upgrades
+-- safe for an installation that already ran that schema: the forwarding
+-- columns and the expanded state set must exist before the service can resume
+-- an operation after restart.
+ALTER TABLE gateway_funding_actions
+  ADD COLUMN IF NOT EXISTS burn_intent_json_text TEXT;
+ALTER TABLE gateway_funding_actions
+  ADD COLUMN IF NOT EXISTS gateway_transfer_id UUID;
+ALTER TABLE gateway_funding_actions
+  ADD COLUMN IF NOT EXISTS gateway_transaction_hash VARCHAR(66);
+ALTER TABLE gateway_funding_actions
+  DROP CONSTRAINT IF EXISTS gateway_funding_actions_state_check;
+ALTER TABLE gateway_funding_actions
+  ADD CONSTRAINT gateway_funding_actions_state_check
+  CHECK (state IN (
+    'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING',
+    'READY_TO_BROADCAST', 'SUBMITTING', 'SUBMITTED', 'COMPLETED',
+    'FAILED', 'RECONCILIATION_REQUIRED', 'SIGNATURE_FAILED', 'EXPIRED'
+  ));
+
+CREATE INDEX IF NOT EXISTS gateway_funding_actions_user_created_idx
+  ON gateway_funding_actions(user_id, created_at DESC);
+
 -- Durable settlement evidence, written before settleRound is broadcast.
 -- canonical_evidence_json is TEXT, not JSONB, deliberately: PostgreSQL JSONB
 -- does not guarantee key ordering is preserved on storage/reload, and

@@ -412,13 +412,12 @@ assert.match(actions, /circleActionExecutionService\.verifyCircleAction\(/);
 assert.match(actions, /circleActionExecutionService\.verifyCircleActionApproval/);
 assert.ok(!walletPage.includes('createCircleWallet'));
 
-// The multi wallet preparation phase blocked every Gateway reference on the
-// wallet page because no Gateway capability existed yet. C3 ships a real,
-// supplemental balance read, so the guard is narrowed instead of dropped: the
-// page may read the unified balance, but it must not carry a Gateway execution
-// path of its own.
+// Gateway preparation belongs only to a Circle EOA session. It may create a
+// typed-data challenge, but the wallet UI must never hold a burn/transfer/mint
+// implementation or a direct Gateway broadcast path.
 assert.ok(walletPage.includes('backendApi.wallet.gatewayBalance()'));
-assert.ok(!/gatewayTransfer|gatewayDeposit|gatewayMint|burnIntent/i.test(walletPage));
+assert.ok(walletPage.includes('confirmCircleGatewayFunding'));
+assert.ok(!/gatewayTransfer|gatewayDeposit|gatewayMint|burnIntent|\/v1\/transfer/i.test(walletPage));
 
 console.log('multi wallet execution: PASS');
 }
