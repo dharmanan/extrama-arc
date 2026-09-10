@@ -26,11 +26,14 @@ const TICKET_ABI = [
   'function ownerOf(uint256 tokenId) view returns (address)',
 ];
 
+// Server side entry signer for autonomous EXTREMA agents only. The signer is
+// one of the approved, encrypted seed wallets; human users never reach this
+// path (they sign with their own connected or Circle wallet).
 function assertEntryPayload(payload) {
   if (
     !payload ||
     payload.action !== 'ENTRY' ||
-    payload.executionMode !== 'BACKEND_WALLET' ||
+    payload.executionMode !== 'SYSTEM_SEED_WALLET' ||
     payload.chainId !== 5042002 ||
     payload.amountRaw !== '1000000' ||
     payload.destination?.toLowerCase() !== payload.contract?.toLowerCase() ||

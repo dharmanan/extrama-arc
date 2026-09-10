@@ -1,7 +1,7 @@
 'use strict';
 
 // Behavioral regression coverage for the Circle entry polling/session-refresh/
-// rate-limit hardening in app/lib/circle-entry.ts and the per-route
+// rate limit hardening in app/lib/circle-actions.ts and the per route
 // CIRCLE_VERIFY_LIMIT split in src/routes/actions.js.
 //
 // Every scenario here actually executes the real confirmCircleEntry() state
@@ -24,7 +24,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
 
-const CIRCLE_ENTRY_SOURCE_PATH = path.resolve(__dirname, '../../app/lib/circle-entry.ts');
+const CIRCLE_ENTRY_SOURCE_PATH = path.resolve(__dirname, '../../app/lib/circle-actions.ts');
 const CIRCLE_VERIFY_POLL_INTERVAL_MS = 4000;
 
 const INPUT = {
@@ -77,7 +77,7 @@ function transpileCircleEntry() {
       target: ts.ScriptTarget.ES2020,
       esModuleInterop: true,
     },
-    fileName: 'circle-entry.ts',
+    fileName: 'circle-actions.ts',
   });
   return outputText;
 }

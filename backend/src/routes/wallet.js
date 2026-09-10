@@ -2,7 +2,6 @@
 
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
-const walletService = require('../services/walletService');
 const arcService = require('../services/arcService');
 const gatewayService = require('../services/gatewayService');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
@@ -11,6 +10,9 @@ const router = express.Router();
 
 router.use(requireAuth);
 
+// The session wallet is the user's own product wallet: the connected EVM
+// wallet, or the Circle user controlled Arc EOA. EXTREMA never creates or
+// holds a wallet for a human user.
 async function resolveSessionWallet(req) {
   if (
     req.auth.executionMode === EXECUTION_MODES.EXTERNAL_WALLET ||
@@ -23,8 +25,7 @@ async function resolveSessionWallet(req) {
       executionMode: req.auth.executionMode,
     };
   }
-  const wallet = await walletService.getWalletForUser(req.auth.userId);
-  return wallet ? { ...wallet, executionMode: EXECUTION_MODES.BACKEND_WALLET } : null;
+  return null;
 }
 
 router.get('/', async (req, res, next) => {
@@ -79,42 +80,13 @@ router.get('/tickets', async (req, res, next) => {
       return res.status(404).json({ error: 'wallet_not_found' });
     }
 
-    const ownerAddress = req.auth.executionMode === EXECUTION_MODES.BACKEND_WALLET
-      ? req.auth.ownerAddress || null
-      : null;
-    const sameAddress = Boolean(
-      ownerAddress && ownerAddress.toLowerCase() === wallet.address.toLowerCase(),
-    );
-
     const startedAt = Date.now();
-    const [backendWallet, ownerWallet] = await Promise.all([
-      arcService.readOwnedTickets(wallet.address),
-      ownerAddress && !sameAddress ? arcService.readOwnedTickets(ownerAddress) : null,
-    ]);
+    const tickets = await arcService.readOwnedTickets(wallet.address);
 
     res.set('Server-Timing', `wallet-tickets;dur=${Date.now() - startedAt}`);
     res.json({
-      backendWallet,
-      ownerWallet,
+      wallet: tickets,
       executionMode: req.auth.executionMode,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/create', async (req, res, next) => {
-  try {
-    if (req.auth.executionMode !== EXECUTION_MODES.BACKEND_WALLET) {
-      return res.status(409).json({ error: 'wallet_execution_mode_mismatch' });
-    }
-    const result = await walletService.createWalletForUser(req.auth.userId);
-
-    res.status(result.created ? 201 : 200).json({
-      created: result.created,
-      wallet: result.wallet,
-      privateKey: result.privateKey,
-      privateKeyDisclosure: result.created ? 'one_time_only' : null,
     });
   } catch (error) {
     next(error);

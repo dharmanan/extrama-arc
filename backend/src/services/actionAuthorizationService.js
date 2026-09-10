@@ -6,6 +6,20 @@ const db = require('../db');
 const ACTION_TTL_MS = 2 * 60 * 1000;
 const EXTERNAL_ENTRY_TTL_MS = 10 * 60 * 1000;
 const CIRCLE_ENTRY_TTL_MS = 30 * 60 * 1000;
+// Every Circle financial action gets the same window as Circle ENTRY: a
+// hosted challenge, its approval, and Circle indexing can take minutes.
+const CIRCLE_ACTION_TTL_MS = CIRCLE_ENTRY_TTL_MS;
+
+const ACTION_TYPES = Object.freeze([
+  'ENTRY',
+  'TRANSFER_TICKET',
+  'REFUND_TICKET',
+  'CLAIM_REWARD',
+  'MARKETPLACE_LIST',
+  'MARKETPLACE_UPDATE_PRICE',
+  'MARKETPLACE_CANCEL',
+  'MARKETPLACE_BUY',
+]);
 
 function sha256Hex(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -16,7 +30,7 @@ function canonicalEntryPayload({
   poolAddress,
   roundId,
   predictionPriceCents,
-  executionMode = 'BACKEND_WALLET',
+  executionMode,
   nonce,
   expiresAt,
 }) {
@@ -40,7 +54,7 @@ function canonicalTicketTransferPayload({
   ticketAddress,
   tokenId,
   destinationAddress,
-  executionMode = 'BACKEND_WALLET',
+  executionMode,
   nonce,
   expiresAt,
 }) {
@@ -243,15 +257,15 @@ async function insertActionRequest(params, actionType, payload) {
 }
 
 async function createEntryRequest(params) {
+  // Connected wallet entries only. Circle entries use
+  // createOrGetCircleEntryRequest(); agent entries never pass through HTTP
+  // action authorization at all.
+  if (params.executionMode !== 'EXTERNAL_WALLET') {
+    throw new Error('action_authorization_invalid');
+  }
   const id = crypto.randomUUID();
   const nonce = crypto.randomBytes(24).toString('base64url');
-  const expiresAt = new Date(
-    Date.now() + (
-      params.executionMode === 'EXTERNAL_WALLET'
-        ? EXTERNAL_ENTRY_TTL_MS
-        : ACTION_TTL_MS
-    ),
-  );
+  const expiresAt = new Date(Date.now() + EXTERNAL_ENTRY_TTL_MS);
   const payload = canonicalEntryPayload({
     ...params,
     nonce,
@@ -274,6 +288,37 @@ function sameCircleEntryIntent(payload, params) {
     payload.predictionPriceCents === params.predictionPriceCents;
 }
 
+// ---------------------------------------------------------------------------
+// Circle user controlled wallet state machine, shared by every action type.
+//
+// A Circle action has at most two phases: an optional APPROVAL and the action
+// itself. The physical circle_entry_* columns predate this generalisation:
+// they now hold the action phase of EVERY action type, not only ENTRY.
+// Renaming them would require a production schema migration for no
+// behavioural gain, so they are mapped to generic names once, here.
+// ---------------------------------------------------------------------------
+
+const CIRCLE_APPROVAL_COLUMNS = Object.freeze({
+  idempotency: 'circle_approval_idempotency_key',
+  ref: 'circle_approval_ref_id',
+  challenge: 'circle_approval_challenge_id',
+  txId: 'circle_approval_transaction_id',
+  txHash: 'circle_approval_tx_hash',
+});
+
+const CIRCLE_ACTION_COLUMNS = Object.freeze({
+  idempotency: 'circle_entry_idempotency_key',
+  ref: 'circle_entry_ref_id',
+  challenge: 'circle_entry_challenge_id',
+  txId: 'circle_entry_transaction_id',
+  txHash: 'verified_tx_hash',
+});
+
+const CIRCLE_ACTION_RETURNING = `id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
+       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
+       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
+       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`;
+
 function actionRow(row) {
   return {
     id: row.id,
@@ -289,10 +334,10 @@ function actionRow(row) {
     circleApprovalRefId: row.circle_approval_ref_id,
     circleApprovalTransactionId: row.circle_approval_transaction_id,
     circleApprovalTxHash: row.circle_approval_tx_hash,
-    circleEntryChallengeId: row.circle_entry_challenge_id,
-    circleEntryIdempotencyKey: row.circle_entry_idempotency_key,
-    circleEntryRefId: row.circle_entry_ref_id,
-    circleEntryTransactionId: row.circle_entry_transaction_id,
+    circleActionChallengeId: row[CIRCLE_ACTION_COLUMNS.challenge],
+    circleActionIdempotencyKey: row[CIRCLE_ACTION_COLUMNS.idempotency],
+    circleActionRefId: row[CIRCLE_ACTION_COLUMNS.ref],
+    circleActionTransactionId: row[CIRCLE_ACTION_COLUMNS.txId],
     verifiedTxHash: row.verified_tx_hash,
   };
 }
@@ -317,10 +362,7 @@ async function createOrGetCircleEntryRequest(params) {
      ON CONFLICT (user_id, action_type, circle_request_id)
        WHERE circle_request_id IS NOT NULL
      DO UPDATE SET id = action_authorizations.id
-     RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
-       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
-       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
-       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+     RETURNING ${CIRCLE_ACTION_RETURNING}`,
     [id, params.userId, payloadHash, payload, expiresAt, params.circleWalletId, requestId],
   );
   const action = actionRow(rows[0]);
@@ -330,56 +372,182 @@ async function createOrGetCircleEntryRequest(params) {
   return action;
 }
 
-async function getCircleEntryAction(userId, actionId, walletAddress, circleWalletId) {
+const CIRCLE_PAYLOAD_BUILDERS = Object.freeze({
+  TRANSFER_TICKET: (params) => canonicalTicketTransferPayload(params),
+  REFUND_TICKET: (params) => canonicalRefundPayload(params),
+  CLAIM_REWARD: (params) => canonicalClaimPayload(params),
+  MARKETPLACE_LIST: (params) => canonicalMarketplaceListPayload(params),
+  MARKETPLACE_UPDATE_PRICE: (params) => canonicalMarketplaceUpdatePricePayload(params),
+  MARKETPLACE_CANCEL: (params) => canonicalMarketplaceCancelPayload(params),
+  MARKETPLACE_BUY: (params) => canonicalMarketplaceBuyPayload(params),
+});
+
+// JSONB does not preserve key order, so intent comparison uses a key sorted
+// serialization of everything except the per request nonce and expiry.
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function circleIntentKey(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const intent = { ...payload };
+  delete intent.nonce;
+  delete intent.expiresAt;
+  return stableStringify(intent);
+}
+
+// One Circle request ID always names exactly one financial intent. Replaying
+// the same request ID returns the original action (and so its original
+// challenge); reusing it for any different intent is refused.
+async function createOrGetCircleActionRequest(params) {
+  const { actionType, requestId } = params;
+  const build = CIRCLE_PAYLOAD_BUILDERS[actionType];
+  if (!build) throw new Error('circle_action_authorization_invalid');
+  if (!/^[0-9a-f-]{36}$/i.test(requestId || '')) throw new Error('circle_request_id_invalid');
+  if (typeof params.circleWalletId !== 'string' || !params.circleWalletId) {
+    throw new Error('circle_wallet_session_mismatch');
+  }
+  const id = crypto.randomUUID();
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const expiresAt = new Date(Date.now() + CIRCLE_ACTION_TTL_MS);
+  const payload = build({
+    ...params,
+    executionMode: 'CIRCLE_USER_WALLET',
+    nonce,
+    expiresAt,
+  });
+  const payloadHash = sha256Hex(JSON.stringify(payload));
   const { rows } = await db.query(
-    `SELECT id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
-       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
-       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
-       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash
-       FROM action_authorizations
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
-        AND payload_json->>'executionMode' = 'CIRCLE_USER_WALLET'
-        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
-        AND circle_wallet_id = $4
-      LIMIT 1`,
-    [actionId, userId, walletAddress, circleWalletId],
+    `INSERT INTO action_authorizations
+       (id, user_id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_request_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (user_id, action_type, circle_request_id)
+       WHERE circle_request_id IS NOT NULL
+     DO UPDATE SET id = action_authorizations.id
+     RETURNING ${CIRCLE_ACTION_RETURNING}`,
+    [id, params.userId, actionType, payloadHash, payload, expiresAt, params.circleWalletId, requestId],
   );
-  if (!rows.length) throw new Error('circle_entry_authorization_invalid');
-  return actionRow(rows[0]);
+  const action = actionRow(rows[0]);
+  if (
+    action.actionType !== actionType ||
+    circleIntentKey(action.payload) !== circleIntentKey(payload) ||
+    action.circleWalletId !== params.circleWalletId
+  ) {
+    throw new Error('circle_request_id_conflict');
+  }
+  return action;
 }
 
 const CIRCLE_PHASES = Object.freeze({
   APPROVAL: {
-    reservationStates: [null, 'APPROVAL_CHALLENGE'], state: 'APPROVAL_CHALLENGE',
+    reservationStates: [null, 'APPROVAL_CHALLENGE'],
+    state: 'APPROVAL_CHALLENGE',
+    submittedState: 'APPROVAL_SUBMITTED',
     bindStates: ['APPROVAL_CHALLENGE', 'APPROVAL_SUBMITTED'],
-    idempotency: 'circle_approval_idempotency_key', ref: 'circle_approval_ref_id',
-    challenge: 'circle_approval_challenge_id', txId: 'circle_approval_transaction_id', txHash: 'circle_approval_tx_hash',
+    columns: CIRCLE_APPROVAL_COLUMNS,
   },
+  // ENTRY keeps its original state labels so ENTRY rows written before this
+  // generalisation reconcile unchanged.
   ENTRY: {
-    reservationStates: [null, 'APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'], state: 'ENTRY_CHALLENGE',
+    reservationStates: [null, 'APPROVAL_VERIFIED', 'ENTRY_CHALLENGE'],
+    state: 'ENTRY_CHALLENGE',
+    submittedState: 'ENTRY_SUBMITTED',
     bindStates: ['ENTRY_CHALLENGE', 'ENTRY_SUBMITTED'],
-    idempotency: 'circle_entry_idempotency_key', ref: 'circle_entry_ref_id',
-    challenge: 'circle_entry_challenge_id', txId: 'circle_entry_transaction_id', txHash: 'verified_tx_hash',
+    columns: CIRCLE_ACTION_COLUMNS,
+  },
+  ACTION: {
+    reservationStates: [null, 'APPROVAL_VERIFIED', 'ACTION_CHALLENGE'],
+    state: 'ACTION_CHALLENGE',
+    submittedState: 'ACTION_SUBMITTED',
+    bindStates: ['ACTION_CHALLENGE', 'ACTION_SUBMITTED'],
+    columns: CIRCLE_ACTION_COLUMNS,
   },
 });
 
+// The phases each action type may use. An approval phase exists only where
+// the contract needs a prior approve: the USDC stake for ENTRY, the exact
+// USDC ask for MARKETPLACE_BUY, and the per token NFT approval for
+// MARKETPLACE_LIST.
+const CIRCLE_ACTION_PHASES = Object.freeze({
+  ENTRY: ['APPROVAL', 'ENTRY'],
+  TRANSFER_TICKET: ['ACTION'],
+  REFUND_TICKET: ['ACTION'],
+  CLAIM_REWARD: ['ACTION'],
+  MARKETPLACE_LIST: ['APPROVAL', 'ACTION'],
+  MARKETPLACE_UPDATE_PRICE: ['ACTION'],
+  MARKETPLACE_CANCEL: ['ACTION'],
+  MARKETPLACE_BUY: ['APPROVAL', 'ACTION'],
+});
+
+const ADVANCED_APPROVAL_STATES = Object.freeze([
+  'APPROVAL_VERIFIED',
+  'ENTRY_CHALLENGE',
+  'ENTRY_SUBMITTED',
+  'ACTION_CHALLENGE',
+  'ACTION_SUBMITTED',
+  'VERIFIED',
+]);
+
+function circleInvalidError(actionType) {
+  return actionType === 'ENTRY'
+    ? 'circle_entry_authorization_invalid'
+    : 'circle_action_authorization_invalid';
+}
+
+function circleActionPhaseName(actionType) {
+  return actionType === 'ENTRY' ? 'ENTRY' : 'ACTION';
+}
+
+function circlePhaseFor(actionType, phaseName) {
+  const allowed = CIRCLE_ACTION_PHASES[actionType];
+  if (!allowed || !allowed.includes(phaseName)) throw new Error(circleInvalidError(actionType));
+  return CIRCLE_PHASES[phaseName];
+}
+
+function assertCircleActionType(actionType) {
+  if (!Object.prototype.hasOwnProperty.call(CIRCLE_ACTION_PHASES, actionType)) {
+    throw new Error('circle_action_authorization_invalid');
+  }
+}
+
 function hasSameBoundCircleTransaction(action, phaseName, transaction) {
-  const phase = CIRCLE_PHASES[phaseName];
+  const isApproval = phaseName === 'APPROVAL';
+  const transactionId = isApproval ? action?.circleApprovalTransactionId : action?.circleActionTransactionId;
+  const txHash = isApproval ? action?.circleApprovalTxHash : action?.verifiedTxHash;
   return Boolean(
-    phase && action?.[phaseName === 'APPROVAL' ? 'circleApprovalTransactionId' : 'circleEntryTransactionId'] &&
-    action?.[phaseName === 'APPROVAL' ? 'circleApprovalTxHash' : 'verifiedTxHash'] &&
-    action[phaseName === 'APPROVAL' ? 'circleApprovalTransactionId' : 'circleEntryTransactionId'] === transaction.id &&
-    action[phaseName === 'APPROVAL' ? 'circleApprovalTxHash' : 'verifiedTxHash'].toLowerCase() === transaction.txHash.toLowerCase()
+    CIRCLE_PHASES[phaseName] && transactionId && txHash &&
+    transactionId === transaction.id &&
+    txHash.toLowerCase() === transaction.txHash.toLowerCase(),
   );
 }
 
 function isTerminalOrAdvancedApprovalState(state) {
-  return ['APPROVAL_VERIFIED', 'ENTRY_CHALLENGE', 'ENTRY_SUBMITTED', 'VERIFIED'].includes(state);
+  return ADVANCED_APPROVAL_STATES.includes(state);
 }
 
-async function reserveCircleEntryChallenge(userId, actionId, walletAddress, circleWalletId, phaseName) {
-  const phase = CIRCLE_PHASES[phaseName];
-  if (!phase) throw new Error('circle_entry_authorization_invalid');
+async function getCircleAction(actionType, userId, actionId, walletAddress, circleWalletId) {
+  assertCircleActionType(actionType);
+  const { rows } = await db.query(
+    `SELECT ${CIRCLE_ACTION_RETURNING}
+       FROM action_authorizations
+      WHERE id = $1 AND user_id = $2 AND action_type = $5
+        AND payload_json->>'executionMode' = 'CIRCLE_USER_WALLET'
+        AND LOWER(payload_json->>'walletAddress') = LOWER($3)
+        AND circle_wallet_id = $4
+      LIMIT 1`,
+    [actionId, userId, walletAddress, circleWalletId, actionType],
+  );
+  if (!rows.length) throw new Error(circleInvalidError(actionType));
+  return actionRow(rows[0]);
+}
+
+async function reserveCircleChallenge(actionType, userId, actionId, walletAddress, circleWalletId, phaseName) {
+  const phase = circlePhaseFor(actionType, phaseName);
+  const { columns } = phase;
   const idempotencyKey = crypto.randomUUID();
   const refId = `${actionId}:${phaseName.toLowerCase()}`;
   const stateCondition = phase.reservationStates.includes(null)
@@ -388,138 +556,165 @@ async function reserveCircleEntryChallenge(userId, actionId, walletAddress, circ
   const { rows } = await db.query(
     `UPDATE action_authorizations
         SET circle_state = $6,
-            ${phase.idempotency} = COALESCE(${phase.idempotency}, $7),
-            ${phase.ref} = COALESCE(${phase.ref}, $8)
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+            ${columns.idempotency} = COALESCE(${columns.idempotency}, $7),
+            ${columns.ref} = COALESCE(${columns.ref}, $8)
+      WHERE id = $1 AND user_id = $2 AND action_type = $9
         AND payload_json->>'executionMode' = 'CIRCLE_USER_WALLET'
         AND LOWER(payload_json->>'walletAddress') = LOWER($3)
         AND circle_wallet_id = $4
         AND ${stateCondition}
         AND expires_at > NOW()
-      RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
-       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
-       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
-       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+      RETURNING ${CIRCLE_ACTION_RETURNING}`,
     [
       actionId, userId, walletAddress, circleWalletId,
-      phase.reservationStates.filter(Boolean), phase.state, idempotencyKey, refId,
+      phase.reservationStates.filter(Boolean), phase.state, idempotencyKey, refId, actionType,
     ],
   );
-  if (!rows.length) throw new Error('circle_entry_authorization_invalid');
+  if (!rows.length) throw new Error(circleInvalidError(actionType));
   return actionRow(rows[0]);
 }
 
-async function persistCircleEntryChallenge(userId, actionId, walletAddress, circleWalletId, phaseName, challengeId) {
-  const phase = CIRCLE_PHASES[phaseName];
-  if (!phase || typeof challengeId !== 'string' || !challengeId) throw new Error('circle_entry_authorization_invalid');
+async function persistCircleChallenge(actionType, userId, actionId, walletAddress, circleWalletId, phaseName, challengeId) {
+  const phase = circlePhaseFor(actionType, phaseName);
+  if (typeof challengeId !== 'string' || !challengeId) throw new Error(circleInvalidError(actionType));
+  const { columns } = phase;
   const { rows } = await db.query(
-    `UPDATE action_authorizations SET ${phase.challenge} = COALESCE(${phase.challenge}, $5)
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+    `UPDATE action_authorizations SET ${columns.challenge} = COALESCE(${columns.challenge}, $5)
+      WHERE id = $1 AND user_id = $2 AND action_type = $7
         AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
-        AND circle_state = $6 AND (${phase.challenge} IS NULL OR ${phase.challenge} = $5)
-      RETURNING ${phase.challenge} AS challenge_id`,
-    [actionId, userId, walletAddress, circleWalletId, challengeId, phase.state],
+        AND circle_state = $6 AND (${columns.challenge} IS NULL OR ${columns.challenge} = $5)
+      RETURNING ${columns.challenge} AS challenge_id`,
+    [actionId, userId, walletAddress, circleWalletId, challengeId, phase.state, actionType],
   );
-  if (!rows.length) throw new Error('circle_entry_authorization_invalid');
+  if (!rows.length) throw new Error(circleInvalidError(actionType));
   return rows[0].challenge_id;
 }
 
-async function persistCircleEntryTransactionId(
-  userId, actionId, walletAddress, circleWalletId, phaseName, transactionId,
+async function persistCircleTransactionId(
+  actionType, userId, actionId, walletAddress, circleWalletId, phaseName, transactionId,
 ) {
-  const phase = CIRCLE_PHASES[phaseName];
-  if (!phase || typeof transactionId !== 'string' || !transactionId) {
-    throw new Error('circle_entry_authorization_invalid');
+  const phase = circlePhaseFor(actionType, phaseName);
+  if (typeof transactionId !== 'string' || !transactionId) {
+    throw new Error(circleInvalidError(actionType));
   }
+  const { columns } = phase;
   const reusableStates = phaseName === 'APPROVAL'
-    ? [...phase.bindStates, 'APPROVAL_VERIFIED', 'ENTRY_CHALLENGE', 'ENTRY_SUBMITTED', 'VERIFIED']
+    ? [...phase.bindStates, ...ADVANCED_APPROVAL_STATES]
     : [...phase.bindStates, 'VERIFIED'];
   const { rows } = await db.query(
     `UPDATE action_authorizations
-        SET ${phase.txId} = COALESCE(${phase.txId}, $5)
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        SET ${columns.txId} = COALESCE(${columns.txId}, $5)
+      WHERE id = $1 AND user_id = $2 AND action_type = $7
         AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
         AND circle_state = ANY($6::varchar[])
-        AND (${phase.txId} IS NULL OR ${phase.txId} = $5)
-      RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
-       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
-       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
-       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
-    [actionId, userId, walletAddress, circleWalletId, transactionId, reusableStates],
+        AND (${columns.txId} IS NULL OR ${columns.txId} = $5)
+      RETURNING ${CIRCLE_ACTION_RETURNING}`,
+    [actionId, userId, walletAddress, circleWalletId, transactionId, reusableStates, actionType],
   );
   if (rows.length) return actionRow(rows[0]);
-  const action = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  const action = await getCircleAction(actionType, userId, actionId, walletAddress, circleWalletId);
   const storedId = phaseName === 'APPROVAL'
     ? action.circleApprovalTransactionId
-    : action.circleEntryTransactionId;
-  if (storedId !== transactionId) throw new Error('circle_entry_authorization_invalid');
+    : action.circleActionTransactionId;
+  if (storedId !== transactionId) throw new Error(circleInvalidError(actionType));
   return action;
 }
 
-async function bindCircleEntryTransaction(userId, actionId, walletAddress, circleWalletId, phaseName, transaction) {
-  const phase = CIRCLE_PHASES[phaseName];
-  if (!phase || !transaction?.id || !transaction?.txHash) throw new Error('circle_transaction_pending');
-  const submittedState = phaseName === 'APPROVAL' ? 'APPROVAL_SUBMITTED' : 'ENTRY_SUBMITTED';
+async function bindCircleTransaction(actionType, userId, actionId, walletAddress, circleWalletId, phaseName, transaction) {
+  const phase = circlePhaseFor(actionType, phaseName);
+  if (!transaction?.id || !transaction?.txHash) throw new Error('circle_transaction_pending');
+  const { columns } = phase;
   const { rows } = await db.query(
     `UPDATE action_authorizations
-        SET circle_state = $7, ${phase.txId} = COALESCE(${phase.txId}, $5), ${phase.txHash} = COALESCE(${phase.txHash}, $6)
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+        SET circle_state = $7, ${columns.txId} = COALESCE(${columns.txId}, $5), ${columns.txHash} = COALESCE(${columns.txHash}, $6)
+      WHERE id = $1 AND user_id = $2 AND action_type = $9
         AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
         AND circle_state = ANY($8::varchar[])
-        AND (${phase.txId} IS NULL OR ${phase.txId} = $5)
-        AND (${phase.txHash} IS NULL OR LOWER(${phase.txHash}) = LOWER($6))
-      RETURNING id, action_type, payload_hash, payload_json, expires_at, circle_wallet_id, circle_state,
-       circle_approval_challenge_id, circle_approval_idempotency_key, circle_approval_ref_id,
-       circle_approval_transaction_id, circle_approval_tx_hash, circle_entry_challenge_id,
-       circle_entry_idempotency_key, circle_entry_ref_id, circle_entry_transaction_id, verified_tx_hash`,
+        AND (${columns.txId} IS NULL OR ${columns.txId} = $5)
+        AND (${columns.txHash} IS NULL OR LOWER(${columns.txHash}) = LOWER($6))
+      RETURNING ${CIRCLE_ACTION_RETURNING}`,
     [
       actionId, userId, walletAddress, circleWalletId, transaction.id, transaction.txHash,
-      submittedState, phase.bindStates,
+      phase.submittedState, phase.bindStates, actionType,
     ],
   );
   if (rows.length) return actionRow(rows[0]);
 
-  const existing = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  // Already past this phase: only the exact same Circle transaction and tx
+  // hash may be observed again. A different transaction is never bound.
+  const existing = await getCircleAction(actionType, userId, actionId, walletAddress, circleWalletId);
   const allowed = phaseName === 'APPROVAL'
     ? isTerminalOrAdvancedApprovalState(existing.circleState)
     : existing.circleState === 'VERIFIED';
   if (!allowed || !hasSameBoundCircleTransaction(existing, phaseName, transaction)) {
-    throw new Error('circle_entry_authorization_invalid');
+    throw new Error(circleInvalidError(actionType));
   }
   return existing;
 }
 
-async function markCircleApprovalVerified(userId, actionId, walletAddress, circleWalletId) {
+async function markCircleApprovalVerifiedForAction(actionType, userId, actionId, walletAddress, circleWalletId) {
+  circlePhaseFor(actionType, 'APPROVAL');
   const { rowCount } = await db.query(
     `UPDATE action_authorizations SET circle_state = 'APPROVAL_VERIFIED', verified_at = NOW()
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+      WHERE id = $1 AND user_id = $2 AND action_type = $5
         AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
         AND circle_state IN ('APPROVAL_SUBMITTED', 'APPROVAL_VERIFIED')`,
-    [actionId, userId, walletAddress, circleWalletId],
+    [actionId, userId, walletAddress, circleWalletId, actionType],
   );
   if (rowCount === 1) return;
-  const action = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  const action = await getCircleAction(actionType, userId, actionId, walletAddress, circleWalletId);
   if (!isTerminalOrAdvancedApprovalState(action.circleState) ||
     !action.circleApprovalTransactionId || !action.circleApprovalTxHash) {
-    throw new Error('circle_entry_authorization_invalid');
+    throw new Error(circleInvalidError(actionType));
   }
 }
 
-async function markCircleEntryReceiptVerified(userId, actionId, walletAddress, circleWalletId, txHash) {
+async function markCircleActionVerified(actionType, userId, actionId, walletAddress, circleWalletId, txHash) {
+  const phase = circlePhaseFor(actionType, circleActionPhaseName(actionType));
   const { rowCount } = await db.query(
     `UPDATE action_authorizations SET circle_state = 'VERIFIED', verified_at = NOW()
-      WHERE id = $1 AND user_id = $2 AND action_type = 'ENTRY'
+      WHERE id = $1 AND user_id = $2 AND action_type = $6
         AND LOWER(payload_json->>'walletAddress') = LOWER($3) AND circle_wallet_id = $4
-        AND circle_state IN ('ENTRY_SUBMITTED', 'VERIFIED')
+        AND circle_state = ANY($7::varchar[])
         AND LOWER(verified_tx_hash) = LOWER($5)`,
-    [actionId, userId, walletAddress, circleWalletId, txHash],
+    [actionId, userId, walletAddress, circleWalletId, txHash, actionType, [phase.submittedState, 'VERIFIED']],
   );
   if (rowCount === 1) return;
-  const action = await getCircleEntryAction(userId, actionId, walletAddress, circleWalletId);
+  const action = await getCircleAction(actionType, userId, actionId, walletAddress, circleWalletId);
   if (action.circleState !== 'VERIFIED' || !action.verifiedTxHash ||
     action.verifiedTxHash.toLowerCase() !== txHash.toLowerCase()) {
-    throw new Error('circle_entry_authorization_invalid');
+    throw new Error(circleInvalidError(actionType));
   }
+}
+
+// ENTRY named entry points. Circle ENTRY is live and proven, and its service
+// and tests address the state machine through these names.
+function getCircleEntryAction(userId, actionId, walletAddress, circleWalletId) {
+  return getCircleAction('ENTRY', userId, actionId, walletAddress, circleWalletId);
+}
+
+function reserveCircleEntryChallenge(userId, actionId, walletAddress, circleWalletId, phaseName) {
+  return reserveCircleChallenge('ENTRY', userId, actionId, walletAddress, circleWalletId, phaseName);
+}
+
+function persistCircleEntryChallenge(userId, actionId, walletAddress, circleWalletId, phaseName, challengeId) {
+  return persistCircleChallenge('ENTRY', userId, actionId, walletAddress, circleWalletId, phaseName, challengeId);
+}
+
+function persistCircleEntryTransactionId(userId, actionId, walletAddress, circleWalletId, phaseName, transactionId) {
+  return persistCircleTransactionId('ENTRY', userId, actionId, walletAddress, circleWalletId, phaseName, transactionId);
+}
+
+function bindCircleEntryTransaction(userId, actionId, walletAddress, circleWalletId, phaseName, transaction) {
+  return bindCircleTransaction('ENTRY', userId, actionId, walletAddress, circleWalletId, phaseName, transaction);
+}
+
+function markCircleApprovalVerified(userId, actionId, walletAddress, circleWalletId) {
+  return markCircleApprovalVerifiedForAction('ENTRY', userId, actionId, walletAddress, circleWalletId);
+}
+
+function markCircleEntryReceiptVerified(userId, actionId, walletAddress, circleWalletId, txHash) {
+  return markCircleActionVerified('ENTRY', userId, actionId, walletAddress, circleWalletId, txHash);
 }
 
 async function createTicketTransferRequest(params) {
@@ -626,90 +821,8 @@ async function createMarketplaceBuyRequest(params) {
   );
 }
 
-async function attachWebAuthnChallenge(userId, actionId, challenge, context) {
-  const { rowCount } = await db.query(
-    `UPDATE action_authorizations
-        SET challenge = $1,
-            rp_id = $2,
-            origin = $3
-      WHERE id = $4
-        AND user_id = $5
-        AND expires_at > NOW()
-        AND verified_at IS NULL
-        AND consumed_at IS NULL`,
-    [challenge, context.rpID, context.origin, actionId, userId],
-  );
-
-  if (rowCount !== 1) throw new Error('action_challenge_expired');
-}
-
-async function consumeWebAuthnChallenge(userId, actionId) {
-  const { rows } = await db.query(
-    `UPDATE action_authorizations
-        SET challenge_consumed_at = NOW()
-      WHERE id = $1
-        AND user_id = $2
-        AND expires_at > NOW()
-        AND challenge IS NOT NULL
-        AND challenge_consumed_at IS NULL
-        AND verified_at IS NULL
-        AND consumed_at IS NULL
-      RETURNING challenge, rp_id, origin, payload_hash, payload_json, action_type`,
-    [actionId, userId],
-  );
-
-  if (!rows.length) throw new Error('action_challenge_expired');
-
-  return {
-    challenge: rows[0].challenge,
-    rpID: rows[0].rp_id,
-    origin: rows[0].origin,
-    payloadHash: rows[0].payload_hash,
-    payload: rows[0].payload_json,
-    actionType: rows[0].action_type,
-  };
-}
-
-async function consumeVerifiedAction(
-  userId,
-  actionId,
-  expectedPayloadHash,
-  expectedActionType,
-) {
-  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD', 'MARKETPLACE_LIST', 'MARKETPLACE_UPDATE_PRICE', 'MARKETPLACE_CANCEL', 'MARKETPLACE_BUY'].includes(expectedActionType)) {
-    throw new Error('action_authorization_invalid');
-  }
-
-  const { rows } = await db.query(
-    `UPDATE action_authorizations
-        SET verified_at = NOW(),
-            consumed_at = NOW()
-      WHERE id = $1
-        AND user_id = $2
-        AND payload_hash = $3
-        AND action_type = $4
-        AND challenge_consumed_at IS NOT NULL
-        AND verified_at IS NULL
-        AND consumed_at IS NULL
-        AND expires_at > NOW()
-      RETURNING id, action_type, payload_hash, payload_json, verified_at, consumed_at`,
-    [actionId, userId, expectedPayloadHash, expectedActionType],
-  );
-
-  if (!rows.length) throw new Error('action_authorization_invalid');
-
-  return {
-    id: rows[0].id,
-    actionType: rows[0].action_type,
-    payloadHash: rows[0].payload_hash,
-    payload: rows[0].payload_json,
-    verifiedAt: rows[0].verified_at,
-    consumedAt: rows[0].consumed_at,
-  };
-}
-
 async function getConsumedAction(userId, actionId, expectedActionType) {
-  if (!['ENTRY', 'TRANSFER_TICKET', 'REFUND_TICKET', 'CLAIM_REWARD', 'MARKETPLACE_LIST', 'MARKETPLACE_UPDATE_PRICE', 'MARKETPLACE_CANCEL', 'MARKETPLACE_BUY'].includes(expectedActionType)) {
+  if (!ACTION_TYPES.includes(expectedActionType)) {
     throw new Error('action_authorization_invalid');
   }
 
@@ -963,9 +1076,7 @@ module.exports = {
   createMarketplaceUpdatePriceRequest,
   createMarketplaceCancelRequest,
   createMarketplaceBuyRequest,
-  attachWebAuthnChallenge,
-  consumeWebAuthnChallenge,
-  consumeVerifiedAction,
+  createOrGetCircleActionRequest,
   getConsumedAction,
   getPendingExternalAction,
   initializeExternalEntryState,
@@ -981,6 +1092,17 @@ module.exports = {
   bindCircleEntryTransaction,
   markCircleApprovalVerified,
   markCircleEntryReceiptVerified,
+  getCircleAction,
+  reserveCircleChallenge,
+  persistCircleChallenge,
+  persistCircleTransactionId,
+  bindCircleTransaction,
+  markCircleApprovalVerifiedForAction,
+  markCircleActionVerified,
+  circleIntentKey,
+  ACTION_TYPES,
   CIRCLE_PHASES,
+  CIRCLE_ACTION_PHASES,
+  CIRCLE_ACTION_COLUMNS,
   hasSameBoundCircleTransaction,
 };

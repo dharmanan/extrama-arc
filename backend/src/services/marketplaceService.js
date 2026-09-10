@@ -518,7 +518,7 @@ async function readTicketApprovalState({ ticketAddress, tokenId }) {
 // Direct, always fresh chain read of the contract's own duplicate-listing
 // guard -- deliberately bypasses the cached board entirely. Used as the
 // preflight for the list action, before any action authorization or
-// WebAuthn challenge is created, so a ticket that already has an active
+// Circle challenge is created, so a ticket that already has an active
 // listing is rejected up front rather than only at the final `list()`
 // revert (ActiveListingExists, which remains the last-resort safeguard for
 // the unavoidable race between this read and a transaction landing).

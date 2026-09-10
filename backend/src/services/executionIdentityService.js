@@ -2,15 +2,22 @@
 
 const { ethers } = require('ethers');
 
+// The locked EXTREMA participant architecture has exactly three execution
+// identities:
+//
+//   EXTERNAL_WALLET     human; an injected EVM wallet signs every transaction
+//   CIRCLE_USER_WALLET  human; a Circle user controlled Arc EOA signs every
+//                       transaction through a Circle hosted challenge
+//   SYSTEM_SEED_WALLET  autonomous EXTREMA agents; never a browser session
+//
+// Only the two human modes can ever back an authenticated HTTP session.
 const EXECUTION_MODES = Object.freeze({
-  BACKEND_WALLET: 'BACKEND_WALLET',
   EXTERNAL_WALLET: 'EXTERNAL_WALLET',
   CIRCLE_USER_WALLET: 'CIRCLE_USER_WALLET',
   SYSTEM_SEED_WALLET: 'SYSTEM_SEED_WALLET',
 });
 
 const HUMAN_EXECUTION_MODES = new Set([
-  EXECUTION_MODES.BACKEND_WALLET,
   EXECUTION_MODES.EXTERNAL_WALLET,
   EXECUTION_MODES.CIRCLE_USER_WALLET,
 ]);
@@ -20,11 +27,15 @@ function normalizeAddress(address, errorCode = 'wallet_address_invalid') {
   return ethers.getAddress(address);
 }
 
+function isHumanExecutionMode(mode) {
+  return HUMAN_EXECUTION_MODES.has(mode);
+}
+
 function assertHumanExecutionMode(mode) {
   if (mode === EXECUTION_MODES.SYSTEM_SEED_WALLET) {
     throw new Error('system_seed_wallet_forbidden');
   }
-  if (!HUMAN_EXECUTION_MODES.has(mode)) {
+  if (!isHumanExecutionMode(mode)) {
     throw new Error('wallet_execution_mode_invalid');
   }
   return mode;
@@ -40,17 +51,9 @@ function createSessionIdentity({ executionMode, ownerAddress, walletAddress }) {
     return { executionMode: mode, ownerAddress: owner, walletAddress: wallet };
   }
 
-  if (mode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
-    const wallet = normalizeAddress(walletAddress, 'circle_wallet_address_invalid').toLowerCase();
-    if (wallet !== owner) throw new Error('circle_wallet_session_mismatch');
-    return { executionMode: mode, ownerAddress: owner, walletAddress: wallet };
-  }
-
-  if (walletAddress !== null && walletAddress !== undefined) {
-    throw new Error('backend_wallet_session_address_forbidden');
-  }
-
-  return { executionMode: mode, ownerAddress: owner, walletAddress: null };
+  const wallet = normalizeAddress(walletAddress, 'circle_wallet_address_invalid').toLowerCase();
+  if (wallet !== owner) throw new Error('circle_wallet_session_mismatch');
+  return { executionMode: mode, ownerAddress: owner, walletAddress: wallet };
 }
 
 function assertExternalSessionAddress(auth, expectedAddress) {
@@ -82,12 +85,17 @@ function assertCircleSession(auth, expectedAddress, expectedCircleWalletId) {
   return { walletAddress: sessionWallet, circleWalletId: auth.circleWalletId };
 }
 
+// Connected wallet actions label their payloads EXTERNAL_WALLET (entry and
+// transfer) or EXTERNAL_OWNER (refund, claim, marketplace). Both mean the
+// user's own connected wallet signs the transaction.
 function isExternalActionMode(mode) {
   return mode === EXECUTION_MODES.EXTERNAL_WALLET || mode === 'EXTERNAL_OWNER';
 }
 
 module.exports = {
   EXECUTION_MODES,
+  HUMAN_EXECUTION_MODES,
+  isHumanExecutionMode,
   assertHumanExecutionMode,
   createSessionIdentity,
   assertExternalSessionAddress,

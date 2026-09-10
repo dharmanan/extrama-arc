@@ -18,6 +18,7 @@ process.env.CORS_ORIGINS = 'http://localhost:3000';
 
 const express = require('express');
 const { ZodError } = require('zod');
+const { ethers } = require('ethers');
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const CIRCLE_WALLET_ID = '22222222-2222-4222-8222-222222222222';
@@ -30,6 +31,9 @@ const ATTACKER_WALLET = '0x2000000000000000000000000000000000000002';
 const DESTINATION = '0x3000000000000000000000000000000000000003';
 const USER_TOKEN = 'circle-user-token-long-enough';
 const PAYLOAD_HASH = 'http-e2e-payload-hash';
+const TRANSFER_ACTION_ID = '55555555-5555-4555-8555-555555555555';
+const TRANSFER_REQUEST_ID = '66666666-6666-4666-8666-666666666666';
+const TRANSFER_PAYLOAD_HASH = 'http_e2e_transfer_payload_hash';
 
 function installModule(relativePath, exports) {
   const filename = require.resolve(relativePath);
@@ -82,6 +86,11 @@ let createOrGetCalls = 0;
 let financialChallenges = 0;
 let approvalCalls = 0;
 let entryCalls = 0;
+// Circle ticket transfer: one action per request ID, one challenge per action.
+const transferActions = new Map();
+let transferChallenges = 0;
+let transferVerifyCalls = 0;
+let ticketOwner = SESSION_WALLET;
 
 installModule('../src/services/actionAuthorizationService', {
   async createOrGetCircleEntryRequest(input) {
@@ -106,14 +115,86 @@ installModule('../src/services/actionAuthorizationService', {
     }
     return action;
   },
+  async createOrGetCircleActionRequest(input) {
+    assert.equal(input.actionType, 'TRANSFER_TICKET');
+    assert.equal(input.userId, USER_ID);
+    assert.equal(input.walletAddress, SESSION_WALLET, 'request input must not override session wallet');
+    assert.equal(input.circleWalletId, CIRCLE_WALLET_ID, 'request input must not override Circle wallet');
+    assert.equal(input.ticketAddress, TICKET);
+    assert.equal(input.tokenId, '1');
+    assert.equal(input.destinationAddress, DESTINATION);
+    if (!transferActions.has(input.requestId)) {
+      transferActions.set(input.requestId, {
+        id: TRANSFER_ACTION_ID,
+        payloadHash: TRANSFER_PAYLOAD_HASH,
+        expiresInSeconds: 1800,
+        payload: {
+          action: 'TRANSFER_TICKET',
+          chainId: 5042002,
+          contract: TICKET,
+          tokenId: '1',
+          from: SESSION_WALLET,
+          destination: DESTINATION,
+          walletAddress: SESSION_WALLET,
+          executionMode: 'CIRCLE_USER_WALLET',
+        },
+      });
+    }
+    return transferActions.get(input.requestId);
+  },
+  async consumeExternalAction() {
+    throw new Error('a Circle session must never consume a connected wallet authorization');
+  },
 });
+
+const TICKET_OWNER_INTERFACE = new ethers.Interface(['function ownerOf(uint256 tokenId) view returns (address)']);
 
 installModule('../src/services/arcService', {
   async getStandardRoundsState() {
     return { pools: [{ poolAddress: POOL, ticketAddress: TICKET, round: { roundId: 7, canEnter: true } }] };
   },
+  // Read only ownerOf for the transfer start preflight. No signer exists.
   getArcProvider() {
-    throw new Error('arc_provider_must_not_be_used_for_circle_rejection');
+    return {
+      async call(tx) {
+        assert.equal(ethers.getAddress(tx.to), ethers.getAddress(TICKET));
+        return TICKET_OWNER_INTERFACE.encodeFunctionResult('ownerOf', [ticketOwner]);
+      },
+    };
+  },
+});
+
+installModule('../src/services/circleActionExecutionService', {
+  async startCircleAction({ actionType, action: stored, auth, userToken }) {
+    assert.equal(actionType, 'TRANSFER_TICKET');
+    assert.equal(auth.walletAddress, SESSION_WALLET);
+    assert.equal(auth.circleWalletId, CIRCLE_WALLET_ID);
+    assert.equal(userToken, USER_TOKEN);
+    assert.equal(stored.id, TRANSFER_ACTION_ID);
+    if (transferChallenges === 0) transferChallenges += 1;
+    return {
+      actionId: TRANSFER_ACTION_ID,
+      payloadHash: TRANSFER_PAYLOAD_HASH,
+      executionMode: 'CIRCLE_USER_WALLET',
+      step: 'ACTION_READY',
+      challengeId: 'transfer-challenge-1',
+    };
+  },
+  async verifyCircleAction({ actionType, auth, actionId, userToken }) {
+    assert.equal(actionType, 'TRANSFER_TICKET');
+    assert.equal(auth.walletAddress, SESSION_WALLET);
+    assert.equal(actionId, TRANSFER_ACTION_ID);
+    assert.equal(userToken, USER_TOKEN);
+    transferVerifyCalls += 1;
+    if (transferVerifyCalls === 1) return { pending: true, transactionObserved: false };
+    return {
+      pending: false,
+      action: { payloadHash: TRANSFER_PAYLOAD_HASH },
+      result: { executionMode: 'CIRCLE_USER_WALLET', ownerAfter: DESTINATION },
+    };
+  },
+  async verifyCircleActionApproval() {
+    throw new Error('a transfer has no approval phase');
   },
 });
 
@@ -169,10 +250,10 @@ function createTestApp() {
         details: error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })),
       });
     }
-    // This is the relevant production safe-error behaviour for the one
-    // execution-mode boundary exercised below. All other unexpected errors
-    // remain generic to keep the test server's surface safe as well.
-    if (error?.message === 'circle_wallet_not_configured') {
+    // The production safe error behaviour for the execution mode boundary
+    // exercised below. All other unexpected errors remain generic to keep
+    // the test server's surface safe as well.
+    if (error?.message === 'wallet_execution_mode_mismatch') {
       return res.status(400).json({ error: error.message });
     }
     return res.status(500).json({ error: 'internal_server_error' });
@@ -261,10 +342,61 @@ async function main() {
     assert.equal(financialChallenges, 1, 'replay must not create a second financial challenge');
     assert.equal(createOrGetCalls, 2);
 
-    const transfer = await request(baseUrl, '/api/actions/ticket-transfer/start', {
+    // Circle ticket transfer through the real router: session bound wallet,
+    // Circle credentials required, idempotent replay, pending then verified.
+    const transferBody = {
+      ticketAddress: TICKET,
+      tokenId: '1',
+      destinationAddress: DESTINATION,
+      circleUserToken: USER_TOKEN,
+      circleRequestId: TRANSFER_REQUEST_ID,
+      walletAddress: ATTACKER_WALLET,
+      circleWalletId: '99999999-9999-4999-8999-999999999999',
+    };
+    const transferNoCredentials = await request(baseUrl, '/api/actions/ticket-transfer/start', {
       ticketAddress: TICKET, tokenId: '1', destinationAddress: DESTINATION,
     });
-    assert.deepEqual(transfer, { status: 400, body: { error: 'circle_wallet_not_configured' } });
+    assert.deepEqual(transferNoCredentials, { status: 409, body: { error: 'circle_reauthentication_required' } });
+    const transferMismatched = await request(baseUrl, '/api/actions/ticket-transfer/start', transferBody, 'mismatched-active-session');
+    assert.deepEqual(transferMismatched, { status: 401, body: { error: 'invalid_session' } });
+
+    ticketOwner = ATTACKER_WALLET;
+    const transferNotOwner = await request(baseUrl, '/api/actions/ticket-transfer/start', transferBody);
+    assert.deepEqual(transferNotOwner, { status: 409, body: { error: 'transfer_not_ticket_owner' } });
+    assert.equal(transferActions.size, 0, 'no action exists for a ticket the session does not own');
+    ticketOwner = SESSION_WALLET;
+
+    const transferStarted = await request(baseUrl, '/api/actions/ticket-transfer/start', transferBody);
+    assert.equal(transferStarted.status, 200);
+    assert.equal(transferStarted.body.actionId, TRANSFER_ACTION_ID);
+    assert.equal(transferStarted.body.executionMode, 'CIRCLE_USER_WALLET');
+    assert.equal(transferStarted.body.step, 'ACTION_READY');
+    assert.equal(transferStarted.body.challengeId, 'transfer-challenge-1');
+    assert.equal(transferStarted.body.action.walletAddress, SESSION_WALLET, 'the bound payload names the session wallet');
+    assert.equal(transferStarted.body.action.destination, DESTINATION);
+
+    const transferReplay = await request(baseUrl, '/api/actions/ticket-transfer/start', transferBody);
+    assert.equal(transferReplay.body.actionId, TRANSFER_ACTION_ID);
+    assert.equal(transferReplay.body.challengeId, 'transfer-challenge-1');
+    assert.equal(transferActions.size, 1, 'replay must not create a second transfer action');
+    assert.equal(transferChallenges, 1, 'replay must not create a second transfer challenge');
+
+    const transferFinish = await request(baseUrl, '/api/actions/ticket-transfer/finish', { actionId: TRANSFER_ACTION_ID });
+    assert.deepEqual(transferFinish, { status: 400, body: { error: 'wallet_execution_mode_mismatch' } },
+      'the connected wallet finish step is refused to a Circle session');
+
+    assertSafeInvalidRequest(
+      await request(baseUrl, '/api/actions/ticket-transfer/verify', { actionId: TRANSFER_ACTION_ID, txHash: `0x${'b'.repeat(64)}` }),
+      'circleUserToken',
+    );
+    const transferPending = await request(baseUrl, '/api/actions/ticket-transfer/verify', { actionId: TRANSFER_ACTION_ID, circleUserToken: USER_TOKEN });
+    assert.deepEqual(transferPending, { status: 202, body: { pending: true, actionId: TRANSFER_ACTION_ID, transactionObserved: false } });
+    const transferConfirmed = await request(baseUrl, '/api/actions/ticket-transfer/verify', { actionId: TRANSFER_ACTION_ID, circleUserToken: USER_TOKEN });
+    assert.equal(transferConfirmed.status, 200);
+    assert.equal(transferConfirmed.body.confirmed, true);
+    assert.equal(transferConfirmed.body.executionMode, 'CIRCLE_USER_WALLET');
+    assert.equal(transferConfirmed.body.payloadHash, TRANSFER_PAYLOAD_HASH);
+    assert.equal(transferConfirmed.body.result.ownerAfter, DESTINATION);
 
     assertSafeInvalidRequest(await request(baseUrl, '/api/actions/entry/start', { ...startBody, roundId: '7' }), 'roundId');
     assertSafeInvalidRequest(await request(baseUrl, '/api/actions/entry/start', { ...startBody, poolAddress: 'not-an-address' }), 'poolAddress');
@@ -281,7 +413,7 @@ async function main() {
     assert.notEqual(independentVerify.status, 429, 'approval verifier quota must not consume entry verifier quota');
 
     console.log('HTTP_ACTIONS_E2E=PASS');
-    console.log('HTTP_SCENARIOS=auth,session,circle-start,approval,entry,replay,unsupported,validation,rate-limit');
+    console.log('HTTP_SCENARIOS=auth,session,circle_start,approval,entry,replay,circle_transfer,validation,rate_limit');
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }

@@ -12,9 +12,16 @@
 > resolves from the real pass/fail of one of
 > those checks — this file does not assert anything on its own.
 
-Snapshot date: 2026-09-09. Reference commit: `c044a52` (working tree on top).
+Current local run: 2026-09-10, current uncommitted worktree. Historical proof
+records remain below; the result block records the latest local run rather than
+claiming unavailable tools or RPC evidence as a pass.
 
-Status legend: **PASS** / **FAIL** / **UNSUPPORTED_BY_DESIGN** / **NOT_YET_TESTABLE**.
+Status legend: **PASS** / **FAIL** / **NOT_RUN_LOCAL_TOOL_MISSING** / **NOT_YET_TESTABLE**.
+
+Current human runtime: `EXTERNAL_WALLET` and `CIRCLE_USER_WALLET` support the
+same full lifecycle. `SYSTEM_SEED_WALLET` is an autonomous-agent identity.
+`BACKEND_WALLET` and passkey/WebAuthn references in older proof records are
+legacy historical evidence, not active human runtime paths.
 
 ---
 
@@ -33,12 +40,11 @@ npm --prefix backend run check
 ## Current result
 
 ```
-forge test:        67/67 passed
-Layer 1 scripts:   1/1 passed
-Layer 3 SERVICE_STATE_MACHINE scripts: 15/15 passed
-Layer 3 HTTP_ROUTE_MIDDLEWARE scripts: 1/1 passed
+forge test:        NOT_RUN_LOCAL_TOOL_MISSING
+Layer 1 scripts:   0/1 passed (advisory live-RPC failure)
+Layer 3 scripts:   24/24 passed
 Root scripts:      1/1 passed
-Matrix rows:       47 PASS, 0 FAIL, 4 UNSUPPORTED_BY_DESIGN, 0 NOT_YET_TESTABLE (deterministic rows)
+Matrix rows:       16 PASS, 0 FAIL, 35 NOT_RUN_LOCAL_TOOL_MISSING, 0 NOT_YET_TESTABLE
 
 EXTREMA_E2E=PASS
 ```
@@ -61,7 +67,7 @@ result).
 
 | Capability | Status | Proof |
 |---|---|---|
-| BACKEND_WALLET entry | PASS | `ExtremaPoolEntryTest::testEntryTransfersOneUsdcAndMintsTicket` + `verify-multi-wallet-execution.js` |
+| SYSTEM_SEED_WALLET entry (autonomous agents) | PASS | `verify-seed-bot-execution.js`, `verify-seed-bot-production-executor.js` |
 | EXTERNAL_WALLET entry | PASS | `verify-multi-wallet-execution.js` (`prepareExecutionWalletEntry`, receipt verification) |
 | CIRCLE service state machine (APPROVAL_CHALLENGE/PENDING, ENTRY_CHALLENGE/PENDING) | PASS | `verify-circle-entry.js`, `verify-circle-entry-behavior.js` |
 | CIRCLE HTTP route + auth/middleware flow | PASS | `verify-http-actions-e2e.js` (real local Express + `express.json()` + `routes/actions.js` + `middleware/auth.js`; local state/network doubles only) |
@@ -77,6 +83,7 @@ result).
 | polling/rate-limit invariant (independent limiters, <=16/min under 20/min) | PASS | `verify-circle-entry-behavior.js::testIndependentVerifyRateLimiters` |
 | hosted challenge FAILED/EXPIRED handling | PASS | `verify-circle-entry-behavior.js::testHostedChallengeResult` |
 | real installed Circle SDK / local fake server boundary | PASS | `verify-circle-sdk-runtime.js` |
+| Circle transfer/refund/claim/marketplace lifecycle | PASS (deterministic) | `verify-circle-actions.js`, `verify-circle-action-behavior.js`, `verify-http-actions-e2e.js` |
 
 ## B. TICKET TRANSFER
 
@@ -161,15 +168,21 @@ result).
 
 Inspected directly in source (`verify-circle-support-matrix.js`), not assumed:
 
-| Action | BACKEND_WALLET | EXTERNAL_WALLET/EXTERNAL_OWNER | CIRCLE_USER_WALLET |
+| Action | SYSTEM_SEED_WALLET | EXTERNAL_WALLET/EXTERNAL_OWNER | CIRCLE_USER_WALLET |
 |---|---|---|---|
-| ENTRY | PASS | PASS | **PASS (supported)** |
-| TRANSFER_TICKET | PASS | PASS | **UNSUPPORTED_BY_DESIGN** (`ticketTransferExecutionService.js` allow-list) |
-| REFUND_TICKET | PASS | PASS | **UNSUPPORTED_BY_DESIGN** (`refundExecutionService.js` allow-list) |
-| CLAIM_REWARD | PASS | PASS | **UNSUPPORTED_BY_DESIGN** (`claimExecutionService.js` allow-list) |
-| MARKETPLACE (list/update/cancel/buy) | PASS | PASS | **UNSUPPORTED_BY_DESIGN** (`marketplaceExecutionService.js` allow-list) |
+| ENTRY | PASS (autonomous agents) | PASS | PASS |
+| TRANSFER_TICKET | n/a (not a browser agent flow) | PASS | PASS |
+| REFUND_TICKET | n/a (not a browser agent flow) | PASS | PASS |
+| CLAIM_REWARD | n/a (not a browser agent flow) | PASS | PASS |
+| MARKETPLACE_LIST | n/a (not a browser agent flow) | PASS | PASS |
+| MARKETPLACE_UPDATE_PRICE | n/a (not a browser agent flow) | PASS | PASS |
+| MARKETPLACE_CANCEL | n/a (not a browser agent flow) | PASS | PASS |
+| MARKETPLACE_BUY | n/a (not a browser agent flow) | PASS | PASS |
 
-These are deliberate design boundaries, not failing tests.
+Circle support is proved deterministically through the real route adapters,
+state machines, transaction builders, receipt verifiers, and local HTTP
+integration suite. It is not a claim that every Circle action has a live Arc
+transaction proof.
 
 ---
 
@@ -181,7 +194,8 @@ Kept explicitly out of the deterministic suite by design.
 |---|---|
 | Real Arc Testnet `settleRound` for a >=3-entry round (prizes actually paid on mainnet-of-testnet) | YES |
 | Real Arc Testnet refund/claim (real USDC movement) | YES |
-| Real Circle production ENTRY (hosted challenge against the real Circle API, not the local fake server) | YES |
+| Real Circle production ENTRY (historical proof already recorded) | recorded separately |
+| Real Circle transfer/refund/claim/marketplace lifecycle | YES — still open; no live transaction is claimed |
 | Marketplace cache-refresh observed correct against a live Railway Postgres instance | NO (needs a live DB, not a code fix) |
 
 ---
@@ -200,5 +214,5 @@ Kept explicitly out of the deterministic suite by design.
 ## Remaining coverage gaps (not yet addressed)
 
 - Layer 1 currently reconciles only a handful of hand-picked historical fixtures (two `lockRound` receipts + the Arc-fork test's pool/ticket). It does not yet systematically enumerate DB-recorded historical entries/marketplace/refund/claim rows against on-chain state — that is the next DB-diagnostic-driven step.
-- Backend HTTP action coverage is intentionally scoped to the deterministic Circle ENTRY route flow: start -> approval verify -> entry verify, auth/session middleware, validation, replay, execution-mode rejection, and independent route limiters. BACKEND_WALLET WebAuthn and live external-wallet receipt paths remain covered at service level because they require different browser/chain boundaries.
+- Backend HTTP action coverage includes the deterministic Circle entry and post-entry lifecycle routes: session binding, action/payload/challenge identity, approval phases, pending reconciliation, replay protection, validation, and independent route limiters. Browser UI and live-chain execution remain separate boundaries.
 - `verify-rounds.js`'s stale assumption (gap #4 above) needs a product decision on intended semantics before it can be fixed and re-added.

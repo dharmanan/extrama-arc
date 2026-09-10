@@ -20,8 +20,20 @@
 - For resolver/settlement items, record the exact source data, period, calculation, submitted settlement transaction, and resulting contract state.
 - Never mark an item complete because the UI appears to work.
 - Never replace a failed real integration with mock data in the normal application path.
-- Critical signing actions must require a fresh passkey step-up authorization before the backend uses the EXTREMA wallet private key.
+- Human financial actions must be signed by the authenticated user's own execution identity: a connected external wallet or a Circle hosted challenge. The backend only signs for the autonomous `SYSTEM_SEED_WALLET` agents.
 - Design work is last. Functionality and proof come first.
+
+---
+
+## Current runtime architecture — final human-wallet migration
+
+The current runtime has exactly three execution identities:
+
+- `EXTERNAL_WALLET`: a human signs one login message, then signs every financial transaction with the connected EVM wallet.
+- `CIRCLE_USER_WALLET`: a human signs in through Circle and approves every financial transaction in a Circle hosted challenge for their Circle-controlled Arc EOA.
+- `SYSTEM_SEED_WALLET`: the nine autonomous agents, using their existing encrypted backend-held wallets and safeguards; this is never a browser human session.
+
+There is no active human `BACKEND_WALLET` path and no active passkey/WebAuthn runtime. References below to passkeys, WebAuthn, `BACKEND_WALLET`, per-user EXTREMA wallets, or a backend signer are retained only as **legacy historical proof records** for transactions and tests executed before this migration. They do not describe the current human product.
 
 ---
 
@@ -51,8 +63,9 @@ This section is a summary. The authoritative per-item status remains in the numb
 - Real Arc Testnet USDC (`0x3600000000000000000000000000000000000000`), no mock token
 - Real prediction entry at a fixed 1 USDC stake
 - ERC-721 ticket minting, ticket transfer, and current-NFT-owner claim/refund rights enforced onchain
-- Passkey authentication and passkey step-up for critical signing
-- Encrypted per-user EXTREMA wallets
+- `EXTERNAL_WALLET` sessions with client-signed financial transactions
+- `CIRCLE_USER_WALLET` sessions with Circle hosted-challenge transactions
+- Encrypted system seed wallets for autonomous agents only
 - Backend on Railway, frontend on Vercel, PostgreSQL on Railway
 - Binance USDⓈ-M Futures mark-price klines as the settlement source, with deterministic evidence hashing
 - Live result API reading real round state
@@ -102,9 +115,13 @@ See [Current roadmap](#current-roadmap) at the end of this document for the exec
 
 ---
 
-# 0. Infrastructure baseline
+# 0. Infrastructure baseline and legacy proof record
 
 These items are real infrastructure, but they are **not substitutes for onchain proof**.
+
+The historical human-wallet proof entries in this section predate the final
+human-wallet migration. They remain as evidence of what was executed at that
+time; they are not an active passkey or backend-wallet implementation claim.
 
 - [x] Railway backend deployed and reachable
   - Proof:
@@ -1551,11 +1568,18 @@ Current canonical surfaces use real backend and Arc Testnet state.
 
 # 14. Security gate before final UI
 
-- [x] Fresh passkey step-up implemented for entry
-  - Live proof: fingerprint confirmation preceded real Arc entry tx `0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312` (section 0 and section 4).
-- [ ] Fresh passkey step-up implemented for claim **(IMPLEMENTED / BROWSER EVIDENCE NOT RECORDED)**
-  - `CLAIM_ACTION_AUTH_SMOKE=PASS` covers payload binding, single use, and replay rejection in an in-memory harness. A real browser WebAuthn claim requires a settled round.
-- [x] Fresh passkey step-up implemented for refund
+### Current human runtime
+
+- [x] No active human passkey/WebAuthn path or human `BACKEND_WALLET` signer path
+- [x] `EXTERNAL_WALLET` actions are bound to the session wallet and every financial transaction is signed by that wallet.
+- [x] `CIRCLE_USER_WALLET` actions are bound to the session wallet and Circle wallet id; every financial transaction uses a Circle hosted challenge.
+- [x] Circle entry, transfer, refund, claim, marketplace list, update price, cancel, and buy are deterministically verified. Live Circle post-entry lifecycle transactions remain intentionally unproven.
+
+### Legacy historical proof record
+
+- [x] Legacy passkey step-up preceded the historical entry tx `0xf017bdbd00b4cf4bad6fd006d148e6b30210d3a7b15f3cbcaac389a7e7fea312` (section 0 and section 4).
+- [ ] Legacy browser-passkey claim UI evidence was not separately recorded; this is not an open requirement for the current runtime.
+- [x] Legacy passkey step-up was implemented for the historical refund design.
 - [x] Action challenge bound to:
   - action type
   - chain ID
@@ -1568,9 +1592,9 @@ Current canonical surfaces use real backend and Arc Testnet state.
   - Proof: `CLAIM_PAYLOAD_AND_TYPE_BINDING=PASS`; canonical action payload hashing includes the bound fields above and action authorizations use a cryptographically random one-time nonce plus expiry.
 - [x] Replay prevention verified
   - Proof: `CLAIM_CHALLENGE_SINGLE_USE=PASS`, `CLAIM_ACTION_SINGLE_USE=PASS`, and `HTTP_ACTIONS_E2E=PASS` replay scenario.
-- [x] JWT alone cannot trigger backend-wallet signer endpoints
-  - `BACKEND_WALLET` financial actions require `startPasskeyStepUp`, one-time WebAuthn challenge consumption, and `finishStepUpAuthentication` before the verified action can be consumed.
-  - External-wallet execution is separate because the user's connected wallet signs the transaction instead of an EXTREMA backend private key.
+- [x] JWT alone cannot trigger a human financial action
+  - External actions require a transaction signed by the session wallet and a receipt that matches the bound payload.
+  - Circle actions require a transaction from the bound Circle wallet, created from the stored challenge identity and independently receipt-verified.
 - [x] Rate limits verified
   - Proof: `HTTP_ACTIONS_E2E=PASS`; security scenarios include `rate-limit`.
 - [x] Session expiry verified
@@ -1585,7 +1609,7 @@ Current canonical surfaces use real backend and Arc Testnet state.
 - [x] Secret rotation procedure documented
   - Procedure: `docs/SECURITY_OPERATIONS.md`.
   - Covers `JWT_SECRET`, `ENCRYPTION_KEY`, `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED`, resolver-key rotation, Circle credentials, and database credentials.
-  - `ENCRYPTION_KEY` rotation explicitly requires re-encryption of both per-user wallet envelopes and the resolver envelope before production resumes.
+  - `ENCRYPTION_KEY` rotation applies to legacy data that remains encrypted at rest and the active resolver/seed-agent envelopes; it never enables a human backend signer path.
 - [x] No private key, JWT secret, encryption key, or credentials committed to Git
   - Repeatable verifier: `backend/scripts/verify-no-committed-secrets.js`.
   - The verifier prints rule/file names only, skips binary assets, and does not print matched secret values.

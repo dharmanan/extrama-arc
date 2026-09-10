@@ -474,7 +474,7 @@ export default function PoolDetailPage() {
           ? "Wallet transaction verification failed."
           : isCircleWallet
             ? "Circle transaction verification failed."
-          : "Passkey verification failed.";
+            : "Prediction verification failed.";
 
       const ambiguousCircleResult =
         isCircleWallet &&
@@ -814,7 +814,7 @@ export default function PoolDetailPage() {
                     ? locale === "tr"
                       ? "Circle cüzdanın gerekli her zincir üstü adımı ayrı olarak onaylamanı ister."
                       : "Your Circle wallet asks you to approve each required onchain step."
-                    : t.confirmBiometric}
+                    : t.confirmNeedsWallet}
               </p>
 
               {!canSubmit && (

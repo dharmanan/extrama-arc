@@ -1,6 +1,7 @@
 'use strict';
 
 const sessionService = require('../services/sessionService');
+const { isHumanExecutionMode } = require('../services/executionIdentityService');
 
 async function requireAuth(req, res, next) {
   try {
@@ -17,10 +18,14 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'session_expired' });
     }
 
+    // Only EXTERNAL_WALLET and CIRCLE_USER_WALLET sessions are accepted.
+    // Legacy sessions recorded before the final architecture, and any
+    // SYSTEM_SEED_WALLET identity, are rejected as invalid.
     if (
+      !isHumanExecutionMode(active.executionMode) ||
       active.userId !== payload.sub ||
       active.ownerAddress !== payload.ownerAddress ||
-      active.executionMode !== (payload.executionMode || 'BACKEND_WALLET') ||
+      active.executionMode !== payload.executionMode ||
       (active.walletAddress || null) !== (payload.walletAddress || null) ||
       (active.circleWalletId || null) !== (payload.circleWalletId || null)
     ) {

@@ -5,7 +5,25 @@ Status snapshot for the refund/cancellation flow. This document is descriptive
 [`EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md`](../EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md),
 which remains the source of truth for PASS/proof records.
 
-## Implementation status
+## Current runtime status
+
+Refunds are always user-initiated and paid by the pool to the current NFT
+owner. The final human runtime has no passkey/WebAuthn ceremony and no human
+`BACKEND_WALLET` signer:
+
+- `EXTERNAL_WALLET` receives an exact, session-wallet-bound
+  `refund(tokenId)` transaction request, sends it from the connected wallet,
+  then has the receipt independently verified.
+- `CIRCLE_USER_WALLET` receives a Circle hosted challenge for the exact
+  `refund(tokenId)` calldata from its bound Circle Arc EOA, then has the
+  Circle transaction and Arc receipt independently verified.
+- `SYSTEM_SEED_WALLET` remains an autonomous-agent identity, never a browser
+  user refund path.
+
+The deterministic Circle lifecycle suite covers the refund path. A live
+Circle refund has not been sent and is not claimed here.
+
+## Legacy readiness record (pre-final human-wallet migration)
 
 The refund action authorization foundation (`REFUND_TICKET` canonical payload,
 `arcService.readRefundAuthorizationState()`) was already on `main`. This pass
@@ -166,14 +184,14 @@ refuses to sign on `resolver_signer_mismatch`.
 
 Cancellation is automated. Refunds are not, and this is deliberate.
 
-`pool.refund(tokenId)` pays the **current NFT owner**. The backend must not
-spend on an owner's behalf without their fresh authorization, and for an
-externally held ticket it has no key to do so at all. The refund therefore
-stays behind the existing `REFUND_TICKET` step-up flow: the current owner
-initiates it, the server derives `executionMode` from on-chain ownership, and
-either the backend wallet signs after a passkey step-up or the connected
-wallet sends a tightly-bound transaction request that the server then verifies
-independently.
+`pool.refund(tokenId)` pays the **current NFT owner**. The current runtime
+keeps it behind a user-initiated `REFUND_TICKET` flow: the server derives the
+execution identity from the authenticated session and on-chain ownership, then
+the connected external wallet signs its exact request or the Circle wallet
+approves its exact hosted challenge. Both paths are independently verified.
+
+The backend-wallet/passkey description in the legacy record above is retained
+only to preserve the historical proof, not as a current execution option.
 
 No private key, envelope value, or `ENCRYPTION_KEY` value appears in this
 repository, in `.env.example`, or in this document.

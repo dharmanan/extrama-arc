@@ -141,7 +141,7 @@ async function main() {
   assert.equal(captured.payload.action, 'ENTRY');
   assert.equal(
     captured.payload.executionMode,
-    'BACKEND_WALLET',
+    'SYSTEM_SEED_WALLET',
   );
   assert.equal(captured.payload.amountRaw, '1000000');
   assert.equal(captured.payload.roundId, 8);

@@ -4,9 +4,14 @@ const { ethers } = require('ethers');
 const config = require('../config');
 const arcService = require('./arcService');
 const marketplaceService = require('./marketplaceService');
-const walletService = require('./walletService');
 
-const EXECUTION_MODES = ['BACKEND_WALLET', 'EXTERNAL_OWNER'];
+// Human execution modes only. Every marketplace transaction is signed by the
+// user's own wallet: the connected wallet (EXTERNAL_OWNER) or the Circle
+// user controlled wallet through a hosted Circle challenge. EXTREMA builds
+// the exact calldata and verifies the mined result; it never signs.
+const EXTERNAL_MODES = ['EXTERNAL_OWNER'];
+const CIRCLE_MODES = ['CIRCLE_USER_WALLET'];
+const EXECUTION_MODES = [...EXTERNAL_MODES, ...CIRCLE_MODES];
 
 // One hour, matching the marketplace contract's immutable TRADING_CUTOFF.
 // Duplicated deliberately, same reasoning as marketplaceService.js: this is
@@ -62,6 +67,8 @@ const POOL_ABI = [
 ];
 
 const MARKETPLACE_INTERFACE = new ethers.Interface(MARKETPLACE_ABI);
+const TICKET_INTERFACE = new ethers.Interface(TICKET_ABI);
+const USDC_INTERFACE = new ethers.Interface(USDC_ABI);
 
 // Every contract revert this service can encounter, mapped to a stable
 // application-level identifier. The raw Solidity error name is decoded only
@@ -205,6 +212,68 @@ async function assertTicketNotAlreadyListed(ticketAddress, tokenId) {
 }
 
 // =============================================================================
+// Shared transaction helpers
+// =============================================================================
+
+const ERC721_TRANSFER_INTERFACE = new ethers.Interface([
+  'event Transfer(address indexed from,address indexed to,uint256 indexed tokenId)',
+]);
+
+function assertMode(payload, allowedModes) {
+  if (!allowedModes.includes(payload.executionMode)) {
+    throw new Error('marketplace_execution_mode_mismatch');
+  }
+}
+
+async function requireArcProvider() {
+  const provider = arcService.getArcProvider();
+  const network = await provider.getNetwork();
+  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
+  return { provider, network };
+}
+
+function assertTxHash(txHash) {
+  if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    throw new Error('marketplace_txhash_invalid');
+  }
+}
+
+async function readMinedTransaction(provider, txHash, notFoundError, failedError) {
+  const [tx, receipt] = await Promise.all([
+    provider.getTransaction(txHash),
+    provider.getTransactionReceipt(txHash),
+  ]);
+  if (!tx || !receipt) throw new Error(notFoundError);
+  requireSuccessfulReceipt(receipt, failedError);
+  return { tx, receipt };
+}
+
+// The mined transaction must be exactly the one EXTREMA built: same sender,
+// same target contract, no native value, and byte identical calldata.
+function assertSignedCall(tx, { from, to, data }) {
+  if (ethers.getAddress(tx.from).toLowerCase() !== from.toLowerCase()) {
+    throw new Error('marketplace_sender_mismatch');
+  }
+  if (!tx.to || ethers.getAddress(tx.to).toLowerCase() !== to.toLowerCase()) {
+    throw new Error('marketplace_target_mismatch');
+  }
+  if (tx.value !== 0n) throw new Error('marketplace_value_mismatch');
+  if (String(tx.data).toLowerCase() !== data.toLowerCase()) {
+    throw new Error('marketplace_calldata_mismatch');
+  }
+}
+
+function transactionRequest(network, { from, to, data }) {
+  return {
+    chainId: Number(network.chainId),
+    to,
+    data,
+    value: '0x0',
+    from,
+  };
+}
+
+// =============================================================================
 // List
 // =============================================================================
 
@@ -234,105 +303,23 @@ function assertListPayloadFresh(payload) {
   if (Date.parse(payload.expiresAt) <= Date.now()) throw new Error('action_authorization_expired');
 }
 
-async function executeBackendList(userId, payload) {
-  assertListPayloadShape(payload);
-  assertListPayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') throw new Error('marketplace_execution_mode_mismatch');
-
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
-  const marketplaceAddress = requireMarketplaceContract(payload);
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const signerAddress = ethers.getAddress(signer.address);
-  if (signerAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('marketplace_wallet_mismatch');
-  }
-
-  const ticketAddress = ethers.getAddress(payload.ticketAddress);
-  const tokenId = BigInt(payload.tokenId);
-  const askUsdc = BigInt(payload.askUsdcRaw);
-
-  const { round } = await resolveRoundForTicket(ticketAddress, payload.tokenId, provider);
-  requireTradable(round);
-  await assertTicketNotAlreadyListed(ticketAddress, payload.tokenId);
-
-  const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, signer);
-
-  let owner;
-  try {
-    owner = ethers.getAddress(await ticket.ownerOf(tokenId));
-  } catch {
-    throw new Error('marketplace_ticket_not_found');
-  }
-  if (owner.toLowerCase() !== signerAddress.toLowerCase()) {
-    throw new Error('marketplace_not_ticket_owner');
-  }
-
-  const nativeBalance = await provider.getBalance(signerAddress);
-  if (nativeBalance === 0n) throw new Error('marketplace_insufficient_gas');
-
-  // Step 1, bundled: this wallet is server-controlled, so the per-token
-  // approve and the list call happen as one authorized action rather than
-  // two separate user-facing steps.
-  let approvalTxHash = null;
-  const approvedAddress = await ticket.getApproved(tokenId).catch(() => null);
-  if (!approvedAddress || approvedAddress.toLowerCase() !== marketplaceAddress.toLowerCase()) {
-    const approvalTx = await ticket.approve(marketplaceAddress, tokenId);
-    approvalTxHash = approvalTx.hash;
-    const approvalReceipt = await approvalTx.wait();
-    requireSuccessfulReceipt(approvalReceipt, 'marketplace_approval_failed');
-  }
-
-  // Step 2.
-  const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, signer);
-  const listTx = await callMarketplace(() => marketplace.list(ticketAddress, tokenId, askUsdc));
-  const receipt = await listTx.wait();
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  const listed = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
-    address: marketplaceAddress,
-    name: 'Listed',
-    predicate: (parsed) =>
-      parsed.args.seller.toLowerCase() === signerAddress.toLowerCase() &&
-      parsed.args.ticket.toLowerCase() === ticketAddress.toLowerCase() &&
-      parsed.args.tokenId === tokenId &&
-      parsed.args.askUsdc === askUsdc,
-  });
-  if (!listed) throw new Error('marketplace_listed_event_missing');
-
-  await refreshMarketplaceCaches(signerAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    executionMode: 'BACKEND_WALLET',
-    marketplaceAddress,
-    ticketAddress,
-    tokenId: tokenId.toString(),
-    seller: signerAddress,
-    askUsdcRaw: askUsdc.toString(),
-    listingId: listed.args.listingId.toString(),
-    approvalTxHash,
-    listTxHash: listTx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${listTx.hash}`,
-  };
+function listCalldata(ticketAddress, tokenId, askUsdc) {
+  return MARKETPLACE_INTERFACE.encodeFunctionData('list', [ticketAddress, tokenId, askUsdc]);
 }
 
-async function buildExternalListTransactionRequest(payload) {
-  assertListPayloadShape(payload);
-  assertListPayloadFresh(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
+function perTokenApprovalCalldata(marketplaceAddress, tokenId) {
+  // Exactly one tokenId, never an operator wide approval.
+  return TICKET_INTERFACE.encodeFunctionData('approve', [marketplaceAddress, tokenId]);
+}
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
+// Direct, always fresh chain reads taken immediately before any list related
+// transaction is built -- the tradable window, a second independent
+// not already listed check (closing the race with another client's listing
+// after /marketplace-list/start), and current NFT ownership.
+async function readListableTicket(payload) {
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const ticketAddress = ethers.getAddress(payload.ticketAddress);
-  const tokenId = BigInt(payload.tokenId);
-  const askUsdc = BigInt(payload.askUsdcRaw);
   const sellerAddress = ethers.getAddress(payload.walletAddress);
 
   const { round } = await resolveRoundForTicket(ticketAddress, payload.tokenId, provider);
@@ -346,56 +333,100 @@ async function buildExternalListTransactionRequest(payload) {
   if (approval.owner.toLowerCase() !== sellerAddress.toLowerCase()) {
     throw new Error('marketplace_not_ticket_owner');
   }
-  // Step 1 already happened as its own wallet-signed transaction before this
-  // request was made; this only re-confirms it actually landed.
+  return { provider, network, marketplaceAddress, ticketAddress, sellerAddress, approval };
+}
+
+async function buildListTransactionRequest(payload, allowedModes) {
+  assertListPayloadShape(payload);
+  assertListPayloadFresh(payload);
+  assertMode(payload, allowedModes);
+
+  const { network, marketplaceAddress, ticketAddress, sellerAddress, approval } =
+    await readListableTicket(payload);
+  // The per token approval must already be verified onchain before list() is
+  // built: as its own connected wallet transaction, or as the Circle
+  // approval phase.
   if (!approval.isApproved) throw new Error('marketplace_token_not_approved');
 
-  const data = MARKETPLACE_INTERFACE.encodeFunctionData('list', [ticketAddress, tokenId, askUsdc]);
+  return transactionRequest(network, {
+    from: sellerAddress,
+    to: marketplaceAddress,
+    data: listCalldata(ticketAddress, BigInt(payload.tokenId), BigInt(payload.askUsdcRaw)),
+  });
+}
+
+// Circle phase 1. When the exact per token approval already exists the list
+// transaction is issued directly; otherwise the Circle wallet approves first.
+async function prepareCircleListApproval(payload) {
+  assertListPayloadShape(payload);
+  assertListPayloadFresh(payload);
+  assertMode(payload, CIRCLE_MODES);
+
+  const { provider, network, marketplaceAddress, ticketAddress, sellerAddress, approval } =
+    await readListableTicket(payload);
+  if (await provider.getBalance(sellerAddress) === 0n) throw new Error('marketplace_insufficient_gas');
+  if (approval.isApproved) return { required: false, transactionRequest: null };
 
   return {
-    chainId: Number(network.chainId),
-    to: marketplaceAddress,
-    data,
-    value: '0x0',
-    from: sellerAddress,
+    required: true,
+    transactionRequest: transactionRequest(network, {
+      from: sellerAddress,
+      to: ticketAddress,
+      data: perTokenApprovalCalldata(marketplaceAddress, BigInt(payload.tokenId)),
+    }),
   };
 }
 
-async function verifyExternalListReceipt(payload, txHash) {
+async function verifyCircleListApprovalReceipt(payload, txHash) {
   assertListPayloadShape(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
-  if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    throw new Error('marketplace_txhash_invalid');
+  assertMode(payload, CIRCLE_MODES);
+  assertTxHash(txHash);
+
+  const { provider } = await requireArcProvider();
+  const marketplaceAddress = requireMarketplaceContract(payload);
+  const ticketAddress = ethers.getAddress(payload.ticketAddress);
+  const sellerAddress = ethers.getAddress(payload.walletAddress);
+
+  const { tx } = await readMinedTransaction(
+    provider, txHash, 'marketplace_approval_transaction_not_found', 'marketplace_approval_failed',
+  );
+  assertSignedCall(tx, {
+    from: sellerAddress,
+    to: ticketAddress,
+    data: perTokenApprovalCalldata(marketplaceAddress, BigInt(payload.tokenId)),
+  });
+
+  const approval = await marketplaceService.readTicketApprovalState({
+    ticketAddress,
+    tokenId: payload.tokenId,
+  });
+  if (approval.owner.toLowerCase() !== sellerAddress.toLowerCase()) {
+    throw new Error('marketplace_not_ticket_owner');
   }
+  if (!approval.isApproved) throw new Error('marketplace_approval_failed');
+  return { approvalTxHash: txHash };
+}
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
+async function verifyListReceipt(payload, txHash, allowedModes) {
+  assertListPayloadShape(payload);
+  assertMode(payload, allowedModes);
+  assertTxHash(txHash);
 
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const ticketAddress = ethers.getAddress(payload.ticketAddress);
   const tokenId = BigInt(payload.tokenId);
   const askUsdc = BigInt(payload.askUsdcRaw);
   const sellerAddress = ethers.getAddress(payload.walletAddress);
 
-  const [tx, receipt] = await Promise.all([
-    provider.getTransaction(txHash),
-    provider.getTransactionReceipt(txHash),
-  ]);
-  if (!tx || !receipt) throw new Error('marketplace_transaction_not_found');
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  if (ethers.getAddress(tx.from).toLowerCase() !== sellerAddress.toLowerCase()) {
-    throw new Error('marketplace_sender_mismatch');
-  }
-  if (!tx.to || ethers.getAddress(tx.to).toLowerCase() !== marketplaceAddress.toLowerCase()) {
-    throw new Error('marketplace_target_mismatch');
-  }
-
-  const expectedData = MARKETPLACE_INTERFACE.encodeFunctionData('list', [ticketAddress, tokenId, askUsdc]);
-  if (String(tx.data).toLowerCase() !== expectedData.toLowerCase()) {
-    throw new Error('marketplace_calldata_mismatch');
-  }
+  const { tx, receipt } = await readMinedTransaction(
+    provider, txHash, 'marketplace_transaction_not_found', 'marketplace_transaction_failed',
+  );
+  assertSignedCall(tx, {
+    from: sellerAddress,
+    to: marketplaceAddress,
+    data: listCalldata(ticketAddress, tokenId, askUsdc),
+  });
 
   const listed = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
     address: marketplaceAddress,
@@ -412,7 +443,7 @@ async function verifyExternalListReceipt(payload, txHash) {
 
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_OWNER',
+    executionMode: payload.executionMode,
     marketplaceAddress,
     ticketAddress,
     tokenId: tokenId.toString(),
@@ -473,82 +504,12 @@ async function reverifyOwnedActiveListing(payload, { requireApproved }) {
   return listing;
 }
 
-async function executeBackendUpdatePrice(userId, payload) {
+async function buildUpdatePriceTransactionRequest(payload, allowedModes) {
   assertUpdatePricePayloadShape(payload);
   assertUpdatePricePayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') throw new Error('marketplace_execution_mode_mismatch');
+  assertMode(payload, allowedModes);
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
-  const marketplaceAddress = requireMarketplaceContract(payload);
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const signerAddress = ethers.getAddress(signer.address);
-  if (signerAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('marketplace_wallet_mismatch');
-  }
-
-  // Approval is not required to hold here -- it is required after this
-  // read, and re-established automatically below for BACKEND_WALLET, same
-  // as list().
-  const listing = await reverifyOwnedActiveListing(payload, { requireApproved: false });
-
-  const { round } = await resolveRoundForTicket(listing.ticketAddress, payload.tokenId, provider);
-  requireTradable(round);
-
-  const listingId = BigInt(payload.listingId);
-  const newAskUsdc = BigInt(payload.newAskUsdcRaw);
-  const ticketAddress = ethers.getAddress(listing.ticketAddress);
-  const tokenId = BigInt(payload.tokenId);
-
-  let approvalTxHash = null;
-  if (!listing.isApproved) {
-    const ticket = new ethers.Contract(ticketAddress, TICKET_ABI, signer);
-    const approvalTx = await ticket.approve(marketplaceAddress, tokenId);
-    approvalTxHash = approvalTx.hash;
-    const approvalReceipt = await approvalTx.wait();
-    requireSuccessfulReceipt(approvalReceipt, 'marketplace_approval_failed');
-  }
-
-  const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, signer);
-  const tx = await callMarketplace(() => marketplace.updatePrice(listingId, newAskUsdc));
-  const receipt = await tx.wait();
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  const updated = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
-    address: marketplaceAddress,
-    name: 'ListingPriceUpdated',
-    predicate: (parsed) => parsed.args.listingId === listingId && parsed.args.askUsdc === newAskUsdc,
-  });
-  if (!updated) throw new Error('marketplace_price_updated_event_missing');
-
-  await refreshMarketplaceCaches(signerAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    executionMode: 'BACKEND_WALLET',
-    marketplaceAddress,
-    listingId: listingId.toString(),
-    ticketAddress,
-    tokenId: tokenId.toString(),
-    newAskUsdcRaw: newAskUsdc.toString(),
-    approvalTxHash,
-    updateTxHash: tx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${tx.hash}`,
-  };
-}
-
-async function buildExternalUpdatePriceTransactionRequest(payload) {
-  assertUpdatePricePayloadShape(payload);
-  assertUpdatePricePayloadFresh(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
-
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const listing = await reverifyOwnedActiveListing(payload, { requireApproved: true });
   const { round } = await resolveRoundForTicket(listing.ticketAddress, payload.tokenId, provider);
@@ -556,51 +517,33 @@ async function buildExternalUpdatePriceTransactionRequest(payload) {
 
   const listingId = BigInt(payload.listingId);
   const newAskUsdc = BigInt(payload.newAskUsdcRaw);
-  const data = MARKETPLACE_INTERFACE.encodeFunctionData('updatePrice', [listingId, newAskUsdc]);
 
-  return {
-    chainId: Number(network.chainId),
-    to: marketplaceAddress,
-    data,
-    value: '0x0',
+  return transactionRequest(network, {
     from: ethers.getAddress(payload.walletAddress),
-  };
+    to: marketplaceAddress,
+    data: MARKETPLACE_INTERFACE.encodeFunctionData('updatePrice', [listingId, newAskUsdc]),
+  });
 }
 
-async function verifyExternalUpdatePriceReceipt(payload, txHash) {
+async function verifyUpdatePriceReceipt(payload, txHash, allowedModes) {
   assertUpdatePricePayloadShape(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
-  if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    throw new Error('marketplace_txhash_invalid');
-  }
+  assertMode(payload, allowedModes);
+  assertTxHash(txHash);
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const sellerAddress = ethers.getAddress(payload.walletAddress);
   const listingId = BigInt(payload.listingId);
   const newAskUsdc = BigInt(payload.newAskUsdcRaw);
 
-  const [tx, receipt] = await Promise.all([
-    provider.getTransaction(txHash),
-    provider.getTransactionReceipt(txHash),
-  ]);
-  if (!tx || !receipt) throw new Error('marketplace_transaction_not_found');
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  if (ethers.getAddress(tx.from).toLowerCase() !== sellerAddress.toLowerCase()) {
-    throw new Error('marketplace_sender_mismatch');
-  }
-  if (!tx.to || ethers.getAddress(tx.to).toLowerCase() !== marketplaceAddress.toLowerCase()) {
-    throw new Error('marketplace_target_mismatch');
-  }
-
-  const expectedData = MARKETPLACE_INTERFACE.encodeFunctionData('updatePrice', [listingId, newAskUsdc]);
-  if (String(tx.data).toLowerCase() !== expectedData.toLowerCase()) {
-    throw new Error('marketplace_calldata_mismatch');
-  }
+  const { tx, receipt } = await readMinedTransaction(
+    provider, txHash, 'marketplace_transaction_not_found', 'marketplace_transaction_failed',
+  );
+  assertSignedCall(tx, {
+    from: sellerAddress,
+    to: marketplaceAddress,
+    data: MARKETPLACE_INTERFACE.encodeFunctionData('updatePrice', [listingId, newAskUsdc]),
+  });
 
   const updated = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
     address: marketplaceAddress,
@@ -613,7 +556,7 @@ async function verifyExternalUpdatePriceReceipt(payload, txHash) {
 
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_OWNER',
+    executionMode: payload.executionMode,
     marketplaceAddress,
     listingId: listingId.toString(),
     ticketAddress: ethers.getAddress(payload.ticketAddress),
@@ -669,113 +612,43 @@ async function reverifyCancellableListing(payload) {
   return listing;
 }
 
-async function executeBackendCancel(userId, payload) {
+async function buildCancelTransactionRequest(payload, allowedModes) {
   assertCancelPayloadShape(payload);
   assertCancelPayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') throw new Error('marketplace_execution_mode_mismatch');
+  assertMode(payload, allowedModes);
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
-  const marketplaceAddress = requireMarketplaceContract(payload);
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const signerAddress = ethers.getAddress(signer.address);
-  if (signerAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('marketplace_wallet_mismatch');
-  }
-
-  const listing = await reverifyCancellableListing(payload);
-  const { round } = await resolveRoundForTicket(listing.ticketAddress, payload.tokenId, provider);
-  requireTradable(round);
-
-  const listingId = BigInt(payload.listingId);
-  const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, signer);
-  const tx = await callMarketplace(() => marketplace.cancel(listingId));
-  const receipt = await tx.wait();
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  const cancelled = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
-    address: marketplaceAddress,
-    name: 'Cancelled',
-    predicate: (parsed) => parsed.args.listingId === listingId,
-  });
-  if (!cancelled) throw new Error('marketplace_cancelled_event_missing');
-
-  await refreshMarketplaceCaches(signerAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    executionMode: 'BACKEND_WALLET',
-    marketplaceAddress,
-    listingId: listingId.toString(),
-    ticketAddress: ethers.getAddress(listing.ticketAddress),
-    tokenId: payload.tokenId,
-    cancelTxHash: tx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${tx.hash}`,
-  };
-}
-
-async function buildExternalCancelTransactionRequest(payload) {
-  assertCancelPayloadShape(payload);
-  assertCancelPayloadFresh(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
-
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const listing = await reverifyCancellableListing(payload);
   const { round } = await resolveRoundForTicket(listing.ticketAddress, payload.tokenId, provider);
   requireTradable(round);
 
   const listingId = BigInt(payload.listingId);
-  const data = MARKETPLACE_INTERFACE.encodeFunctionData('cancel', [listingId]);
-
-  return {
-    chainId: Number(network.chainId),
-    to: marketplaceAddress,
-    data,
-    value: '0x0',
+  return transactionRequest(network, {
     from: ethers.getAddress(payload.walletAddress),
-  };
+    to: marketplaceAddress,
+    data: MARKETPLACE_INTERFACE.encodeFunctionData('cancel', [listingId]),
+  });
 }
 
-async function verifyExternalCancelReceipt(payload, txHash) {
+async function verifyCancelReceipt(payload, txHash, allowedModes) {
   assertCancelPayloadShape(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
-  if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    throw new Error('marketplace_txhash_invalid');
-  }
+  assertMode(payload, allowedModes);
+  assertTxHash(txHash);
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const sellerAddress = ethers.getAddress(payload.walletAddress);
   const listingId = BigInt(payload.listingId);
 
-  const [tx, receipt] = await Promise.all([
-    provider.getTransaction(txHash),
-    provider.getTransactionReceipt(txHash),
-  ]);
-  if (!tx || !receipt) throw new Error('marketplace_transaction_not_found');
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  if (ethers.getAddress(tx.from).toLowerCase() !== sellerAddress.toLowerCase()) {
-    throw new Error('marketplace_sender_mismatch');
-  }
-  if (!tx.to || ethers.getAddress(tx.to).toLowerCase() !== marketplaceAddress.toLowerCase()) {
-    throw new Error('marketplace_target_mismatch');
-  }
-
-  const expectedData = MARKETPLACE_INTERFACE.encodeFunctionData('cancel', [listingId]);
-  if (String(tx.data).toLowerCase() !== expectedData.toLowerCase()) {
-    throw new Error('marketplace_calldata_mismatch');
-  }
+  const { tx, receipt } = await readMinedTransaction(
+    provider, txHash, 'marketplace_transaction_not_found', 'marketplace_transaction_failed',
+  );
+  assertSignedCall(tx, {
+    from: sellerAddress,
+    to: marketplaceAddress,
+    data: MARKETPLACE_INTERFACE.encodeFunctionData('cancel', [listingId]),
+  });
 
   const cancelled = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
     address: marketplaceAddress,
@@ -788,7 +661,7 @@ async function verifyExternalCancelReceipt(payload, txHash) {
 
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_OWNER',
+    executionMode: payload.executionMode,
     marketplaceAddress,
     listingId: listingId.toString(),
     ticketAddress: ethers.getAddress(payload.ticketAddress),
@@ -834,9 +707,9 @@ function assertBuyPayloadFresh(payload) {
 // The proactive price check here is the primary, reliable guarantee: it
 // runs on a fresh read immediately before acting, so a stale ask is caught
 // and reported as marketplace_price_changed before any transaction is even
-// attempted. The contract's own PriceChanged revert (surfaced through
-// callMarketplace's error mapping) remains the final backstop for the
-// unavoidable, tiny window between this check and the transaction landing.
+// built. The contract's own PriceChanged revert remains the final backstop
+// for the unavoidable, tiny window between this check and the transaction
+// landing. Nothing here ever retries on a price change.
 async function reverifyBuyableListing(payload) {
   const listingId = Number(payload.listingId);
   const { listing } = await marketplaceService.readMarketplaceListing(listingId);
@@ -846,6 +719,9 @@ async function reverifyBuyableListing(payload) {
     throw new Error('marketplace_buyer_is_seller');
   }
   if (listing.askUsdcRaw !== payload.expectedAskUsdcRaw) throw new Error('marketplace_price_changed');
+  if (listing.seller.toLowerCase() !== payload.sellerAddress.toLowerCase()) {
+    throw new Error('marketplace_listing_not_buyable');
+  }
   if (!listing.isBuyable) {
     throw new Error(
       listing.state === 'EXPIRED' ? 'marketplace_trading_window_closed' : 'marketplace_listing_not_buyable',
@@ -855,93 +731,30 @@ async function reverifyBuyableListing(payload) {
   return listing;
 }
 
-async function executeBackendBuy(userId, payload) {
-  assertBuyPayloadShape(payload);
-  assertBuyPayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') throw new Error('marketplace_execution_mode_mismatch');
+function buyCalldata(listingId, expectedAskUsdc) {
+  return MARKETPLACE_INTERFACE.encodeFunctionData('buy', [listingId, expectedAskUsdc]);
+}
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
+function exactAskApprovalCalldata(marketplaceAddress, expectedAskUsdc) {
+  return USDC_INTERFACE.encodeFunctionData('approve', [marketplaceAddress, expectedAskUsdc]);
+}
 
-  const marketplaceAddress = requireMarketplaceContract(payload);
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const buyerAddress = ethers.getAddress(signer.address);
-  if (buyerAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('marketplace_wallet_mismatch');
-  }
-
-  const listing = await reverifyBuyableListing(payload);
-  const { round } = await resolveRoundForTicket(listing.ticketAddress, payload.tokenId, provider);
-  requireTradable(round);
-
-  const listingId = BigInt(payload.listingId);
-  const expectedAskUsdc = BigInt(payload.expectedAskUsdcRaw);
-  const sellerAddress = ethers.getAddress(listing.seller);
-  const ticketAddress = ethers.getAddress(listing.ticketAddress);
-  const tokenId = BigInt(payload.tokenId);
-
-  const usdc = new ethers.Contract(arcService.ARC_TESTNET_USDC_ADDRESS, USDC_ABI, signer);
-
-  const [buyerUsdcBalance, nativeBalance] = await Promise.all([
+async function assertBuyerFunds(provider, buyerAddress, expectedAskUsdc) {
+  const usdc = new ethers.Contract(arcService.ARC_TESTNET_USDC_ADDRESS, USDC_ABI, provider);
+  const [usdcBalance, nativeBalance] = await Promise.all([
     usdc.balanceOf(buyerAddress),
     provider.getBalance(buyerAddress),
   ]);
-  if (buyerUsdcBalance < expectedAskUsdc) throw new Error('marketplace_insufficient_usdc');
+  if (usdcBalance < expectedAskUsdc) throw new Error('marketplace_insufficient_usdc');
   if (nativeBalance === 0n) throw new Error('marketplace_insufficient_gas');
-
-  let approvalTxHash = null;
-  const allowance = await usdc.allowance(buyerAddress, marketplaceAddress);
-  if (allowance < expectedAskUsdc) {
-    const approvalTx = await usdc.approve(marketplaceAddress, expectedAskUsdc);
-    approvalTxHash = approvalTx.hash;
-    const approvalReceipt = await approvalTx.wait();
-    requireSuccessfulReceipt(approvalReceipt, 'marketplace_approval_failed');
-  }
-
-  const marketplace = new ethers.Contract(marketplaceAddress, MARKETPLACE_ABI, signer);
-  const tx = await callMarketplace(() => marketplace.buy(listingId, expectedAskUsdc));
-  const receipt = await tx.wait();
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  const sold = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
-    address: marketplaceAddress,
-    name: 'Sold',
-    predicate: (parsed) =>
-      parsed.args.listingId === listingId &&
-      parsed.args.buyer.toLowerCase() === buyerAddress.toLowerCase() &&
-      parsed.args.askUsdc === expectedAskUsdc,
-  });
-  if (!sold) throw new Error('marketplace_sold_event_missing');
-
-  await refreshMarketplaceCaches(buyerAddress, sellerAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    executionMode: 'BACKEND_WALLET',
-    marketplaceAddress,
-    listingId: listingId.toString(),
-    ticketAddress,
-    tokenId: tokenId.toString(),
-    seller: sellerAddress,
-    buyer: buyerAddress,
-    askUsdcRaw: expectedAskUsdc.toString(),
-    approvalTxHash,
-    buyTxHash: tx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${tx.hash}`,
-  };
 }
 
-async function buildExternalBuyTransactionRequest(payload) {
+async function buildBuyTransactionRequest(payload, allowedModes) {
   assertBuyPayloadShape(payload);
   assertBuyPayloadFresh(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
+  assertMode(payload, allowedModes);
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
-
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const buyerAddress = ethers.getAddress(payload.walletAddress);
 
@@ -952,77 +765,144 @@ async function buildExternalBuyTransactionRequest(payload) {
   const expectedAskUsdc = BigInt(payload.expectedAskUsdcRaw);
   const allowance = await marketplaceService.readUsdcAllowance({ owner: buyerAddress });
   if (BigInt(allowance.allowanceRaw) < expectedAskUsdc) {
-    // Step 1 (the exact USDC approve) must already have happened as its own
-    // wallet-signed transaction before this request was made.
+    // The exact USDC approval must already be verified onchain: as its own
+    // connected wallet transaction, or as the Circle approval phase.
     throw new Error('marketplace_usdc_allowance_insufficient');
   }
 
-  const listingId = BigInt(payload.listingId);
-  const data = MARKETPLACE_INTERFACE.encodeFunctionData('buy', [listingId, expectedAskUsdc]);
-
   return {
-    chainId: Number(network.chainId),
-    to: marketplaceAddress,
-    data,
-    value: '0x0',
-    from: buyerAddress,
+    provider,
+    request: transactionRequest(network, {
+      from: buyerAddress,
+      to: marketplaceAddress,
+      data: buyCalldata(BigInt(payload.listingId), expectedAskUsdc),
+    }),
   };
 }
 
-async function verifyExternalBuyReceipt(payload, txHash) {
+// Circle phase 1. Fresh listing read first (active, buyable, exact ask, buyer
+// is not seller), then funds, then the allowance decision. A sufficient
+// existing allowance skips straight to the purchase.
+async function prepareCircleBuyApproval(payload) {
   assertBuyPayloadShape(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') throw new Error('marketplace_execution_mode_mismatch');
-  if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
-    throw new Error('marketplace_txhash_invalid');
+  assertBuyPayloadFresh(payload);
+  assertMode(payload, CIRCLE_MODES);
+
+  const { provider, network } = await requireArcProvider();
+  const marketplaceAddress = requireMarketplaceContract(payload);
+  const buyerAddress = ethers.getAddress(payload.walletAddress);
+
+  const listing = await reverifyBuyableListing(payload);
+  const { round } = await resolveRoundForTicket(listing.ticketAddress, payload.tokenId, provider);
+  requireTradable(round);
+
+  const expectedAskUsdc = BigInt(payload.expectedAskUsdcRaw);
+  await assertBuyerFunds(provider, buyerAddress, expectedAskUsdc);
+
+  const allowance = await marketplaceService.readUsdcAllowance({ owner: buyerAddress });
+  if (BigInt(allowance.allowanceRaw) >= expectedAskUsdc) {
+    return { required: false, transactionRequest: null };
   }
+  return {
+    required: true,
+    transactionRequest: transactionRequest(network, {
+      from: buyerAddress,
+      to: ethers.getAddress(arcService.ARC_TESTNET_USDC_ADDRESS),
+      data: exactAskApprovalCalldata(marketplaceAddress, expectedAskUsdc),
+    }),
+  };
+}
 
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
+async function verifyCircleBuyApprovalReceipt(payload, txHash) {
+  assertBuyPayloadShape(payload);
+  assertMode(payload, CIRCLE_MODES);
+  assertTxHash(txHash);
 
+  const { provider } = await requireArcProvider();
+  const marketplaceAddress = requireMarketplaceContract(payload);
+  const buyerAddress = ethers.getAddress(payload.walletAddress);
+  const expectedAskUsdc = BigInt(payload.expectedAskUsdcRaw);
+
+  const { tx } = await readMinedTransaction(
+    provider, txHash, 'marketplace_approval_transaction_not_found', 'marketplace_approval_failed',
+  );
+  assertSignedCall(tx, {
+    from: buyerAddress,
+    to: ethers.getAddress(arcService.ARC_TESTNET_USDC_ADDRESS),
+    data: exactAskApprovalCalldata(marketplaceAddress, expectedAskUsdc),
+  });
+
+  const allowance = await marketplaceService.readUsdcAllowance({ owner: buyerAddress });
+  if (BigInt(allowance.allowanceRaw) < expectedAskUsdc) throw new Error('marketplace_approval_failed');
+  return { approvalTxHash: txHash };
+}
+
+async function verifyBuyReceipt(payload, txHash, allowedModes) {
+  assertBuyPayloadShape(payload);
+  assertMode(payload, allowedModes);
+  assertTxHash(txHash);
+
+  const { provider, network } = await requireArcProvider();
   const marketplaceAddress = requireMarketplaceContract(payload);
   const buyerAddress = ethers.getAddress(payload.walletAddress);
   const sellerAddress = ethers.getAddress(payload.sellerAddress);
+  const ticketAddress = ethers.getAddress(payload.ticketAddress);
+  const tokenId = BigInt(payload.tokenId);
   const listingId = BigInt(payload.listingId);
   const expectedAskUsdc = BigInt(payload.expectedAskUsdcRaw);
 
-  const [tx, receipt] = await Promise.all([
-    provider.getTransaction(txHash),
-    provider.getTransactionReceipt(txHash),
-  ]);
-  if (!tx || !receipt) throw new Error('marketplace_transaction_not_found');
-  requireSuccessfulReceipt(receipt, 'marketplace_transaction_failed');
-
-  if (ethers.getAddress(tx.from).toLowerCase() !== buyerAddress.toLowerCase()) {
-    throw new Error('marketplace_sender_mismatch');
-  }
-  if (!tx.to || ethers.getAddress(tx.to).toLowerCase() !== marketplaceAddress.toLowerCase()) {
-    throw new Error('marketplace_target_mismatch');
-  }
-
-  const expectedData = MARKETPLACE_INTERFACE.encodeFunctionData('buy', [listingId, expectedAskUsdc]);
-  if (String(tx.data).toLowerCase() !== expectedData.toLowerCase()) {
-    throw new Error('marketplace_calldata_mismatch');
-  }
+  const { tx, receipt } = await readMinedTransaction(
+    provider, txHash, 'marketplace_transaction_not_found', 'marketplace_transaction_failed',
+  );
+  assertSignedCall(tx, {
+    from: buyerAddress,
+    to: marketplaceAddress,
+    data: buyCalldata(listingId, expectedAskUsdc),
+  });
 
   const sold = findLogEvent(receipt, MARKETPLACE_INTERFACE, {
     address: marketplaceAddress,
     name: 'Sold',
     predicate: (parsed) =>
       parsed.args.listingId === listingId &&
+      parsed.args.seller.toLowerCase() === sellerAddress.toLowerCase() &&
       parsed.args.buyer.toLowerCase() === buyerAddress.toLowerCase() &&
+      parsed.args.ticket.toLowerCase() === ticketAddress.toLowerCase() &&
+      parsed.args.tokenId === tokenId &&
       parsed.args.askUsdc === expectedAskUsdc,
   });
   if (!sold) throw new Error('marketplace_sold_event_missing');
+
+  // Settlement, receipt scoped: the exact ask moved from buyer to seller in
+  // USDC, and the ticket moved from seller to buyer, in this same transaction.
+  const usdcSettled = findLogEvent(receipt, USDC_INTERFACE, {
+    address: arcService.ARC_TESTNET_USDC_ADDRESS,
+    name: 'Transfer',
+    predicate: (parsed) =>
+      parsed.args.from.toLowerCase() === buyerAddress.toLowerCase() &&
+      parsed.args.to.toLowerCase() === sellerAddress.toLowerCase() &&
+      parsed.args.value === expectedAskUsdc,
+  });
+  if (!usdcSettled) throw new Error('marketplace_usdc_settlement_missing');
+
+  const ticketMoved = findLogEvent(receipt, ERC721_TRANSFER_INTERFACE, {
+    address: ticketAddress,
+    name: 'Transfer',
+    predicate: (parsed) =>
+      parsed.args.from.toLowerCase() === sellerAddress.toLowerCase() &&
+      parsed.args.to.toLowerCase() === buyerAddress.toLowerCase() &&
+      parsed.args.tokenId === tokenId,
+  });
+  if (!ticketMoved) throw new Error('marketplace_ticket_transfer_missing');
 
   await refreshMarketplaceCaches(buyerAddress, sellerAddress);
 
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_OWNER',
+    executionMode: payload.executionMode,
     marketplaceAddress,
     listingId: listingId.toString(),
-    ticketAddress: ethers.getAddress(payload.ticketAddress),
+    ticketAddress,
     tokenId: payload.tokenId,
     seller: sellerAddress,
     buyer: buyerAddress,
@@ -1032,19 +912,89 @@ async function verifyExternalBuyReceipt(payload, txHash) {
   };
 }
 
+// =============================================================================
+// Mode bound entry points
+// =============================================================================
+
+async function buildExternalListTransactionRequest(payload) {
+  return buildListTransactionRequest(payload, EXTERNAL_MODES);
+}
+async function verifyExternalListReceipt(payload, txHash) {
+  return verifyListReceipt(payload, txHash, EXTERNAL_MODES);
+}
+async function buildCircleListTransactionRequest(payload) {
+  return buildListTransactionRequest(payload, CIRCLE_MODES);
+}
+async function verifyCircleListReceipt(payload, txHash) {
+  return verifyListReceipt(payload, txHash, CIRCLE_MODES);
+}
+
+async function buildExternalUpdatePriceTransactionRequest(payload) {
+  return buildUpdatePriceTransactionRequest(payload, EXTERNAL_MODES);
+}
+async function verifyExternalUpdatePriceReceipt(payload, txHash) {
+  return verifyUpdatePriceReceipt(payload, txHash, EXTERNAL_MODES);
+}
+async function buildCircleUpdatePriceTransactionRequest(payload) {
+  return buildUpdatePriceTransactionRequest(payload, CIRCLE_MODES);
+}
+async function verifyCircleUpdatePriceReceipt(payload, txHash) {
+  return verifyUpdatePriceReceipt(payload, txHash, CIRCLE_MODES);
+}
+
+async function buildExternalCancelTransactionRequest(payload) {
+  return buildCancelTransactionRequest(payload, EXTERNAL_MODES);
+}
+async function verifyExternalCancelReceipt(payload, txHash) {
+  return verifyCancelReceipt(payload, txHash, EXTERNAL_MODES);
+}
+async function buildCircleCancelTransactionRequest(payload) {
+  return buildCancelTransactionRequest(payload, CIRCLE_MODES);
+}
+async function verifyCircleCancelReceipt(payload, txHash) {
+  return verifyCancelReceipt(payload, txHash, CIRCLE_MODES);
+}
+
+async function buildExternalBuyTransactionRequest(payload) {
+  const { request } = await buildBuyTransactionRequest(payload, EXTERNAL_MODES);
+  return request;
+}
+async function verifyExternalBuyReceipt(payload, txHash) {
+  return verifyBuyReceipt(payload, txHash, EXTERNAL_MODES);
+}
+async function buildCircleBuyTransactionRequest(payload) {
+  // After the approval phase the listing and funds are read fresh again, so a
+  // purchase is never built from stale price, ownership, or balance data.
+  const { provider, request } = await buildBuyTransactionRequest(payload, CIRCLE_MODES);
+  await assertBuyerFunds(provider, request.from, BigInt(payload.expectedAskUsdcRaw));
+  return request;
+}
+async function verifyCircleBuyReceipt(payload, txHash) {
+  return verifyBuyReceipt(payload, txHash, CIRCLE_MODES);
+}
+
 module.exports = {
   resolveRoundForTicket,
   requireTradable,
-  executeBackendList,
+  callMarketplace,
   buildExternalListTransactionRequest,
   verifyExternalListReceipt,
-  executeBackendUpdatePrice,
+  prepareCircleListApproval,
+  verifyCircleListApprovalReceipt,
+  buildCircleListTransactionRequest,
+  verifyCircleListReceipt,
   buildExternalUpdatePriceTransactionRequest,
   verifyExternalUpdatePriceReceipt,
-  executeBackendCancel,
+  buildCircleUpdatePriceTransactionRequest,
+  verifyCircleUpdatePriceReceipt,
   buildExternalCancelTransactionRequest,
   verifyExternalCancelReceipt,
-  executeBackendBuy,
+  buildCircleCancelTransactionRequest,
+  verifyCircleCancelReceipt,
   buildExternalBuyTransactionRequest,
   verifyExternalBuyReceipt,
+  prepareCircleBuyApproval,
+  verifyCircleBuyApprovalReceipt,
+  buildCircleBuyTransactionRequest,
+  verifyCircleBuyReceipt,
 };

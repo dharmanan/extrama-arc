@@ -20,7 +20,7 @@ function circleErrorCode(error) {
 }
 
 function safeCircleError(error) {
-  if (error?.message === 'circle_wallet_not_configured') return error;
+  if (error?.message === 'circle_service_not_configured') return error;
   const code = circleErrorCode(error);
   if ([155103, 155104, 155105, 155113, 155718, 155719].includes(code)) {
     return new Error('circle_authentication_invalid');
@@ -34,7 +34,7 @@ function safeCircleError(error) {
 }
 
 function assertConfigured(apiKey) {
-  if (!apiKey) throw new Error('circle_wallet_not_configured');
+  if (!apiKey) throw new Error('circle_service_not_configured');
 }
 
 function pickArcEoa(wallets) {

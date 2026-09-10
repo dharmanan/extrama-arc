@@ -11,7 +11,7 @@ What is live:
 - 24 pool contracts and 24 paired ERC-721 ticket collections on Arc Testnet (chain `5042002`)
 - Real Arc Testnet USDC with fixed 1 USDC prediction entries
 - Real ERC-721 ticket minting and transferable claim/refund rights
-- Passkey authentication and fresh passkey step-up for critical signing
+- Two human wallet modes: a connected EVM wallet that signs every transaction itself, or a Circle user controlled wallet whose every transaction is approved in a Circle hosted challenge
 - Backend on Railway, frontend on Vercel, PostgreSQL on Railway
 - Automated Daily, Weekly, and Quarterly round creation and lifecycle handling
 - Resolver-authorized real cancellation and settlement transactions
@@ -20,6 +20,7 @@ What is live:
 - Real leaderboard and settlement verification surfaces backed by production data
 - Secondary marketplace contract/backend lifecycle implemented and deterministically verified
 - Circle-powered production entry path proven on Arc Testnet
+- Circle user controlled wallet support for the full post entry lifecycle (ticket transfer, refund, claim, marketplace list, update price, cancel and buy), deterministically verified; live Arc Testnet proof of these Circle actions is still open
 - Nine autonomous seed wallets with gated production scheduling, immutable plans, fresh onchain preflight checks, and fail-closed transaction handling
 
 Final hackathon work:
@@ -34,20 +35,32 @@ Final hackathon work:
 
 ## Architecture
 
+### Execution identities
+
+EXTREMA has exactly three participant classes:
+
+| Identity | Who | How transactions are signed |
+| --- | --- | --- |
+| `EXTERNAL_WALLET` | A person with their own EVM wallet | One login signature creates the session; the connected wallet signs every transaction itself |
+| `CIRCLE_USER_WALLET` | A person who signs in with Google or email through Circle | A Circle user controlled Arc EOA; every transaction is approved by the user in a Circle hosted challenge |
+| `SYSTEM_SEED_WALLET` | The nine autonomous EXTREMA seed agents | Encrypted seed wallets signed by the backend; they never hold a browser session |
+
+Both human modes support the same lifecycle: entry, ticket transfer, refund, claim, and marketplace list, update price, cancel and buy. EXTREMA never holds or uses a private key for a human user.
+
 ### Frontend
 - Next.js
 - prediction/pool/ticket/result routes
-- owner wallet connection
-- WebAuthn client
-- one-time recovery disclosure UI
+- connected EVM wallet support
+- Circle user controlled wallet SDK for hosted challenges
+- per tab recovery of in flight Circle actions
 
 ### Backend
 - Express
 - PostgreSQL
-- WebAuthn challenge and credential storage
-- JWT sessions
-- encrypted EXTREMA EVM private keys
-- one EXTREMA wallet per owner account
+- JWT sessions bound to one execution identity
+- action authorizations bound to the session wallet, with a durable Circle challenge state machine
+- exact transaction builders and receipt verifiers for every action
+- encrypted private keys only for the `SYSTEM_SEED_WALLET` agents
 
 ### Deployment
 - Frontend: Vercel, live
@@ -68,24 +81,21 @@ Runs inside the backend process on Railway. Coordinated across instances with Po
 
 ## Wallet flow
 
-New user:
+Connected wallet (`EXTERNAL_WALLET`):
 
-1. Connect owner EVM wallet.
-2. Request EXTREMA registration challenge.
-3. Sign the challenge with the owner wallet.
-4. Register a platform passkey.
-5. Backend verifies the passkey and creates an authenticated session.
-6. Backend creates a fresh EXTREMA EVM wallet.
-7. Private key is encrypted at rest in PostgreSQL.
-8. Plaintext private key is returned only in the wallet creation response.
-9. User must save the key before continuing.
+1. Connect an EVM wallet on Arc Testnet.
+2. Request a login challenge and sign it once with that wallet.
+3. The backend verifies the signature and creates a session bound to that address.
+4. For every action the backend returns the exact transaction to sign; the wallet signs and sends it, and the backend verifies the mined receipt.
 
-Returning user:
+Circle wallet (`CIRCLE_USER_WALLET`):
 
-1. Connect the same owner wallet.
-2. Authenticate with the registered passkey.
-3. Backend restores the authenticated session.
-4. Existing EXTREMA wallet is loaded. No new private key is created or revealed.
+1. Continue with Google or email through Circle.
+2. Circle provisions or restores the user's Arc EOA; the backend reads the address from Circle and creates a session bound to that wallet.
+3. For every action the backend creates a Circle contract execution challenge for the exact calldata; the user approves it in the Circle hosted window.
+4. The backend reconciles the Circle transaction and verifies the mined receipt. Actions that need an approval first (entry, marketplace list and buy) run the approval and the action as two separate challenges.
+
+No private key is ever created, shown, or stored for a human user.
 
 ## Product loop
 
@@ -113,7 +123,7 @@ Returning user:
 | `/tickets` | NFT tickets |
 | `/leaderboard` | Rankings |
 | `/how-it-works` | Product explanation |
-| `/wallet` | Owner wallet + passkey + EXTREMA wallet |
+| `/wallet` | Connect a wallet or continue with Circle |
 
 ## Backend endpoints
 
@@ -122,17 +132,37 @@ Returning user:
 - `GET /health`
 
 ### Authentication
-- `POST /api/auth/register/challenge`
-- `POST /api/auth/register/start`
-- `POST /api/auth/register/finish`
-- `POST /api/auth/login/start`
-- `POST /api/auth/login/finish`
+- `POST /api/auth/wallet-login/challenge`
+- `POST /api/auth/wallet-login/finish`
 - `GET /api/auth/session`
 - `POST /api/auth/logout`
 
-### EXTREMA wallet
+### Circle wallet
+- `GET /api/circle/readiness`
+- `POST /api/circle/device-token/social`
+- `POST /api/circle/device-token/email`
+- `POST /api/circle/wallet/initialize`
+- `POST /api/circle/wallet`
+- `POST /api/circle/session`
+
+### Session wallet
 - `GET /api/wallet`
-- `POST /api/wallet/create`
+- `GET /api/wallet/chain-state`
+- `GET /api/wallet/gateway-balance`
+- `GET /api/wallet/tickets`
+
+### Actions
+
+Every action has `start` and `verify`. `finish` exists only for the connected wallet: it returns the exact transaction the wallet signs. Circle sessions receive a Circle challenge from `start` and poll `verify`. Entry, marketplace list and marketplace buy also expose `approval/verify` for their approval phase.
+
+- `/api/actions/entry/*`
+- `/api/actions/ticket-transfer/*`
+- `/api/actions/refund/*`
+- `/api/actions/claim/*`
+- `/api/actions/marketplace-list/*`
+- `/api/actions/marketplace-update-price/*`
+- `/api/actions/marketplace-cancel/*`
+- `/api/actions/marketplace-buy/*`
 
 ## Local development
 
@@ -168,8 +198,13 @@ npm run check:all
 - `ENCRYPTION_KEY`
 - `JWT_SECRET`
 - `CORS_ORIGINS`
-- `WEBAUTHN_ORIGINS`
-- `WEBAUTHN_RP_ID` in production
+
+Optional, required only for the Circle wallet mode:
+
+- `CIRCLE_API_KEY` on the backend
+- `NEXT_PUBLIC_CIRCLE_APP_ID` on the frontend
+
+The backend no longer reads any `WEBAUTHN_*` variable; existing deployments can remove them.
 
 Optional, required only for resolver-authorized cancellation and settlement:
 

@@ -299,7 +299,7 @@ function createSeedBotExecutionService({
 
     const payload = {
       action: 'ENTRY',
-      executionMode: 'BACKEND_WALLET',
+      executionMode: 'SYSTEM_SEED_WALLET',
       chainId: ARC_CHAIN_ID,
       amountRaw: STAKE_AMOUNT_RAW.toString(),
       contract: poolAddress,

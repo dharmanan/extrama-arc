@@ -16,6 +16,9 @@
 //   Layer 3 (service state machines + HTTP route/middleware integration)
 //                                  -> the existing backend verify-*.js suite
 //                                     plus verify-circle-support-matrix.js
+//                                     and the Circle lifecycle suites
+//                                     verify-circle-actions.js and
+//                                     verify-circle-action-behavior.js
 //
 // Every row in the printed matrix is resolved from the *real* pass/fail of
 // one of these checks -- nothing here is asserted directly; this file only
@@ -51,6 +54,9 @@ function runForgeTest() {
     maxBuffer: 64 * 1024 * 1024,
   });
   const tests = new Map(); // key: "ContractName::testName()" -> { status, reason }
+  // A missing forge binary is reported as a tool gap, never as a failing
+  // contract: the forge backed rows cannot be judged on this machine.
+  const toolMissing = result.error?.code === 'ENOENT';
   let parsed = null;
   try {
     parsed = JSON.parse(result.stdout || '{}');
@@ -70,6 +76,7 @@ function runForgeTest() {
   }
   return {
     ranSuccessfully: parsed !== null,
+    toolMissing,
     exitStatus: result.status,
     stderr: result.stderr || '',
     tests,
@@ -90,6 +97,8 @@ const LAYER3_SCRIPTS = [
   'scripts/verify-circle-entry-behavior.js',
   'scripts/verify-http-actions-e2e.js',
   'scripts/verify-circle-support-matrix.js',
+  'scripts/verify-circle-actions.js',
+  'scripts/verify-circle-action-behavior.js',
   'scripts/verify-round-automation-logging.js',
   'scripts/verify-v2-migration-guards.js',
   'scripts/verify-transaction-reconciliation.js',
@@ -121,13 +130,23 @@ const LAYER1_SCRIPTS = [
 // script/smoke-claim-action-auth.js lives at the repo root, not backend/.
 const ROOT_SCRIPTS = ['script/smoke-claim-action-auth.js'];
 
+// Every Circle lifecycle row needs the wiring guard, the backend state machine
+// and receipt verification suite, the client runner suite, and the HTTP route
+// integration suite to pass together.
+const CIRCLE_LIFECYCLE_SCRIPTS = [
+  'scripts/verify-circle-support-matrix.js',
+  'scripts/verify-circle-actions.js',
+  'scripts/verify-circle-action-behavior.js',
+  'scripts/verify-http-actions-e2e.js',
+];
+
 // ---------------------------------------------------------------------------
 // The A-J matrix. Each row's status is resolved from real check results
 // below -- `forge` entries reference "ContractName::testName()", `script`
 // entries reference one of the script results above (LAYER1/LAYER3/ROOT).
 // ---------------------------------------------------------------------------
 const MATRIX = [
-  { section: 'A. ENTRY', id: 'BACKEND_WALLET entry', forge: ['ExtremaPoolEntryTest::testEntryTransfersOneUsdcAndMintsTicket()'], scripts: ['scripts/verify-multi-wallet-execution.js'] },
+  { section: 'A. ENTRY', id: 'SYSTEM_SEED_WALLET entry (autonomous agents)', forge: ['ExtremaPoolEntryTest::testEntryTransfersOneUsdcAndMintsTicket()'], scripts: ['scripts/verify-seed-bot-execution.js', 'scripts/verify-seed-bot-production-executor.js'] },
   { section: 'A. ENTRY', id: 'EXTERNAL_WALLET entry', scripts: ['scripts/verify-multi-wallet-execution.js'] },
   { section: 'A. ENTRY', id: 'CIRCLE state machine (APPROVAL/ENTRY challenge+verify)', scripts: ['scripts/verify-circle-entry.js', 'scripts/verify-circle-entry-behavior.js'] },
   { section: 'A. ENTRY', id: 'CIRCLE HTTP route + auth/middleware flow', scripts: ['scripts/verify-http-actions-e2e.js'] },
@@ -184,10 +203,10 @@ const MATRIX = [
   { section: 'J. SECONDARY MARKET WINNER FLOW', id: 'unsold winner keeps own claim right', forge: ['ExtremaMarketplaceTest::testUnsoldWinningTicketKeepsSellerClaimRight()'] },
 
   { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: ENTRY supported', scripts: ['scripts/verify-circle-support-matrix.js'] },
-  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: TRANSFER_TICKET', unsupported: true, scripts: ['scripts/verify-circle-support-matrix.js'] },
-  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: REFUND_TICKET', unsupported: true, scripts: ['scripts/verify-circle-support-matrix.js'] },
-  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: CLAIM_REWARD', unsupported: true, scripts: ['scripts/verify-circle-support-matrix.js'] },
-  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: MARKETPLACE (list/update/cancel/buy)', unsupported: true, scripts: ['scripts/verify-circle-support-matrix.js'] },
+  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: TRANSFER_TICKET supported', scripts: CIRCLE_LIFECYCLE_SCRIPTS },
+  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: REFUND_TICKET supported', scripts: CIRCLE_LIFECYCLE_SCRIPTS },
+  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: CLAIM_REWARD supported', scripts: CIRCLE_LIFECYCLE_SCRIPTS },
+  { section: 'EXECUTION MODE MATRIX', id: 'CIRCLE_USER_WALLET: MARKETPLACE list, update price, cancel, buy supported', scripts: CIRCLE_LIFECYCLE_SCRIPTS },
 ];
 
 const RECORDED_LIVE_PROOF = [
@@ -210,7 +229,12 @@ const RECORDED_LIVE_PROOF = [
 ];
 
 function statusIcon(status) {
-  return { PASS: 'PASS', FAIL: 'FAIL', UNSUPPORTED_BY_DESIGN: 'UNSUPPORTED_BY_DESIGN', NOT_YET_TESTABLE: 'NOT_YET_TESTABLE' }[status];
+  return {
+    PASS: 'PASS',
+    FAIL: 'FAIL',
+    NOT_RUN_LOCAL_TOOL_MISSING: 'NOT_RUN_LOCAL_TOOL_MISSING',
+    NOT_YET_TESTABLE: 'NOT_YET_TESTABLE',
+  }[status];
 }
 
 function main() {
@@ -218,7 +242,9 @@ function main() {
 
   console.log('--- Layer 2: forge test ---');
   const forge = runForgeTest();
-  if (!forge.ranSuccessfully) {
+  if (forge.toolMissing) {
+    console.log('FORGE_TEST=NOT_RUN_LOCAL_TOOL_MISSING (forge is not installed on this machine)');
+  } else if (!forge.ranSuccessfully) {
     console.error('forge test did not produce parseable JSON output:\n', forge.stderr);
   }
   let forgePass = 0;
@@ -253,14 +279,9 @@ function main() {
   }
 
   function resolveRow(row) {
-    if (row.unsupported) return 'UNSUPPORTED_BY_DESIGN';
     const forgeChecks = row.forge || [];
     const scriptChecks = row.scripts || [];
     const rootChecks = row.root || [];
-    for (const key of forgeChecks) {
-      const entry = forge.tests.get(key);
-      if (!entry || !entry.pass) return 'FAIL';
-    }
     for (const script of scriptChecks) {
       const entry = layer3Results[script] || layer1Results[script];
       if (!entry || !entry.ok) return 'FAIL';
@@ -268,6 +289,13 @@ function main() {
     for (const script of rootChecks) {
       const entry = rootResults[script];
       if (!entry || !entry.ok) return 'FAIL';
+    }
+    // Only a row whose every runnable check passed is held back for the
+    // missing tool; it is never counted as PASS.
+    if (forgeChecks.length > 0 && forge.toolMissing) return 'NOT_RUN_LOCAL_TOOL_MISSING';
+    for (const key of forgeChecks) {
+      const entry = forge.tests.get(key);
+      if (!entry || !entry.pass) return 'FAIL';
     }
     if (forgeChecks.length === 0 && scriptChecks.length === 0 && rootChecks.length === 0) return 'NOT_YET_TESTABLE';
     return 'PASS';
@@ -294,11 +322,13 @@ function main() {
   }
 
   console.log('\n=== SUMMARY ===');
-  console.log(`forge test:        ${forgePass}/${forge.tests.size} passed`);
+  console.log(forge.toolMissing
+    ? 'forge test:        NOT_RUN_LOCAL_TOOL_MISSING'
+    : `forge test:        ${forgePass}/${forge.tests.size} passed`);
   console.log(`Layer 1 scripts:   ${Object.values(layer1Results).filter((r) => r.ok).length}/${LAYER1_SCRIPTS.length} passed`);
   console.log(`Layer 3 scripts:   ${Object.values(layer3Results).filter((r) => r.ok).length}/${LAYER3_SCRIPTS.length} passed`);
   console.log(`Root scripts:      ${Object.values(rootResults).filter((r) => r.ok).length}/${ROOT_SCRIPTS.length} passed`);
-  console.log(`Matrix rows:       ${resolvedRows.filter((r) => r.status === 'PASS').length} PASS, ${resolvedRows.filter((r) => r.status === 'FAIL').length} FAIL, ${resolvedRows.filter((r) => r.status === 'UNSUPPORTED_BY_DESIGN').length} UNSUPPORTED_BY_DESIGN, ${resolvedRows.filter((r) => r.status === 'NOT_YET_TESTABLE').length} NOT_YET_TESTABLE`);
+  console.log(`Matrix rows:       ${resolvedRows.filter((r) => r.status === 'PASS').length} PASS, ${resolvedRows.filter((r) => r.status === 'FAIL').length} FAIL, ${resolvedRows.filter((r) => r.status === 'NOT_RUN_LOCAL_TOOL_MISSING').length} NOT_RUN_LOCAL_TOOL_MISSING, ${resolvedRows.filter((r) => r.status === 'NOT_YET_TESTABLE').length} NOT_YET_TESTABLE`);
 
   const anyScriptFail = [...Object.values(layer3Results), ...Object.values(rootResults)].some((r) => !r.ok);
   const anyLayer1Fail = Object.values(layer1Results).some((r) => !r.ok);
@@ -314,6 +344,9 @@ function main() {
   }
 
   if (!overallOk) {
+    if (forge.toolMissing) {
+      console.log('\nThe deterministic verdict requires forge; the forge backed rows were not run here.');
+    }
     console.log('\nEXTREMA_E2E=FAIL');
     for (const [script, result] of Object.entries({ ...layer3Results, ...rootResults })) {
       if (!result.ok) {

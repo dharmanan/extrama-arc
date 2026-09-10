@@ -11,6 +11,8 @@ const identity = fs.readFileSync(path.join(root, 'src/services/executionIdentity
 const server = fs.readFileSync(path.join(root, 'src/server.js'), 'utf8');
 const actions = fs.readFileSync(path.join(root, 'src/routes/actions.js'), 'utf8');
 const entryService = fs.readFileSync(path.join(root, 'src/services/circleEntryExecutionService.js'), 'utf8');
+const engine = fs.readFileSync(path.join(root, 'src/services/circleExecutionEngine.js'), 'utf8');
+const actionService = fs.readFileSync(path.join(root, 'src/services/circleActionExecutionService.js'), 'utf8');
 
 assert.match(routes, /router\.post\('\/device-token\/social'/);
 assert.match(routes, /router\.post\('\/device-token\/email'/);
@@ -40,6 +42,12 @@ for (const error of [
   'circle_request_invalid',
   'circle_response_invalid',
   'circle_entry_action_expired_after_approval',
+  'circle_action_authorization_invalid',
+  'circle_action_expired_after_approval',
+  'circle_wallet_session_mismatch',
+  'circle_wallet_session_required',
+  'circle_request_id_conflict',
+  'circle_service_not_configured',
 ]) assert.match(server, new RegExp(`'${error}'`));
 assert.match(server, /internal_server_error/);
 assert.match(server, /safeKnownErrors\.has\(error\.message\)/);
@@ -49,6 +57,13 @@ assert.match(server, /circle_rate_limited/);
 assert.doesNotMatch(server, /res\.status\(500\)\.json\(\{ error: error\.message \}\)/);
 assert.match(actions, /circleEntryExecutionService\.verifyCircleApproval/);
 assert.match(actions, /circleEntryExecutionService\.verifyCircleEntry/);
-assert.match(entryService, /new Set\(\['FAILED', 'DENIED', 'CANCELLED'\]\)/);
-assert.match(entryService, /throw new Error\('circle_transaction_failed'\)/);
+// ENTRY and every other Circle action share one engine, so a failed,
+// denied, cancelled, or expired Circle outcome is terminal for all of them.
+assert.match(engine, /CIRCLE_TERMINAL_FAILURE_STATES = new Set\(\['FAILED', 'DENIED', 'CANCELLED'\]\)/);
+assert.match(engine, /CIRCLE_TERMINAL_CHALLENGE_STATES = new Set\(\['FAILED', 'EXPIRED'\]\)/);
+assert.match(engine, /throw new Error\('circle_transaction_failed'\)/);
+assert.match(entryService, /require\('\.\/circleExecutionEngine'\)/);
+assert.match(actionService, /require\('\.\/circleExecutionEngine'\)/);
+assert.match(actions, /circleActionExecutionService\.verifyCircleAction\(/);
+assert.match(actions, /circleActionExecutionService\.verifyCircleActionApproval\(/);
 console.log('CIRCLE_HTTP_ERRORS=PASS');

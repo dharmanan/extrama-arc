@@ -4,14 +4,19 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 const config = require('../config');
+// SYSTEM_SEED_WALLET agents sign through the encrypted seed wallet signer and
+// never hold an HTTP session; createSessionIdentity() rejects that mode.
 const {
   EXECUTION_MODES,
   createSessionIdentity,
 } = require('./executionIdentityService');
 
 async function createSession(userId, ownerAddress, options = {}) {
+  // Every human session names its execution mode explicitly: EXTERNAL_WALLET
+  // or CIRCLE_USER_WALLET. There is no default, so a session can never
+  // silently fall back to a legacy mode.
   const identity = createSessionIdentity({
-    executionMode: options.executionMode || EXECUTION_MODES.BACKEND_WALLET,
+    executionMode: options.executionMode,
     ownerAddress,
     walletAddress: options.walletAddress ?? null,
   });

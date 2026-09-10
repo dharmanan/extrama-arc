@@ -1,20 +1,10 @@
 "use client";
 
-import { confirmCircleEntry } from "./circle-entry";
-import { confirmEntryWithPasskey } from "./passkey-client";
+import type { HumanExecutionMode, TransactionRequest } from "./backend-api";
+import { confirmCircleEntry } from "./circle-actions";
+import { confirmExternalEntry } from "./wallet-actions";
 
-export type EntryExecutionMode =
-  | "BACKEND_WALLET"
-  | "EXTERNAL_WALLET"
-  | "CIRCLE_USER_WALLET";
-
-type ExternalTransactionRequest = {
-  chainId: 5042002;
-  to: string;
-  data: string;
-  value: string;
-  from: string;
-};
+export type EntryExecutionMode = HumanExecutionMode;
 
 export async function confirmEntry(input: {
   executionMode: EntryExecutionMode | null;
@@ -23,7 +13,7 @@ export async function confirmEntry(input: {
   predictionPriceCents: number;
   circleRequestId?: string;
   sendExternalTransaction?: (
-    request: ExternalTransactionRequest,
+    request: TransactionRequest,
   ) => Promise<string>;
 }) {
   if (input.executionMode === "CIRCLE_USER_WALLET") {
@@ -39,10 +29,14 @@ export async function confirmEntry(input: {
     });
   }
 
-  return confirmEntryWithPasskey({
-    poolAddress: input.poolAddress,
-    roundId: input.roundId,
-    predictionPriceCents: input.predictionPriceCents,
-    sendExternalTransaction: input.sendExternalTransaction,
-  });
+  if (input.executionMode === "EXTERNAL_WALLET") {
+    return confirmExternalEntry({
+      poolAddress: input.poolAddress,
+      roundId: input.roundId,
+      predictionPriceCents: input.predictionPriceCents,
+      sendExternalTransaction: input.sendExternalTransaction,
+    });
+  }
+
+  throw new Error("wallet_session_required");
 }

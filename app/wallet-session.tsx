@@ -4,13 +4,15 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { backendApi } from "./lib/backend-api";
 
 export type WalletSessionStatus = "disconnected" | "ready";
-export type WalletExecutionMode = "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+// The two human execution modes. A session is always one of them; there is
+// no EXTREMA held wallet for human users.
+export type WalletExecutionMode = "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
 
 type WalletSession = {
   address: string | null;
   executionMode: WalletExecutionMode | null;
   status: WalletSessionStatus;
-  setWalletReady: (address: string, executionMode?: WalletExecutionMode) => void;
+  setWalletReady: (address: string, executionMode: WalletExecutionMode) => void;
   lockWallet: () => void;
 };
 
@@ -69,7 +71,7 @@ export function WalletSessionProvider({ children }: { children: React.ReactNode 
 
   function setWalletReady(
     nextAddress: string,
-    nextExecutionMode: WalletExecutionMode = "BACKEND_WALLET",
+    nextExecutionMode: WalletExecutionMode,
   ) {
     setAddress(nextAddress);
     setExecutionMode(nextExecutionMode);

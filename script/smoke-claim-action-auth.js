@@ -13,6 +13,26 @@ const fakeDb = {
   async query(sql, params) {
     const normalized = sql.replace(/\s+/g, ' ').trim();
 
+    if (normalized.startsWith('INSERT INTO action_authorizations') && normalized.includes('ON CONFLICT')) {
+      const [id, userId, actionType, payloadHash, payloadJson, expiresAt, circleWalletId, requestId] = params;
+      const existing = [...actionRows.values()].find((row) =>
+        row.user_id === userId && row.action_type === actionType && row.circle_request_id === requestId);
+      const row = existing || {
+        id,
+        user_id: userId,
+        action_type: actionType,
+        payload_hash: payloadHash,
+        payload_json: payloadJson,
+        expires_at: expiresAt,
+        circle_wallet_id: circleWalletId,
+        circle_request_id: requestId,
+        verified_at: null,
+        consumed_at: null,
+      };
+      actionRows.set(row.id, row);
+      return { rowCount: 1, rows: [{ ...row, circle_state: null }] };
+    }
+
     if (normalized.startsWith('INSERT INTO action_authorizations')) {
       const [id, userId, actionType, payloadHash, payloadJson, expiresAt] = params;
       actionRows.set(id, {
@@ -22,94 +42,32 @@ const fakeDb = {
         payload_hash: payloadHash,
         payload_json: payloadJson,
         expires_at: expiresAt,
-        challenge: null,
-        rp_id: null,
-        origin: null,
-        challenge_consumed_at: null,
         verified_at: null,
         consumed_at: null,
       });
       return { rowCount: 1, rows: [] };
     }
 
-    if (
-      normalized.startsWith('UPDATE action_authorizations SET challenge = $1')
-    ) {
-      const [challenge, rpId, origin, actionId, userId] = params;
+    // consumeExternalAction(): the one and only consumption of a connected
+    // wallet authorization, bound to its action type and session wallet.
+    if (normalized.startsWith('UPDATE action_authorizations SET consumed_at = NOW(), authorization_expires_at =')) {
+      const [actionId, userId, actionType, walletAddress] = params;
       const row = actionRows.get(actionId);
+      const executionMode = row && row.payload_json && row.payload_json.executionMode;
       if (
         !row ||
         row.user_id !== userId ||
-        !isFresh(row) ||
-        row.verified_at ||
-        row.consumed_at
-      ) {
-        return { rowCount: 0, rows: [] };
-      }
-
-      row.challenge = challenge;
-      row.rp_id = rpId;
-      row.origin = origin;
-      return { rowCount: 1, rows: [] };
-    }
-
-    if (
-      normalized.startsWith(
-        'UPDATE action_authorizations SET challenge_consumed_at = NOW()',
-      )
-    ) {
-      const [actionId, userId] = params;
-      const row = actionRows.get(actionId);
-      if (
-        !row ||
-        row.user_id !== userId ||
-        !isFresh(row) ||
-        !row.challenge ||
-        row.challenge_consumed_at ||
-        row.verified_at ||
-        row.consumed_at
-      ) {
-        return { rowCount: 0, rows: [] };
-      }
-
-      row.challenge_consumed_at = new Date();
-      return {
-        rowCount: 1,
-        rows: [
-          {
-            challenge: row.challenge,
-            rp_id: row.rp_id,
-            origin: row.origin,
-            payload_hash: row.payload_hash,
-            payload_json: row.payload_json,
-            action_type: row.action_type,
-          },
-        ],
-      };
-    }
-
-    if (
-      normalized.startsWith(
-        'UPDATE action_authorizations SET verified_at = NOW(), consumed_at = NOW()',
-      )
-    ) {
-      const [actionId, userId, payloadHash, actionType] = params;
-      const row = actionRows.get(actionId);
-      if (
-        !row ||
-        row.user_id !== userId ||
-        row.payload_hash !== payloadHash ||
         row.action_type !== actionType ||
-        !row.challenge_consumed_at ||
-        row.verified_at ||
+        String(row.payload_json.walletAddress).toLowerCase() !== String(walletAddress).toLowerCase() ||
+        !(executionMode === 'EXTERNAL_WALLET' || executionMode === 'EXTERNAL_OWNER') ||
         row.consumed_at ||
         !isFresh(row)
       ) {
         return { rowCount: 0, rows: [] };
       }
 
-      row.verified_at = new Date();
       row.consumed_at = new Date();
+      row.authorization_expires_at = new Date(Date.now() + 10 * 60 * 1000);
       return {
         rowCount: 1,
         rows: [
@@ -118,7 +76,6 @@ const fakeDb = {
             action_type: row.action_type,
             payload_hash: row.payload_hash,
             payload_json: row.payload_json,
-            verified_at: row.verified_at,
             consumed_at: row.consumed_at,
           },
         ],
@@ -158,36 +115,6 @@ const fakeDb = {
             external_state: row.external_state ?? null,
             authorization_expires_at: row.authorization_expires_at ?? null,
             verified_tx_hash: row.verified_tx_hash ?? null,
-          },
-        ],
-      };
-    }
-
-    if (
-      normalized.startsWith(
-        'SELECT id, action_type, payload_hash, payload_json, consumed_at FROM action_authorizations',
-      )
-    ) {
-      const [actionId, userId, actionType] = params;
-      const row = actionRows.get(actionId);
-      if (
-        !row ||
-        row.user_id !== userId ||
-        row.action_type !== actionType ||
-        !row.consumed_at
-      ) {
-        return { rowCount: 0, rows: [] };
-      }
-
-      return {
-        rowCount: 1,
-        rows: [
-          {
-            id: row.id,
-            action_type: row.action_type,
-            payload_hash: row.payload_hash,
-            payload_json: row.payload_json,
-            consumed_at: row.consumed_at,
           },
         ],
       };
@@ -270,82 +197,120 @@ async function expectError(operation, expectedMessage) {
 
   console.log('CLAIM_ACTION_PAYLOAD=PASS');
 
-  await actionAuthorizationService.attachWebAuthnChallenge(
-    userId,
-    created.id,
-    'test-webauthn-challenge',
-    {
-      rpID: 'example.test',
-      origin: 'https://example.test',
-    },
-  );
-
-  const saved = await actionAuthorizationService.consumeWebAuthnChallenge(
-    userId,
-    created.id,
-  );
-
-  assert.strictEqual(saved.challenge, 'test-webauthn-challenge');
-  assert.strictEqual(saved.payloadHash, created.payloadHash);
-  assert.strictEqual(saved.actionType, 'CLAIM_REWARD');
-
+  // A connected wallet authorization is consumable only by the session wallet
+  // it is bound to, and only as the action type it was created for.
   await expectError(
     () =>
-      actionAuthorizationService.consumeWebAuthnChallenge(
+      actionAuthorizationService.consumeExternalAction(
         userId,
         created.id,
-      ),
-    'action_challenge_expired',
-  );
-
-  console.log('CLAIM_CHALLENGE_SINGLE_USE=PASS');
-
-  await expectError(
-    () =>
-      actionAuthorizationService.consumeVerifiedAction(
-        userId,
-        created.id,
-        '0'.repeat(64),
         'CLAIM_REWARD',
+        currentOwner,
       ),
     'action_authorization_invalid',
   );
 
   await expectError(
     () =>
-      actionAuthorizationService.consumeVerifiedAction(
+      actionAuthorizationService.consumeExternalAction(
         userId,
         created.id,
-        created.payloadHash,
         'REFUND_TICKET',
+        walletAddress,
+      ),
+    'action_authorization_invalid',
+  );
+
+  await expectError(
+    () =>
+      actionAuthorizationService.consumeExternalAction(
+        '22222222-2222-4222-8222-222222222222',
+        created.id,
+        'CLAIM_REWARD',
+        walletAddress,
       ),
     'action_authorization_invalid',
   );
 
   console.log('CLAIM_PAYLOAD_AND_TYPE_BINDING=PASS');
 
-  const consumed = await actionAuthorizationService.consumeVerifiedAction(
+  const consumed = await actionAuthorizationService.consumeExternalAction(
     userId,
     created.id,
-    created.payloadHash,
     'CLAIM_REWARD',
+    walletAddress.toLowerCase(),
   );
 
   assert.strictEqual(consumed.actionType, 'CLAIM_REWARD');
   assert.strictEqual(consumed.payloadHash, created.payloadHash);
+  assert.deepStrictEqual(consumed.payload, created.payload);
 
   await expectError(
     () =>
-      actionAuthorizationService.consumeVerifiedAction(
+      actionAuthorizationService.consumeExternalAction(
         userId,
         created.id,
-        created.payloadHash,
         'CLAIM_REWARD',
+        walletAddress,
       ),
     'action_authorization_invalid',
   );
 
   console.log('CLAIM_ACTION_SINGLE_USE=PASS');
+
+  const expired = await actionAuthorizationService.createClaimRequest({
+    userId,
+    walletAddress,
+    poolAddress,
+    ticketAddress,
+    tokenId: '2',
+    roundId: 1,
+    currentOwner,
+    amountRaw: '2160000',
+    executionMode: 'EXTERNAL_OWNER',
+  });
+  actionRows.get(expired.id).expires_at = new Date(Date.now() - 1000);
+  await expectError(
+    () =>
+      actionAuthorizationService.consumeExternalAction(
+        userId,
+        expired.id,
+        'CLAIM_REWARD',
+        walletAddress,
+      ),
+    'action_authorization_invalid',
+  );
+
+  console.log('CLAIM_ACTION_EXPIRY=PASS');
+
+  // A Circle claim is signed through its own Circle challenge. It can never
+  // be consumed by the connected wallet path, even by the same wallet.
+  const circleClaim = await actionAuthorizationService.createOrGetCircleActionRequest({
+    actionType: 'CLAIM_REWARD',
+    userId,
+    walletAddress,
+    circleWalletId: '33333333-3333-4333-8333-333333333333',
+    requestId: '44444444-4444-4444-8444-444444444444',
+    poolAddress,
+    ticketAddress,
+    tokenId: '3',
+    roundId: 1,
+    currentOwner,
+    amountRaw: '2160000',
+  });
+  assert.strictEqual(circleClaim.payload.executionMode, 'CIRCLE_USER_WALLET');
+  await expectError(
+    () =>
+      actionAuthorizationService.consumeExternalAction(
+        userId,
+        circleClaim.id,
+        'CLAIM_REWARD',
+        walletAddress,
+      ),
+    'action_authorization_invalid',
+  );
+
+  console.log('CLAIM_CIRCLE_NOT_EXTERNALLY_CONSUMABLE=PASS');
 
   const recovered = await actionAuthorizationService.getConsumedAction(
     userId,
@@ -363,6 +328,16 @@ async function expectError(operation, expectedMessage) {
         userId,
         created.id,
         'REFUND_TICKET',
+      ),
+    'action_authorization_invalid',
+  );
+
+  await expectError(
+    () =>
+      actionAuthorizationService.getConsumedAction(
+        userId,
+        created.id,
+        'NOT_AN_ACTION',
       ),
     'action_authorization_invalid',
   );

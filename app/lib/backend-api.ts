@@ -293,7 +293,70 @@ export type MarketplaceUsdcAllowance = {
   allowanceRaw: string;
 };
 
-export type MarketplaceExecutionMode = "BACKEND_WALLET" | "EXTERNAL_OWNER";
+// The two human execution modes. SYSTEM_SEED_WALLET agents never hold a
+// browser session, so they never appear in any client facing type.
+export type HumanExecutionMode = "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+
+// Connected wallet refund, claim and marketplace payloads are labelled
+// EXTERNAL_OWNER; Circle payloads are labelled CIRCLE_USER_WALLET.
+export type MarketplaceExecutionMode = "EXTERNAL_OWNER" | "CIRCLE_USER_WALLET";
+
+export type ExternalActionAuthorization = {
+  authorization: "EXTERNAL_WALLET_SESSION";
+  executionMode: "EXTERNAL_WALLET";
+};
+
+// ---- Circle user controlled wallet actions ---------------------------------
+
+export type CircleActionType =
+  | "TRANSFER_TICKET"
+  | "REFUND_TICKET"
+  | "CLAIM_REWARD"
+  | "MARKETPLACE_LIST"
+  | "MARKETPLACE_UPDATE_PRICE"
+  | "MARKETPLACE_CANCEL"
+  | "MARKETPLACE_BUY";
+
+export type CircleApprovalActionType = "MARKETPLACE_LIST" | "MARKETPLACE_BUY";
+
+export type CircleStartCredentials = {
+  circleUserToken: string;
+  circleRequestId: string;
+};
+
+export type CircleActionStartResponse<Payload> = {
+  actionId: string;
+  action: Payload;
+  payloadHash: string;
+  expiresInSeconds: number;
+  executionMode: "CIRCLE_USER_WALLET";
+  step: "APPROVAL_REQUIRED" | "ACTION_READY";
+  challengeId: string;
+};
+
+export type CircleActionPendingResponse = {
+  pending: true;
+  actionId: string;
+  transactionObserved: boolean;
+};
+
+export type CircleActionApprovalVerifyResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "CIRCLE_USER_WALLET";
+  approvalTxHash: string;
+  step: "ACTION_READY";
+  challengeId: string;
+};
+
+export type CircleActionVerifyResponse<Result> = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "CIRCLE_USER_WALLET";
+  result: Result;
+};
 
 export type MarketplaceTransactionRequest = {
   chainId: 5042002;
@@ -323,9 +386,7 @@ export type MarketplaceListActionStartResponse = {
   action: MarketplaceListActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type MarketplaceListExecutionResult = {
   chainId: 5042002;
@@ -341,21 +402,13 @@ export type MarketplaceListExecutionResult = {
   explorerUrl: string;
 };
 
-export type MarketplaceListActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: MarketplaceListExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_OWNER";
-      transactionRequest: MarketplaceTransactionRequest;
-    };
+export type MarketplaceListActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  transactionRequest: MarketplaceTransactionRequest;
+};
 
 export type MarketplaceListVerifyResponse = {
   confirmed: true;
@@ -386,9 +439,7 @@ export type MarketplaceUpdatePriceActionStartResponse = {
   action: MarketplaceUpdatePriceActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type MarketplaceUpdatePriceExecutionResult = {
   chainId: 5042002;
@@ -403,21 +454,13 @@ export type MarketplaceUpdatePriceExecutionResult = {
   explorerUrl: string;
 };
 
-export type MarketplaceUpdatePriceActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: MarketplaceUpdatePriceExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_OWNER";
-      transactionRequest: MarketplaceTransactionRequest;
-    };
+export type MarketplaceUpdatePriceActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  transactionRequest: MarketplaceTransactionRequest;
+};
 
 export type MarketplaceUpdatePriceVerifyResponse = {
   confirmed: true;
@@ -447,9 +490,7 @@ export type MarketplaceCancelActionStartResponse = {
   action: MarketplaceCancelActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type MarketplaceCancelExecutionResult = {
   chainId: 5042002;
@@ -462,21 +503,13 @@ export type MarketplaceCancelExecutionResult = {
   explorerUrl: string;
 };
 
-export type MarketplaceCancelActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: MarketplaceCancelExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_OWNER";
-      transactionRequest: MarketplaceTransactionRequest;
-    };
+export type MarketplaceCancelActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  transactionRequest: MarketplaceTransactionRequest;
+};
 
 export type MarketplaceCancelVerifyResponse = {
   confirmed: true;
@@ -508,9 +541,7 @@ export type MarketplaceBuyActionStartResponse = {
   action: MarketplaceBuyActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type MarketplaceBuyExecutionResult = {
   chainId: 5042002;
@@ -527,21 +558,13 @@ export type MarketplaceBuyExecutionResult = {
   explorerUrl: string;
 };
 
-export type MarketplaceBuyActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: MarketplaceBuyExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_OWNER";
-      transactionRequest: MarketplaceTransactionRequest;
-    };
+export type MarketplaceBuyActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  transactionRequest: MarketplaceTransactionRequest;
+};
 
 export type MarketplaceBuyVerifyResponse = {
   confirmed: true;
@@ -586,9 +609,8 @@ export type WalletTicketsState = {
 };
 
 export type OwnedTicketsResponse = {
-  backendWallet: WalletTicketsState;
-  ownerWallet: WalletTicketsState | null;
-  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+  wallet: WalletTicketsState;
+  executionMode: HumanExecutionMode;
 };
 
 export type GatewayBalanceResponse = {
@@ -618,7 +640,7 @@ export type EntryActionPayload = {
   roundId: number;
   amountRaw: "1000000";
   predictionPriceCents: number;
-  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+  executionMode: HumanExecutionMode;
   destination: string;
   walletAddress: string;
   nonce: string;
@@ -638,20 +660,11 @@ export type EntryActionStartResponse = {
   action: EntryActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-} & (
-  | {
-      executionMode?: "BACKEND_WALLET";
-      publicKey: PublicKeyCredentialRequestOptionsJSON;
-      authorization?: never;
-    }
-  | {
-      executionMode: "EXTERNAL_WALLET";
-      authorization: "EXTERNAL_WALLET_SESSION";
-      step: "APPROVAL_REQUIRED" | "ENTRY_READY";
-      transactionRequest: TransactionRequest;
-      publicKey?: never;
-    }
-);
+  executionMode: "EXTERNAL_WALLET";
+  authorization: "EXTERNAL_WALLET_SESSION";
+  step: "APPROVAL_REQUIRED" | "ENTRY_READY";
+  transactionRequest: TransactionRequest;
+};
 
 export type EntryExecutionResult = {
   chainId: 5042002;
@@ -688,13 +701,6 @@ export type EntryExecutionResult = {
     escrowRemainingRaw: string;
     escrowRemainingUsdc: string;
   };
-};
-
-export type EntryActionFinishResponse = {
-  confirmed: true;
-  actionId: string;
-  payloadHash: string;
-  result: EntryExecutionResult;
 };
 
 export type ExternalEntryApprovalVerifyResponse = {
@@ -750,7 +756,7 @@ export type TicketTransferActionPayload = {
   from: string;
   destination: string;
   walletAddress: string;
-  executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET";
+  executionMode: "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
   nonce: string;
   expiresAt: string;
 };
@@ -760,12 +766,11 @@ export type TicketTransferActionStartResponse = {
   action: TicketTransferActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type TicketTransferExecutionResult = {
   chainId: 5042002;
+  executionMode?: "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
   walletAddress: string;
   ticketAddress: string;
   tokenId: string;
@@ -776,21 +781,13 @@ export type TicketTransferExecutionResult = {
   explorerUrl: string;
 };
 
-export type TicketTransferActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: TicketTransferExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_WALLET";
-      transactionRequest: TransactionRequest;
-    };
+export type TicketTransferActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_WALLET";
+  transactionRequest: TransactionRequest;
+};
 
 export type TicketTransferVerifyResponse = {
   confirmed: true;
@@ -800,7 +797,7 @@ export type TicketTransferVerifyResponse = {
   result: TicketTransferExecutionResult;
 };
 
-export type RefundExecutionMode = "BACKEND_WALLET" | "EXTERNAL_OWNER";
+export type RefundExecutionMode = "EXTERNAL_OWNER" | "CIRCLE_USER_WALLET";
 
 export type RefundActionPayload = {
   action: "REFUND_TICKET";
@@ -824,9 +821,7 @@ export type RefundActionStartResponse = {
   action: RefundActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type RefundAccountingProof =
   | {
@@ -855,12 +850,7 @@ export type RefundExecutionResult = {
   amountRaw: "1000000";
   refundTxHash: string;
   explorerUrl: string;
-  accounting?: RefundAccountingProof | {
-    poolUsdcBefore: string;
-    poolUsdcAfter: string;
-    escrowRemainingBefore: string;
-    escrowRemainingAfter: string;
-  };
+  accounting?: RefundAccountingProof;
 };
 
 export type RefundTransactionRequest = {
@@ -871,21 +861,13 @@ export type RefundTransactionRequest = {
   from: string;
 };
 
-export type RefundActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: RefundExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_OWNER";
-      transactionRequest: RefundTransactionRequest;
-    };
+export type RefundActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  transactionRequest: RefundTransactionRequest;
+};
 
 export type RefundVerifyResponse = {
   confirmed: true;
@@ -896,7 +878,7 @@ export type RefundVerifyResponse = {
 };
 
 
-export type ClaimExecutionMode = "BACKEND_WALLET" | "EXTERNAL_OWNER";
+export type ClaimExecutionMode = "EXTERNAL_OWNER" | "CIRCLE_USER_WALLET";
 
 export type ClaimActionPayload = {
   action: "CLAIM_REWARD";
@@ -920,9 +902,7 @@ export type ClaimActionStartResponse = {
   action: ClaimActionPayload;
   payloadHash: string;
   expiresInSeconds: number;
-  publicKey: PublicKeyCredentialRequestOptionsJSON | null;
-  authorization?: "EXTERNAL_WALLET_SESSION";
-};
+} & ExternalActionAuthorization;
 
 export type ClaimAccountingProof =
   | {
@@ -951,12 +931,7 @@ export type ClaimExecutionResult = {
   amountRaw: string;
   claimTxHash: string;
   explorerUrl: string;
-  accounting?: ClaimAccountingProof | {
-    poolUsdcBefore: string;
-    poolUsdcAfter: string;
-    escrowRemainingBefore: string;
-    escrowRemainingAfter: string;
-  };
+  accounting?: ClaimAccountingProof;
 };
 
 export type ClaimTransactionRequest = {
@@ -967,21 +942,13 @@ export type ClaimTransactionRequest = {
   from: string;
 };
 
-export type ClaimActionFinishResponse =
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "BACKEND_WALLET";
-      result: ClaimExecutionResult;
-    }
-  | {
-      confirmed: true;
-      actionId: string;
-      payloadHash: string;
-      executionMode: "EXTERNAL_OWNER";
-      transactionRequest: ClaimTransactionRequest;
-    };
+export type ClaimActionFinishResponse = {
+  confirmed: true;
+  actionId: string;
+  payloadHash: string;
+  executionMode: "EXTERNAL_OWNER";
+  transactionRequest: ClaimTransactionRequest;
+};
 
 export type ClaimVerifyResponse = {
   confirmed: true;
@@ -989,6 +956,69 @@ export type ClaimVerifyResponse = {
   payloadHash: string;
   executionMode: "EXTERNAL_OWNER";
   result: ClaimExecutionResult;
+};
+
+export type TicketTransferStartInput = {
+  ticketAddress: string;
+  tokenId: string;
+  destinationAddress: string;
+};
+
+export type TicketRoundStartInput = {
+  poolAddress: string;
+  ticketAddress: string;
+  tokenId: string;
+  roundId: number;
+};
+
+export type MarketplaceListStartInput = {
+  ticketAddress: string;
+  tokenId: string;
+  askUsdcRaw: string;
+};
+
+export type MarketplaceUpdatePriceStartInput = {
+  listingId: string;
+  newAskUsdcRaw: string;
+};
+
+export type MarketplaceCancelStartInput = {
+  listingId: string;
+};
+
+export type MarketplaceBuyStartInput = {
+  listingId: string;
+  expectedAskUsdcRaw: string;
+};
+
+export type CircleActionPayloadMap = {
+  TRANSFER_TICKET: TicketTransferActionPayload;
+  REFUND_TICKET: RefundActionPayload;
+  CLAIM_REWARD: ClaimActionPayload;
+  MARKETPLACE_LIST: MarketplaceListActionPayload;
+  MARKETPLACE_UPDATE_PRICE: MarketplaceUpdatePriceActionPayload;
+  MARKETPLACE_CANCEL: MarketplaceCancelActionPayload;
+  MARKETPLACE_BUY: MarketplaceBuyActionPayload;
+};
+
+export type CircleActionResultMap = {
+  TRANSFER_TICKET: TicketTransferExecutionResult;
+  REFUND_TICKET: RefundExecutionResult;
+  CLAIM_REWARD: ClaimExecutionResult;
+  MARKETPLACE_LIST: MarketplaceListExecutionResult;
+  MARKETPLACE_UPDATE_PRICE: MarketplaceUpdatePriceExecutionResult;
+  MARKETPLACE_CANCEL: MarketplaceCancelExecutionResult;
+  MARKETPLACE_BUY: MarketplaceBuyExecutionResult;
+};
+
+const CIRCLE_ACTION_ROUTES: Record<CircleActionType, string> = {
+  TRANSFER_TICKET: "ticket-transfer",
+  REFUND_TICKET: "refund",
+  CLAIM_REWARD: "claim",
+  MARKETPLACE_LIST: "marketplace-list",
+  MARKETPLACE_UPDATE_PRICE: "marketplace-update-price",
+  MARKETPLACE_CANCEL: "marketplace-cancel",
+  MARKETPLACE_BUY: "marketplace-buy",
 };
 
 export function isAuthSessionError(cause: unknown) {
@@ -1037,35 +1067,6 @@ function post<T>(path: string, body?: unknown) {
 
 export const backendApi = {
   auth: {
-    registerChallenge(ownerAddress: string) {
-      return post<{ challengeId: string; message: string; expiresInSeconds: number }>(
-        "/auth/register/challenge",
-        { ownerAddress },
-      );
-    },
-    startRegister(ownerAddress: string, challengeId: string, signature: string) {
-      return post<PublicKeyCredentialCreationOptionsJSON>("/auth/register/start", {
-        ownerAddress,
-        challengeId,
-        signature,
-      });
-    },
-    finishRegister(ownerAddress: string, credential: unknown, deviceName: string) {
-      return post<{ ownerAddress: string }>("/auth/register/finish", {
-        ownerAddress,
-        credential,
-        deviceName,
-      });
-    },
-    startLogin(ownerAddress: string) {
-      return post<PublicKeyCredentialRequestOptionsJSON>("/auth/login/start", { ownerAddress });
-    },
-    finishLogin(ownerAddress: string, credential: unknown) {
-      return post<{ ownerAddress: string }>("/auth/login/finish", {
-        ownerAddress,
-        credential,
-      });
-    },
     walletLoginChallenge(ownerAddress: string) {
       return post<{ challengeId: string; message: string; expiresInSeconds: number }>(
         "/auth/wallet-login/challenge",
@@ -1178,12 +1179,6 @@ export const backendApi = {
     }) {
       return post<CircleEntryStartResponse>("/actions/entry/start", input);
     },
-    finishEntry(actionId: string, credential: unknown) {
-      return post<EntryActionFinishResponse>("/actions/entry/finish", {
-        actionId,
-        credential,
-      });
-    },
     verifyEntryApproval(actionId: string, txHash: string) {
       return post<ExternalEntryApprovalVerifyResponse>("/actions/entry/approval/verify", {
         actionId,
@@ -1203,139 +1198,117 @@ export const backendApi = {
         "/actions/entry/verify", { actionId, circleUserToken },
       );
     },
-    startTicketTransfer(input: {
-      ticketAddress: string;
-      tokenId: string;
-      destinationAddress: string;
-    }) {
+
+    // Connected wallet: start then finish returns the exact transaction request
+    // for the wallet to sign then verify checks the mined receipt.
+    startTicketTransfer(input: TicketTransferStartInput) {
       return post<TicketTransferActionStartResponse>("/actions/ticket-transfer/start", input);
     },
-    finishTicketTransfer(actionId: string, credential?: unknown) {
-      return post<TicketTransferActionFinishResponse>("/actions/ticket-transfer/finish", {
-        actionId,
-        credential,
-      });
+    finishTicketTransfer(actionId: string) {
+      return post<TicketTransferActionFinishResponse>("/actions/ticket-transfer/finish", { actionId });
     },
     verifyTicketTransfer(actionId: string, txHash: string) {
-      return post<TicketTransferVerifyResponse>("/actions/ticket-transfer/verify", {
-        actionId,
-        txHash,
-      });
+      return post<TicketTransferVerifyResponse>("/actions/ticket-transfer/verify", { actionId, txHash });
     },
-    startRefund(input: {
-      poolAddress: string;
-      ticketAddress: string;
-      tokenId: string;
-      roundId: number;
-    }) {
+    startRefund(input: TicketRoundStartInput) {
       return post<RefundActionStartResponse>("/actions/refund/start", input);
     },
-    finishRefund(actionId: string, credential: unknown) {
-      return post<RefundActionFinishResponse>("/actions/refund/finish", {
-        actionId,
-        credential,
-      });
+    finishRefund(actionId: string) {
+      return post<RefundActionFinishResponse>("/actions/refund/finish", { actionId });
     },
     verifyRefund(actionId: string, txHash: string) {
-      return post<RefundVerifyResponse>("/actions/refund/verify", {
-        actionId,
-        txHash,
-      });
+      return post<RefundVerifyResponse>("/actions/refund/verify", { actionId, txHash });
     },
-    startClaim(input: {
-      poolAddress: string;
-      ticketAddress: string;
-      tokenId: string;
-      roundId: number;
-    }) {
+    startClaim(input: TicketRoundStartInput) {
       return post<ClaimActionStartResponse>("/actions/claim/start", input);
     },
-    finishClaim(actionId: string, credential: unknown) {
-      return post<ClaimActionFinishResponse>("/actions/claim/finish", {
-        actionId,
-        credential,
-      });
+    finishClaim(actionId: string) {
+      return post<ClaimActionFinishResponse>("/actions/claim/finish", { actionId });
     },
     verifyClaim(actionId: string, txHash: string) {
-      return post<ClaimVerifyResponse>("/actions/claim/verify", {
-        actionId,
-        txHash,
-      });
+      return post<ClaimVerifyResponse>("/actions/claim/verify", { actionId, txHash });
     },
-    startMarketplaceList(input: { ticketAddress: string; tokenId: string; askUsdcRaw: string }) {
+    startMarketplaceList(input: MarketplaceListStartInput) {
       return post<MarketplaceListActionStartResponse>("/actions/marketplace-list/start", input);
     },
-    finishMarketplaceList(actionId: string, credential: unknown) {
-      return post<MarketplaceListActionFinishResponse>("/actions/marketplace-list/finish", {
-        actionId,
-        credential,
-      });
+    finishMarketplaceList(actionId: string) {
+      return post<MarketplaceListActionFinishResponse>("/actions/marketplace-list/finish", { actionId });
     },
     verifyMarketplaceList(actionId: string, txHash: string) {
-      return post<MarketplaceListVerifyResponse>("/actions/marketplace-list/verify", {
-        actionId,
-        txHash,
-      });
+      return post<MarketplaceListVerifyResponse>("/actions/marketplace-list/verify", { actionId, txHash });
     },
-    startMarketplaceUpdatePrice(input: { listingId: string; newAskUsdcRaw: string }) {
+    startMarketplaceUpdatePrice(input: MarketplaceUpdatePriceStartInput) {
       return post<MarketplaceUpdatePriceActionStartResponse>("/actions/marketplace-update-price/start", input);
     },
-    finishMarketplaceUpdatePrice(actionId: string, credential: unknown) {
-      return post<MarketplaceUpdatePriceActionFinishResponse>("/actions/marketplace-update-price/finish", {
-        actionId,
-        credential,
-      });
+    finishMarketplaceUpdatePrice(actionId: string) {
+      return post<MarketplaceUpdatePriceActionFinishResponse>("/actions/marketplace-update-price/finish", { actionId });
     },
     verifyMarketplaceUpdatePrice(actionId: string, txHash: string) {
-      return post<MarketplaceUpdatePriceVerifyResponse>("/actions/marketplace-update-price/verify", {
-        actionId,
-        txHash,
-      });
+      return post<MarketplaceUpdatePriceVerifyResponse>("/actions/marketplace-update-price/verify", { actionId, txHash });
     },
-    startMarketplaceCancel(input: { listingId: string }) {
+    startMarketplaceCancel(input: MarketplaceCancelStartInput) {
       return post<MarketplaceCancelActionStartResponse>("/actions/marketplace-cancel/start", input);
     },
-    finishMarketplaceCancel(actionId: string, credential: unknown) {
-      return post<MarketplaceCancelActionFinishResponse>("/actions/marketplace-cancel/finish", {
-        actionId,
-        credential,
-      });
+    finishMarketplaceCancel(actionId: string) {
+      return post<MarketplaceCancelActionFinishResponse>("/actions/marketplace-cancel/finish", { actionId });
     },
     verifyMarketplaceCancel(actionId: string, txHash: string) {
-      return post<MarketplaceCancelVerifyResponse>("/actions/marketplace-cancel/verify", {
-        actionId,
-        txHash,
-      });
+      return post<MarketplaceCancelVerifyResponse>("/actions/marketplace-cancel/verify", { actionId, txHash });
     },
-    startMarketplaceBuy(input: {
-      listingId: string;
-      expectedAskUsdcRaw: string;
-      executionMode: MarketplaceExecutionMode;
-    }) {
+    startMarketplaceBuy(input: MarketplaceBuyStartInput) {
       return post<MarketplaceBuyActionStartResponse>("/actions/marketplace-buy/start", input);
     },
-    finishMarketplaceBuy(actionId: string, credential: unknown) {
-      return post<MarketplaceBuyActionFinishResponse>("/actions/marketplace-buy/finish", {
-        actionId,
-        credential,
-      });
+    finishMarketplaceBuy(actionId: string) {
+      return post<MarketplaceBuyActionFinishResponse>("/actions/marketplace-buy/finish", { actionId });
     },
     verifyMarketplaceBuy(actionId: string, txHash: string) {
-      return post<MarketplaceBuyVerifyResponse>("/actions/marketplace-buy/verify", {
-        actionId,
-        txHash,
-      });
+      return post<MarketplaceBuyVerifyResponse>("/actions/marketplace-buy/verify", { actionId, txHash });
+    },
+
+    // Circle user controlled wallet: start returns a hosted Circle challenge
+    // for the same session wallet; approval/verify and verify reconcile the
+    // Circle transaction for that one bound action.
+    startCircleTicketTransfer(input: TicketTransferStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<TicketTransferActionPayload>>("/actions/ticket-transfer/start", input);
+    },
+    startCircleRefund(input: TicketRoundStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<RefundActionPayload>>("/actions/refund/start", input);
+    },
+    startCircleClaim(input: TicketRoundStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<ClaimActionPayload>>("/actions/claim/start", input);
+    },
+    startCircleMarketplaceList(input: MarketplaceListStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<MarketplaceListActionPayload>>("/actions/marketplace-list/start", input);
+    },
+    startCircleMarketplaceUpdatePrice(input: MarketplaceUpdatePriceStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<MarketplaceUpdatePriceActionPayload>>("/actions/marketplace-update-price/start", input);
+    },
+    startCircleMarketplaceCancel(input: MarketplaceCancelStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<MarketplaceCancelActionPayload>>("/actions/marketplace-cancel/start", input);
+    },
+    startCircleMarketplaceBuy(input: MarketplaceBuyStartInput & CircleStartCredentials) {
+      return post<CircleActionStartResponse<MarketplaceBuyActionPayload>>("/actions/marketplace-buy/start", input);
+    },
+    verifyCircleActionApproval(actionType: CircleApprovalActionType, actionId: string, circleUserToken: string) {
+      return post<CircleActionApprovalVerifyResponse | CircleActionPendingResponse>(
+        `/actions/${CIRCLE_ACTION_ROUTES[actionType]}/approval/verify`, { actionId, circleUserToken },
+      );
+    },
+    verifyCircleAction<T extends CircleActionType>(actionType: T, actionId: string, circleUserToken: string) {
+      return post<CircleActionVerifyResponse<CircleActionResultMap[T]> | CircleActionPendingResponse>(
+        `/actions/${CIRCLE_ACTION_ROUTES[actionType]}/verify`, { actionId, circleUserToken },
+      );
     },
   },
   wallet: {
     get() {
       return request<{
-        executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+        executionMode: HumanExecutionMode;
         wallet: {
           id: string | null;
           address: string;
           createdAt: string | null;
-          executionMode: "BACKEND_WALLET" | "EXTERNAL_WALLET" | "CIRCLE_USER_WALLET";
+          executionMode: HumanExecutionMode;
         } | null;
       }>("/wallet");
     },
@@ -1375,40 +1348,5 @@ export const backendApi = {
         };
       }>("/wallet/chain-state");
     },
-    create() {
-      return post<{
-        created: boolean;
-        wallet: { id: string; address: string; createdAt: string };
-        privateKey: string | null;
-        privateKeyDisclosure: "one_time_only" | null;
-      }>("/wallet/create", {});
-    },
   },
-};
-
-export type PublicKeyCredentialCreationOptionsJSON = {
-  challenge: string;
-  rp: { id?: string; name: string };
-  user: { id: string; name: string; displayName: string };
-  pubKeyCredParams: Array<{ type: PublicKeyCredentialType; alg: number }>;
-  timeout?: number;
-  excludeCredentials?: Array<{
-    id: string;
-    type: PublicKeyCredentialType;
-    transports?: AuthenticatorTransport[];
-  }>;
-  authenticatorSelection?: AuthenticatorSelectionCriteria;
-  attestation?: AttestationConveyancePreference;
-};
-
-export type PublicKeyCredentialRequestOptionsJSON = {
-  challenge: string;
-  timeout?: number;
-  rpId?: string;
-  allowCredentials?: Array<{
-    id: string;
-    type: PublicKeyCredentialType;
-    transports?: AuthenticatorTransport[];
-  }>;
-  userVerification?: UserVerificationRequirement;
 };

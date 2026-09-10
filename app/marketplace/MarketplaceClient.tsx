@@ -6,7 +6,6 @@ import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 import {
   backendApi,
   isAuthSessionError,
-  type MarketplaceExecutionMode,
   type MarketplaceListing,
   type MarketplaceUsdcAllowance,
 } from "../lib/backend-api";
@@ -15,10 +14,7 @@ import type { Asset } from "../lib/domain";
 import { useCopy, useLocale } from "../i18n";
 import { formatUsdc } from "../lib/display";
 import { useWalletSession } from "../wallet-session";
-import {
-  confirmExternalMarketplaceBuyReceipt,
-  confirmMarketplaceBuyWithPasskey,
-} from "../lib/passkey-client";
+import { executeMarketplaceBuy } from "../lib/wallet-actions";
 import { encodeApproveCalldata } from "../lib/erc-approve";
 
 const ARC_TESTNET_CHAIN_ID = 5042002;
@@ -215,7 +211,6 @@ export default function MarketplaceClient() {
   const [buyListing, setBuyListing] = useState<MarketplaceListing | null>(null);
   const [buyRefreshing, setBuyRefreshing] = useState(false);
   const [buyPriceChanged, setBuyPriceChanged] = useState(false);
-  const [buyWalletChoice, setBuyWalletChoice] = useState<MarketplaceExecutionMode | null>(null);
   const [buyAllowance, setBuyAllowance] = useState<MarketplaceUsdcAllowance | null>(null);
   const [buyApproveBusy, setBuyApproveBusy] = useState(false);
   const [buyBusy, setBuyBusy] = useState(false);
@@ -223,6 +218,14 @@ export default function MarketplaceClient() {
   const [buyError, setBuyError] = useState("");
   const [buyAuthRequired, setBuyAuthRequired] = useState(false);
   const [buySuccess, setBuySuccess] = useState<{ explorerUrl: string } | null>(null);
+
+  // The authenticated session is the only authority on how a purchase is
+  // paid: the connected wallet signs its own approval and purchase, or the
+  // Circle wallet approves hosted Circle challenges. There is no wallet to
+  // choose between.
+  const buyerMode = walletSession.status === "ready" ? walletSession.executionMode : null;
+  const isCircleBuyer = buyerMode === "CIRCLE_USER_WALLET";
+  const isExternalBuyer = buyerMode === "EXTERNAL_WALLET";
 
   async function sendConnectedTransaction(request: {
     to: string;
@@ -273,18 +276,17 @@ export default function MarketplaceClient() {
 
   async function openBuyDrawer(listing: MarketplaceListing) {
     setBuyListing(listing);
-    setBuyWalletChoice(walletSession.executionMode === "EXTERNAL_WALLET" ? "EXTERNAL_OWNER" : null);
     setBuyAllowance(null);
     setBuyError("");
     setBuyAuthRequired(false);
     setBuyPriceChanged(false);
     setBuySuccess(null);
     await refreshBuyListing(listing.listingId);
+    if (isExternalBuyer) await refreshBuyAllowance();
   }
 
   function closeBuyDrawer() {
     setBuyListing(null);
-    setBuyWalletChoice(null);
     setBuyAllowance(null);
     setBuyError("");
     setBuyPriceChanged(false);
@@ -307,16 +309,16 @@ export default function MarketplaceClient() {
     }
   }
 
-  async function selectBuyWallet(mode: MarketplaceExecutionMode) {
-    setBuyWalletChoice(mode);
-    setBuyError("");
-    if (mode === "EXTERNAL_OWNER" && isConnected && ownerAddress) {
-      try {
-        const allowance = await backendApi.marketplace.usdcAllowance(ownerAddress);
-        setBuyAllowance(allowance);
-      } catch {
-        setBuyAllowance(null);
-      }
+  // Connected wallet only: its exact USDC approval is a separate wallet step.
+  async function refreshBuyAllowance() {
+    if (!isConnected || !ownerAddress) {
+      setBuyAllowance(null);
+      return;
+    }
+    try {
+      setBuyAllowance(await backendApi.marketplace.usdcAllowance(ownerAddress));
+    } catch {
+      setBuyAllowance(null);
     }
   }
 
@@ -348,39 +350,27 @@ export default function MarketplaceClient() {
   }
 
   async function handleConfirmPurchase() {
-    if (!buyListing || !buyWalletChoice) return;
+    if (!buyListing || !buyerMode) return;
 
     setBuyBusy(true);
     setBuyError("");
-    setBuyStatusText(walletSession.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
+    setBuyStatusText(isCircleBuyer ? t.marketplacePage.confirmingInCircle : t.marketplacePage.waitingForWalletTransaction);
 
     try {
-      const outcome = await confirmMarketplaceBuyWithPasskey({
-        listingId: buyListing.listingId,
-        expectedAskUsdcRaw: buyListing.askUsdcRaw,
-        executionMode: buyWalletChoice,
-      });
-
-      let explorerUrl: string;
-      if (outcome.executionMode === "BACKEND_WALLET") {
-        explorerUrl = outcome.result.explorerUrl;
-      } else {
-        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.buyerAddress.toLowerCase()) {
-          throw new Error(t.marketplacePage.connectMatchingWallet);
-        }
-
-        setBuyStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendConnectedTransaction({
-          to: outcome.transactionRequest.to,
-          data: outcome.transactionRequest.data,
-          value: outcome.transactionRequest.value,
-          from: outcome.transactionRequest.from,
-        });
-
-        setBuyStatusText(t.marketplacePage.verifyingPurchase);
-        const result = await confirmExternalMarketplaceBuyReceipt(outcome.actionId, txHash);
-        explorerUrl = result.explorerUrl;
-      }
+      const { explorerUrl } = await executeMarketplaceBuy(
+        { listingId: buyListing.listingId, expectedAskUsdcRaw: buyListing.askUsdcRaw },
+        {
+          executionMode: buyerMode,
+          sendExternalTransaction: sendConnectedTransaction,
+          onStatus: (status) => setBuyStatusText(
+            status === "WAITING_FOR_CIRCLE"
+              ? t.marketplacePage.confirmingInCircle
+              : status === "VERIFYING"
+                ? t.marketplacePage.verifyingPurchase
+                : t.marketplacePage.waitingForWalletTransaction,
+          ),
+        },
+      );
 
       setBuySuccess({ explorerUrl });
       closeBuyDrawer();
@@ -560,32 +550,20 @@ export default function MarketplaceClient() {
                               </p>
                             ) : (
                               <>
-                                <div className="ex-market-drawer__wallets">
-                                  {walletSession.executionMode !== "EXTERNAL_WALLET" && <button
-                                    type="button"
-                                    data-active={buyWalletChoice === "BACKEND_WALLET"}
-                                    onClick={() => void selectBuyWallet("BACKEND_WALLET")}
-                                    disabled={walletSession.status !== "ready"}
-                                  >
-                                    {t.marketplacePage.buyWalletBackend}
-                                  </button>}
-                                  <button
-                                    type="button"
-                                    data-active={buyWalletChoice === "EXTERNAL_OWNER"}
-                                    onClick={() => void selectBuyWallet("EXTERNAL_OWNER")}
-                                    disabled={!isConnected}
-                                  >
-                                    {t.marketplacePage.buyWalletOwner}
-                                  </button>
-                                </div>
+                                {!buyerMode && (
+                                  <p className="ex-market-drawer__msg">
+                                    {t.marketplacePage.connectWalletToBuy}{" "}
+                                    <Link href="/wallet">{locale === "tr" ? "Cüzdana git" : "Go to wallet"}</Link>
+                                  </p>
+                                )}
 
-                                {buyWalletChoice === "EXTERNAL_OWNER" && !isConnected && (
+                                {isCircleBuyer && <p>{t.marketplacePage.buyReadyCircle}</p>}
+
+                                {isExternalBuyer && !isConnected && (
                                   <p className="ex-market-drawer__msg">{t.marketplacePage.connectWalletToBuy}</p>
                                 )}
 
-                                {buyWalletChoice === "BACKEND_WALLET" && <p>{t.marketplacePage.buyReadyBackend}</p>}
-
-                                {buyWalletChoice === "EXTERNAL_OWNER" && isConnected && (
+                                {isExternalBuyer && isConnected && (
                                   <p>
                                     {buyAllowance && BigInt(buyAllowance.allowanceRaw) >= BigInt(buyListing.askUsdcRaw)
                                       ? t.marketplacePage.buyReadyOwner
@@ -600,7 +578,7 @@ export default function MarketplaceClient() {
                                 )}
 
                                 <div className="ex-market-drawer-actions">
-                                  {buyWalletChoice === "EXTERNAL_OWNER" &&
+                                  {isExternalBuyer &&
                                   isConnected &&
                                   (!buyAllowance || BigInt(buyAllowance.allowanceRaw) < BigInt(buyListing.askUsdcRaw)) ? (
                                     <button type="button" onClick={() => void handleApproveUsdc()} disabled={buyApproveBusy}>
@@ -611,13 +589,13 @@ export default function MarketplaceClient() {
                                       type="button"
                                       onClick={() => void handleConfirmPurchase()}
                                       disabled={
-                                        !buyWalletChoice ||
+                                        !buyerMode ||
                                         buyBusy ||
                                         buyRefreshing ||
-                                        (buyWalletChoice === "EXTERNAL_OWNER" && !isConnected)
+                                        (isExternalBuyer && !isConnected)
                                       }
                                     >
-                                      {buyBusy ? buyStatusText || t.marketplacePage.confirmingWithPasskey : t.marketplacePage.confirmPurchase}
+                                      {buyBusy ? buyStatusText || t.marketplacePage.confirmingInCircle : t.marketplacePage.confirmPurchase}
                                     </button>
                                   )}
                                   <button type="button" onClick={closeBuyDrawer} disabled={buyBusy || buyApproveBusy}>

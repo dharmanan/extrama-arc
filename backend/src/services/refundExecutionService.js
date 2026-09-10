@@ -2,7 +2,6 @@
 
 const { ethers } = require('ethers');
 const arcService = require('./arcService');
-const walletService = require('./walletService');
 
 const REFUND_ABI = [
   'function refund(uint256 tokenId)',
@@ -18,7 +17,11 @@ const USDC_ABI = [
 
 const REFUND_INTERFACE = new ethers.Interface(REFUND_ABI);
 const USDC_INTERFACE = new ethers.Interface(USDC_ABI);
-const EXECUTION_MODES = ['BACKEND_WALLET', 'EXTERNAL_OWNER'];
+// Human execution modes only: the current NFT owner's own wallet (connected,
+// or Circle user controlled) signs refund(tokenId). EXTREMA never signs it.
+const EXTERNAL_MODES = ['EXTERNAL_OWNER'];
+const CIRCLE_MODES = ['CIRCLE_USER_WALLET'];
+const EXECUTION_MODES = [...EXTERNAL_MODES, ...CIRCLE_MODES];
 const REFUND_AMOUNT_RAW = 1_000_000n;
 
 // Structural/identity validation only — no freshness check. This alone is
@@ -151,8 +154,8 @@ async function readPoolAccounting(poolAddress, usdcAddress, roundId, provider, o
   };
 }
 
-// Best-effort diagnostic evidence ONLY — never a hard gate. For the
-// EXTERNAL_OWNER path the backend does not control when the wallet actually
+// Best effort diagnostic evidence ONLY, never a hard gate. On every
+// user signed path (connected wallet or Circle) the backend does not control when the wallet actually
 // sends the transaction, so there is no reliable server-captured "before"
 // snapshot to diff against. Reading the pool's accounting at
 // receipt.blockNumber - 1 vs receipt.blockNumber is BLOCK-scoped, not
@@ -191,113 +194,16 @@ async function tryReadPoolAccountingDelta(poolAddress, usdcAddress, roundId, pro
   }
 }
 
-async function executeBackendRefund(userId, payload) {
-  assertRefundPayloadShape(payload);
-  assertRefundPayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') {
+function assertRefundMode(payload, allowedModes) {
+  if (!allowedModes.includes(payload.executionMode)) {
     throw new Error('refund_execution_mode_mismatch');
   }
-
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) {
-    throw new Error('arc_chain_id_mismatch');
-  }
-
-  const state = await reverifyRefundState(payload);
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const signerAddress = ethers.getAddress(signer.address);
-
-  if (signerAddress.toLowerCase() !== payload.currentOwner.toLowerCase()) {
-    throw new Error('refund_signer_mismatch');
-  }
-  if (signerAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('refund_wallet_mismatch');
-  }
-
-  const poolAddress = ethers.getAddress(payload.poolAddress);
-  const tokenId = BigInt(payload.tokenId);
-  const pool = new ethers.Contract(poolAddress, REFUND_ABI, signer);
-
-  const nativeBalance = await provider.getBalance(signerAddress);
-  if (nativeBalance === 0n) {
-    throw new Error('refund_insufficient_gas');
-  }
-
-  // Captured immediately before/after our own tx.wait() — this is a
-  // transaction-scoped delta we fully control the timing of (unlike the
-  // EXTERNAL_OWNER path below), so no historical-state fallback is needed.
-  const before = await readPoolAccounting(poolAddress, state.usdcAddress, payload.roundId, provider);
-
-  const tx = await pool.refund(tokenId);
-  const receipt = await tx.wait();
-  requireSuccessfulReceipt(receipt);
-
-  const after = await readPoolAccounting(poolAddress, state.usdcAddress, payload.roundId, provider);
-
-  const poolUsdcDelta = before.poolUsdcBalance - after.poolUsdcBalance;
-  if (poolUsdcDelta !== REFUND_AMOUNT_RAW) {
-    throw new Error('refund_pool_balance_delta_mismatch');
-  }
-
-  const escrowDelta = before.escrowRemaining - after.escrowRemaining;
-  if (escrowDelta !== REFUND_AMOUNT_RAW) {
-    throw new Error('refund_escrow_delta_mismatch');
-  }
-
-  const transferEvent = findRefundTransferEvent(receipt, {
-    usdcAddress: state.usdcAddress,
-    from: poolAddress,
-    to: signerAddress,
-  });
-  if (!transferEvent) {
-    throw new Error('refund_transfer_event_missing');
-  }
-
-  const refundClaimedEvent = findRefundClaimedEvent(receipt, {
-    poolAddress,
-    roundId: payload.roundId,
-    tokenId,
-    owner: signerAddress,
-  });
-  if (!refundClaimedEvent) {
-    throw new Error('refund_claimed_event_missing');
-  }
-
-  const refundedAfter = await pool.refunded(tokenId);
-  if (!refundedAfter) {
-    throw new Error('refund_postcondition_failed');
-  }
-
-  arcService.invalidateArcWalletStateCache(signerAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    executionMode: 'BACKEND_WALLET',
-    poolAddress,
-    ticketAddress: ethers.getAddress(payload.ticketAddress),
-    tokenId: tokenId.toString(),
-    roundId: payload.roundId,
-    currentOwner: signerAddress,
-    amountRaw: REFUND_AMOUNT_RAW.toString(),
-    refundTxHash: tx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${tx.hash}`,
-    accounting: {
-      poolUsdcBefore: before.poolUsdcBalance.toString(),
-      poolUsdcAfter: after.poolUsdcBalance.toString(),
-      escrowRemainingBefore: before.escrowRemaining.toString(),
-      escrowRemainingAfter: after.escrowRemaining.toString(),
-    },
-  };
 }
 
-async function buildExternalRefundTransactionRequest(payload) {
+async function buildRefundTransactionRequest(payload, allowedModes) {
   assertRefundPayloadShape(payload);
   assertRefundPayloadFresh(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') {
-    throw new Error('refund_execution_mode_mismatch');
-  }
+  assertRefundMode(payload, allowedModes);
 
   const provider = arcService.getArcProvider();
   const network = await provider.getNetwork();
@@ -320,16 +226,14 @@ async function buildExternalRefundTransactionRequest(payload) {
   };
 }
 
-async function verifyExternalRefundReceipt(payload, txHash) {
+async function verifyRefundReceipt(payload, txHash, allowedModes) {
   // Freshness is intentionally NOT checked here: the authorization was
-  // already consumed (within its 2-minute window) back in /refund/finish,
-  // which is what produced this transaction request in the first place.
-  // This step only verifies the resulting on-chain transaction, which can
+  // already turned into exactly one transaction request (connected wallet
+  // /refund/finish, or one bound Circle challenge) inside its window. This
+  // step only verifies the resulting onchain transaction, which can
   // legitimately be confirmed well after the original expiresAt.
   assertRefundPayloadShape(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') {
-    throw new Error('refund_execution_mode_mismatch');
-  }
+  assertRefundMode(payload, allowedModes);
   if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     throw new Error('refund_txhash_invalid');
   }
@@ -417,7 +321,7 @@ async function verifyExternalRefundReceipt(payload, txHash) {
 
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_OWNER',
+    executionMode: payload.executionMode,
     poolAddress,
     ticketAddress: ethers.getAddress(payload.ticketAddress),
     tokenId: tokenId.toString(),
@@ -430,8 +334,25 @@ async function verifyExternalRefundReceipt(payload, txHash) {
   };
 }
 
+async function buildExternalRefundTransactionRequest(payload) {
+  return buildRefundTransactionRequest(payload, EXTERNAL_MODES);
+}
+
+async function verifyExternalRefundReceipt(payload, txHash) {
+  return verifyRefundReceipt(payload, txHash, EXTERNAL_MODES);
+}
+
+async function buildCircleRefundTransactionRequest(payload) {
+  return buildRefundTransactionRequest(payload, CIRCLE_MODES);
+}
+
+async function verifyCircleRefundReceipt(payload, txHash) {
+  return verifyRefundReceipt(payload, txHash, CIRCLE_MODES);
+}
+
 module.exports = {
-  executeBackendRefund,
   buildExternalRefundTransactionRequest,
   verifyExternalRefundReceipt,
+  buildCircleRefundTransactionRequest,
+  verifyCircleRefundReceipt,
 };

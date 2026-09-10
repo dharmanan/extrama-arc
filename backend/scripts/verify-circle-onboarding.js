@@ -80,7 +80,7 @@ async function main() {
 
   await assert.rejects(
     () => createCircleUserWalletService().listArcEoa('circle-user-token'),
-    /circle_wallet_not_configured/,
+    /circle_service_not_configured/,
   );
   console.log('CIRCLE_ONBOARDING_FOUNDATION=PASS');
 }

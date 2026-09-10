@@ -2,7 +2,6 @@
 
 const { ethers } = require('ethers');
 const arcService = require('./arcService');
-const walletService = require('./walletService');
 
 const CLAIM_ABI = [
   'function claim(uint256 tokenId)',
@@ -19,7 +18,11 @@ const USDC_ABI = [
 
 const CLAIM_INTERFACE = new ethers.Interface(CLAIM_ABI);
 const USDC_INTERFACE = new ethers.Interface(USDC_ABI);
-const EXECUTION_MODES = ['BACKEND_WALLET', 'EXTERNAL_OWNER'];
+// Human execution modes only: the current winning NFT owner's own wallet
+// (connected, or Circle user controlled) signs claim(tokenId).
+const EXTERNAL_MODES = ['EXTERNAL_OWNER'];
+const CIRCLE_MODES = ['CIRCLE_USER_WALLET'];
+const EXECUTION_MODES = [...EXTERNAL_MODES, ...CIRCLE_MODES];
 
 function assertClaimPayloadShape(payload) {
   if (
@@ -177,123 +180,16 @@ async function tryReadPoolAccountingDelta(
   }
 }
 
-async function executeBackendClaim(userId, payload) {
-  assertClaimPayloadShape(payload);
-  assertClaimPayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') {
+function assertClaimMode(payload, allowedModes) {
+  if (!allowedModes.includes(payload.executionMode)) {
     throw new Error('claim_execution_mode_mismatch');
   }
-
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) {
-    throw new Error('arc_chain_id_mismatch');
-  }
-
-  const state = await reverifyClaimState(payload);
-  const amount = BigInt(payload.amountRaw);
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const signerAddress = ethers.getAddress(signer.address);
-
-  if (signerAddress.toLowerCase() !== payload.currentOwner.toLowerCase()) {
-    throw new Error('claim_signer_mismatch');
-  }
-  if (signerAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('claim_wallet_mismatch');
-  }
-
-  const poolAddress = ethers.getAddress(payload.poolAddress);
-  const tokenId = BigInt(payload.tokenId);
-  const pool = new ethers.Contract(poolAddress, CLAIM_ABI, signer);
-
-  const nativeBalance = await provider.getBalance(signerAddress);
-  if (nativeBalance === 0n) {
-    throw new Error('claim_insufficient_gas');
-  }
-
-  const before = await readPoolAccounting(
-    poolAddress,
-    state.usdcAddress,
-    payload.roundId,
-    provider,
-  );
-
-  const tx = await pool.claim(tokenId);
-  const receipt = await tx.wait();
-  requireSuccessfulReceipt(receipt);
-
-  const after = await readPoolAccounting(
-    poolAddress,
-    state.usdcAddress,
-    payload.roundId,
-    provider,
-  );
-
-  if (before.poolUsdcBalance - after.poolUsdcBalance !== amount) {
-    throw new Error('claim_pool_balance_delta_mismatch');
-  }
-  if (before.escrowRemaining - after.escrowRemaining !== amount) {
-    throw new Error('claim_escrow_delta_mismatch');
-  }
-
-  const transferEvent = findClaimTransferEvent(receipt, {
-    usdcAddress: state.usdcAddress,
-    from: poolAddress,
-    to: signerAddress,
-    amount,
-  });
-  if (!transferEvent) {
-    throw new Error('claim_transfer_event_missing');
-  }
-
-  const rewardClaimedEvent = findRewardClaimedEvent(receipt, {
-    poolAddress,
-    roundId: payload.roundId,
-    tokenId,
-    owner: signerAddress,
-    amount,
-  });
-  if (!rewardClaimedEvent) {
-    throw new Error('claim_reward_event_missing');
-  }
-
-  const [claimedAfter, claimableAfter] = await Promise.all([
-    pool.claimed(tokenId),
-    pool.claimableByTicket(tokenId),
-  ]);
-  if (!claimedAfter || claimableAfter !== 0n) {
-    throw new Error('claim_postcondition_failed');
-  }
-
-  arcService.invalidateArcWalletStateCache(signerAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    executionMode: 'BACKEND_WALLET',
-    poolAddress,
-    ticketAddress: ethers.getAddress(payload.ticketAddress),
-    tokenId: tokenId.toString(),
-    roundId: payload.roundId,
-    currentOwner: signerAddress,
-    amountRaw: amount.toString(),
-    claimTxHash: tx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${tx.hash}`,
-    accounting: {
-      poolUsdcBefore: before.poolUsdcBalance.toString(),
-      poolUsdcAfter: after.poolUsdcBalance.toString(),
-      escrowRemainingBefore: before.escrowRemaining.toString(),
-      escrowRemainingAfter: after.escrowRemaining.toString(),
-    },
-  };
 }
 
-async function buildExternalClaimTransactionRequest(payload) {
+async function buildClaimTransactionRequest(payload, allowedModes) {
   assertClaimPayloadShape(payload);
   assertClaimPayloadFresh(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') {
-    throw new Error('claim_execution_mode_mismatch');
-  }
+  assertClaimMode(payload, allowedModes);
 
   const provider = arcService.getArcProvider();
   const network = await provider.getNetwork();
@@ -316,11 +212,11 @@ async function buildExternalClaimTransactionRequest(payload) {
   };
 }
 
-async function verifyExternalClaimReceipt(payload, txHash) {
+async function verifyClaimReceipt(payload, txHash, allowedModes) {
+  // No freshness check: this verifies a transaction that was already built
+  // from a fresh authorization, and may be mined after that window closed.
   assertClaimPayloadShape(payload);
-  if (payload.executionMode !== 'EXTERNAL_OWNER') {
-    throw new Error('claim_execution_mode_mismatch');
-  }
+  assertClaimMode(payload, allowedModes);
   if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     throw new Error('claim_txhash_invalid');
   }
@@ -406,7 +302,7 @@ async function verifyExternalClaimReceipt(payload, txHash) {
 
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_OWNER',
+    executionMode: payload.executionMode,
     poolAddress,
     ticketAddress: ethers.getAddress(payload.ticketAddress),
     tokenId: tokenId.toString(),
@@ -419,8 +315,25 @@ async function verifyExternalClaimReceipt(payload, txHash) {
   };
 }
 
+async function buildExternalClaimTransactionRequest(payload) {
+  return buildClaimTransactionRequest(payload, EXTERNAL_MODES);
+}
+
+async function verifyExternalClaimReceipt(payload, txHash) {
+  return verifyClaimReceipt(payload, txHash, EXTERNAL_MODES);
+}
+
+async function buildCircleClaimTransactionRequest(payload) {
+  return buildClaimTransactionRequest(payload, CIRCLE_MODES);
+}
+
+async function verifyCircleClaimReceipt(payload, txHash) {
+  return verifyClaimReceipt(payload, txHash, CIRCLE_MODES);
+}
+
 module.exports = {
-  executeBackendClaim,
   buildExternalClaimTransactionRequest,
   verifyExternalClaimReceipt,
+  buildCircleClaimTransactionRequest,
+  verifyCircleClaimReceipt,
 };

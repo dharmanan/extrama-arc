@@ -2,7 +2,6 @@
 
 const { ethers } = require('ethers');
 const arcService = require('./arcService');
-const walletService = require('./walletService');
 
 const TICKET_TRANSFER_ABI = [
   'function ownerOf(uint256 tokenId) view returns (address)',
@@ -10,11 +9,17 @@ const TICKET_TRANSFER_ABI = [
 ];
 const TICKET_TRANSFER_INTERFACE = new ethers.Interface(TICKET_TRANSFER_ABI);
 
+// Human execution modes only. The user's own wallet (connected, or Circle
+// user controlled) signs the transfer; EXTREMA only builds and verifies it.
+const EXTERNAL_MODES = ['EXTERNAL_WALLET', 'EXTERNAL_OWNER'];
+const CIRCLE_MODES = ['CIRCLE_USER_WALLET'];
+const EXECUTION_MODES = [...EXTERNAL_MODES, ...CIRCLE_MODES];
+
 function assertTransferPayload(payload) {
   if (
     !payload ||
     payload.action !== 'TRANSFER_TICKET' ||
-    !['BACKEND_WALLET', 'EXTERNAL_WALLET', 'EXTERNAL_OWNER'].includes(payload.executionMode) ||
+    !EXECUTION_MODES.includes(payload.executionMode) ||
     payload.chainId !== 5042002 ||
     !ethers.isAddress(payload.contract) ||
     !ethers.isAddress(payload.walletAddress) ||
@@ -39,92 +44,22 @@ function assertTransferPayloadFresh(payload) {
   }
 }
 
+function assertMode(payload, allowedModes) {
+  if (!allowedModes.includes(payload.executionMode)) {
+    throw new Error('transfer_execution_mode_mismatch');
+  }
+}
+
 function requireSuccessfulReceipt(receipt) {
   if (!receipt || receipt.status !== 1) {
     throw new Error('transfer_transaction_failed');
   }
 }
 
-async function executeTicketTransfer(userId, payload) {
+async function buildTransferTransactionRequest(payload, allowedModes) {
   assertTransferPayload(payload);
   assertTransferPayloadFresh(payload);
-  if (payload.executionMode !== 'BACKEND_WALLET') {
-    throw new Error('transfer_execution_mode_mismatch');
-  }
-
-  const provider = arcService.getArcProvider();
-  const network = await provider.getNetwork();
-  if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) {
-    throw new Error('arc_chain_id_mismatch');
-  }
-
-  const signer = await walletService.getSignerForUser(userId, provider);
-  const walletAddress = ethers.getAddress(signer.address);
-  const ticketAddress = ethers.getAddress(payload.contract);
-  const destinationAddress = ethers.getAddress(payload.destination);
-  const tokenId = BigInt(payload.tokenId);
-
-  if (walletAddress.toLowerCase() !== payload.walletAddress.toLowerCase()) {
-    throw new Error('transfer_wallet_mismatch');
-  }
-
-  const ticket = new ethers.Contract(
-    ticketAddress,
-    TICKET_TRANSFER_ABI,
-    signer,
-  );
-
-  let ownerBefore;
-  try {
-    ownerBefore = ethers.getAddress(await ticket.ownerOf(tokenId));
-  } catch {
-    throw new Error('transfer_ticket_not_found');
-  }
-
-  if (ownerBefore.toLowerCase() !== walletAddress.toLowerCase()) {
-    throw new Error('transfer_not_ticket_owner');
-  }
-
-  const nativeBalance = await provider.getBalance(walletAddress);
-  if (nativeBalance === 0n) {
-    throw new Error('transfer_insufficient_gas');
-  }
-
-  const tx = await ticket.safeTransferFrom(
-    walletAddress,
-    destinationAddress,
-    tokenId,
-  );
-  const receipt = await tx.wait();
-  requireSuccessfulReceipt(receipt);
-
-  const ownerAfter = ethers.getAddress(await ticket.ownerOf(tokenId));
-  if (ownerAfter.toLowerCase() !== destinationAddress.toLowerCase()) {
-    throw new Error('transfer_postcondition_failed');
-  }
-
-  arcService.invalidateArcWalletStateCache(walletAddress);
-  arcService.invalidateArcWalletStateCache(destinationAddress);
-
-  return {
-    chainId: Number(network.chainId),
-    walletAddress,
-    ticketAddress,
-    tokenId: tokenId.toString(),
-    destinationAddress,
-    ownerBefore,
-    ownerAfter,
-    transferTxHash: tx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${tx.hash}`,
-  };
-}
-
-async function buildExternalTransferTransactionRequest(payload) {
-  assertTransferPayload(payload);
-  assertTransferPayloadFresh(payload);
-  if (!['EXTERNAL_WALLET', 'EXTERNAL_OWNER'].includes(payload.executionMode)) {
-    throw new Error('transfer_execution_mode_mismatch');
-  }
+  assertMode(payload, allowedModes);
   const provider = arcService.getArcProvider();
   const network = await provider.getNetwork();
   if (network.chainId !== arcService.ARC_TESTNET_CHAIN_ID) throw new Error('arc_chain_id_mismatch');
@@ -154,11 +89,9 @@ async function buildExternalTransferTransactionRequest(payload) {
   };
 }
 
-async function verifyExternalTransferReceipt(payload, txHash) {
+async function verifyTransferReceipt(payload, txHash, allowedModes) {
   assertTransferPayload(payload);
-  if (!['EXTERNAL_WALLET', 'EXTERNAL_OWNER'].includes(payload.executionMode)) {
-    throw new Error('transfer_execution_mode_mismatch');
-  }
+  assertMode(payload, allowedModes);
   if (typeof txHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     throw new Error('transfer_txhash_invalid');
   }
@@ -199,7 +132,7 @@ async function verifyExternalTransferReceipt(payload, txHash) {
   arcService.invalidateArcWalletStateCache(destinationAddress);
   return {
     chainId: Number(network.chainId),
-    executionMode: 'EXTERNAL_WALLET',
+    executionMode: CIRCLE_MODES.includes(payload.executionMode) ? 'CIRCLE_USER_WALLET' : 'EXTERNAL_WALLET',
     walletAddress,
     ticketAddress,
     tokenId: tokenId.toString(),
@@ -211,9 +144,26 @@ async function verifyExternalTransferReceipt(payload, txHash) {
   };
 }
 
+async function buildExternalTransferTransactionRequest(payload) {
+  return buildTransferTransactionRequest(payload, EXTERNAL_MODES);
+}
+
+async function verifyExternalTransferReceipt(payload, txHash) {
+  return verifyTransferReceipt(payload, txHash, EXTERNAL_MODES);
+}
+
+async function buildCircleTransferTransactionRequest(payload) {
+  return buildTransferTransactionRequest(payload, CIRCLE_MODES);
+}
+
+async function verifyCircleTransferReceipt(payload, txHash) {
+  return verifyTransferReceipt(payload, txHash, CIRCLE_MODES);
+}
+
 module.exports = {
-  executeTicketTransfer,
   buildExternalTransferTransactionRequest,
   assertTransferPayloadFresh,
   verifyExternalTransferReceipt,
+  buildCircleTransferTransactionRequest,
+  verifyCircleTransferReceipt,
 };

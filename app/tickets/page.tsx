@@ -13,22 +13,17 @@ import {
   type OwnedTicketsResponse,
   type RefundExecutionMode,
   type ClaimExecutionMode,
-  type TicketTransferExecutionResult,
 } from "../lib/backend-api";
 import { formatUsdc, humanRoundStatus, parseUsdcToRaw } from "../lib/display";
 import {
-  confirmClaimWithPasskey,
-  confirmExternalClaimReceipt,
-  confirmExternalMarketplaceCancelReceipt,
-  confirmExternalMarketplaceListReceipt,
-  confirmExternalMarketplaceUpdatePriceReceipt,
-  confirmExternalRefundReceipt,
-  confirmMarketplaceCancelWithPasskey,
-  confirmMarketplaceListWithPasskey,
-  confirmMarketplaceUpdatePriceWithPasskey,
-  confirmRefundWithPasskey,
-  confirmTicketTransferWithPasskey,
-} from "../lib/passkey-client";
+  executeClaim,
+  executeMarketplaceCancel,
+  executeMarketplaceList,
+  executeMarketplaceUpdatePrice,
+  executeRefund,
+  executeTicketTransfer,
+  type WalletActionStatus,
+} from "../lib/wallet-actions";
 import { encodeApproveCalldata } from "../lib/erc-approve";
 import { useAccount, usePublicClient, useSendTransaction } from "wagmi";
 
@@ -195,6 +190,19 @@ export default function TicketsPage() {
   const [marketStatusText, setMarketStatusText] = useState("");
   const [marketSuccess, setMarketSuccess] = useState<{ mode: MarketDrawerMode; explorerUrl: string } | null>(null);
 
+  // The authenticated session decides how every action is signed: the
+  // connected wallet signs its own transaction, or the Circle wallet approves
+  // a hosted Circle challenge. Nothing else signs for the user.
+  const executionMode = state?.executionMode ?? null;
+  const isCircleSession = executionMode === "CIRCLE_USER_WALLET";
+
+  function actionStatusCopy(status: WalletActionStatus) {
+    if (status === "WAITING_FOR_CIRCLE") return t.marketplacePage.confirmingInCircle;
+    if (status === "WAITING_FOR_WALLET") return t.marketplacePage.waitingForWalletTransaction;
+    if (status === "VERIFYING") return locale === "tr" ? "Zincir üstü sonuç doğrulanıyor…" : "Verifying the onchain result…";
+    return locale === "tr" ? "İşlem hazırlanıyor…" : "Preparing the transaction…";
+  }
+
   async function sendConnectedTransaction(request: {
     to: string;
     data: string;
@@ -301,8 +309,8 @@ export default function TicketsPage() {
     }
 
     if (
-      state?.backendWallet.wallet.address &&
-      destinationAddress.toLowerCase() === state.backendWallet.wallet.address.toLowerCase()
+      state?.wallet.wallet.address &&
+      destinationAddress.toLowerCase() === state.wallet.wallet.address.toLowerCase()
     ) {
       setError("The recipient already owns this NFT.");
       return;
@@ -313,26 +321,14 @@ export default function TicketsPage() {
     setError("");
 
     try {
-      const outcome = await confirmTicketTransferWithPasskey({
-        ticketAddress: ticket.ticketAddress,
-        tokenId: ticket.tokenId,
-        destinationAddress,
-      });
-
-      let result: TicketTransferExecutionResult;
-      if ("executionMode" in outcome && outcome.executionMode === "EXTERNAL_WALLET") {
-        if (
-          !isConnected ||
-          !ownerAddress ||
-          ownerAddress.toLowerCase() !== outcome.transactionRequest.from.toLowerCase()
-        ) {
-          throw new Error("Reconnect the wallet bound to this EXTREMA session.");
-        }
-        const txHash = await sendConnectedTransaction(outcome.transactionRequest);
-        result = (await backendApi.actions.verifyTicketTransfer(outcome.actionId, txHash)).result;
-      } else {
-        result = outcome as TicketTransferExecutionResult;
-      }
+      const result = await executeTicketTransfer(
+        {
+          ticketAddress: ticket.ticketAddress,
+          tokenId: ticket.tokenId,
+          destinationAddress,
+        },
+        { executionMode, sendExternalTransaction: sendConnectedTransaction },
+      );
 
       setTransferSuccess({
         destinationAddress: result.destinationAddress,
@@ -369,48 +365,27 @@ export default function TicketsPage() {
     const key = ticketKey(ticket);
     setRefundBusy(key);
     setError("");
-    setRefundStatusText(state?.executionMode === "EXTERNAL_WALLET" ? "Preparing wallet transaction..." : "Confirming with passkey...");
+    setRefundStatusText(actionStatusCopy(isCircleSession ? "WAITING_FOR_CIRCLE" : "PREPARING"));
 
     try {
-      const outcome = await confirmRefundWithPasskey({
-        poolAddress: ticket.poolAddress,
-        ticketAddress: ticket.ticketAddress,
-        tokenId: ticket.tokenId,
-        roundId: ticket.roundId,
+      const result = await executeRefund(
+        {
+          poolAddress: ticket.poolAddress,
+          ticketAddress: ticket.ticketAddress,
+          tokenId: ticket.tokenId,
+          roundId: ticket.roundId,
+        },
+        {
+          executionMode,
+          sendExternalTransaction: sendConnectedTransaction,
+          onStatus: (status) => setRefundStatusText(actionStatusCopy(status)),
+        },
+      );
+
+      setRefundSuccess({
+        executionMode: result.executionMode,
+        explorerUrl: result.explorerUrl,
       });
-
-      if (outcome.executionMode === "BACKEND_WALLET") {
-        setRefundSuccess({
-          executionMode: "BACKEND_WALLET",
-          explorerUrl: outcome.result.explorerUrl,
-        });
-      } else {
-        if (
-          !isConnected ||
-          !ownerAddress ||
-          ownerAddress.toLowerCase() !== outcome.currentOwner.toLowerCase()
-        ) {
-          throw new Error(
-            `Connect wallet ${outcome.currentOwner} in your browser wallet to complete this refund.`,
-          );
-        }
-
-        setRefundStatusText("Waiting for wallet transaction...");
-        const txHash = await sendConnectedTransaction({
-          to: outcome.transactionRequest.to,
-          data: outcome.transactionRequest.data,
-          value: outcome.transactionRequest.value,
-          from: outcome.transactionRequest.from,
-        });
-
-        setRefundStatusText("Verifying refund receipt...");
-        const result = await confirmExternalRefundReceipt(outcome.actionId, txHash);
-
-        setRefundSuccess({
-          executionMode: "EXTERNAL_OWNER",
-          explorerUrl: result.explorerUrl,
-        });
-      }
 
       setRefundTicketKey(null);
       await loadTickets();
@@ -444,50 +419,28 @@ export default function TicketsPage() {
     const key = ticketKey(ticket);
     setClaimBusy(key);
     setError("");
-    setClaimStatusText(state?.executionMode === "EXTERNAL_WALLET" ? "Preparing wallet transaction..." : "Confirming with passkey...");
+    setClaimStatusText(actionStatusCopy(isCircleSession ? "WAITING_FOR_CIRCLE" : "PREPARING"));
 
     try {
-      const outcome = await confirmClaimWithPasskey({
-        poolAddress: ticket.poolAddress,
-        ticketAddress: ticket.ticketAddress,
-        tokenId: ticket.tokenId,
-        roundId: ticket.roundId,
+      const result = await executeClaim(
+        {
+          poolAddress: ticket.poolAddress,
+          ticketAddress: ticket.ticketAddress,
+          tokenId: ticket.tokenId,
+          roundId: ticket.roundId,
+        },
+        {
+          executionMode,
+          sendExternalTransaction: sendConnectedTransaction,
+          onStatus: (status) => setClaimStatusText(actionStatusCopy(status)),
+        },
+      );
+
+      setClaimSuccess({
+        executionMode: result.executionMode,
+        explorerUrl: result.explorerUrl,
+        amountRaw: result.amountRaw,
       });
-
-      if (outcome.executionMode === "BACKEND_WALLET") {
-        setClaimSuccess({
-          executionMode: "BACKEND_WALLET",
-          explorerUrl: outcome.result.explorerUrl,
-          amountRaw: outcome.result.amountRaw,
-        });
-      } else {
-        if (
-          !isConnected ||
-          !ownerAddress ||
-          ownerAddress.toLowerCase() !== outcome.currentOwner.toLowerCase()
-        ) {
-          throw new Error(
-            `Connect wallet ${outcome.currentOwner} in your browser wallet to complete this reward claim.`,
-          );
-        }
-
-        setClaimStatusText("Waiting for wallet transaction...");
-        const txHash = await sendConnectedTransaction({
-          to: outcome.transactionRequest.to,
-          data: outcome.transactionRequest.data,
-          value: outcome.transactionRequest.value,
-          from: outcome.transactionRequest.from,
-        });
-
-        setClaimStatusText("Verifying reward receipt...");
-        const result = await confirmExternalClaimReceipt(outcome.actionId, txHash);
-
-        setClaimSuccess({
-          executionMode: "EXTERNAL_OWNER",
-          explorerUrl: result.explorerUrl,
-          amountRaw: result.amountRaw,
-        });
-      }
 
       setClaimTicketKey(null);
       await loadTickets();
@@ -513,7 +466,7 @@ export default function TicketsPage() {
     setMarketStatusText("");
   }
 
-  async function openMarketDrawer(ticket: OwnedTicket, mode: MarketDrawerMode, isBackendWallet: boolean, existingAskUsdc?: string) {
+  async function openMarketDrawer(ticket: OwnedTicket, mode: MarketDrawerMode, isCircleWallet: boolean, existingAskUsdc?: string) {
     const key = ticketKey(ticket);
     setMarketDrawer({ ticketKey: key, mode });
     setAskInput(mode === "changePrice" && existingAskUsdc ? existingAskUsdc : "");
@@ -521,7 +474,9 @@ export default function TicketsPage() {
     setMarketApproval(null);
     setError("");
 
-    if (!isBackendWallet && mode !== "cancel") {
+    // Circle runs any needed approval inside its own flow, so only the
+    // connected wallet reads and shows the separate approval step.
+    if (!isCircleWallet && mode !== "cancel") {
       setMarketApprovalLoading(true);
       try {
         const approval = await backendApi.marketplace.approval(ticket.ticketAddress, ticket.tokenId);
@@ -571,35 +526,19 @@ export default function TicketsPage() {
 
     setMarketBusy(key);
     setError("");
-    setMarketStatusText(state?.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
+    setMarketStatusText(actionStatusCopy(isCircleSession ? "WAITING_FOR_CIRCLE" : "PREPARING"));
 
     try {
-      const outcome = await confirmMarketplaceListWithPasskey({
-        ticketAddress: ticket.ticketAddress,
-        tokenId: ticket.tokenId,
-        askUsdcRaw,
-      });
-
-      let explorerUrl: string;
-      if (outcome.executionMode === "BACKEND_WALLET") {
-        explorerUrl = outcome.result.explorerUrl;
-      } else {
-        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.sellerAddress.toLowerCase()) {
-          throw new Error(t.marketplacePage.connectMatchingWallet);
-        }
-
-        setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendConnectedTransaction({
-          to: outcome.transactionRequest.to,
-          data: outcome.transactionRequest.data,
-          value: outcome.transactionRequest.value,
-          from: outcome.transactionRequest.from,
-        });
-
-        setMarketStatusText(t.marketplacePage.verifyingListing);
-        const result = await confirmExternalMarketplaceListReceipt(outcome.actionId, txHash);
-        explorerUrl = result.explorerUrl;
-      }
+      const { explorerUrl } = await executeMarketplaceList(
+        { ticketAddress: ticket.ticketAddress, tokenId: ticket.tokenId, askUsdcRaw },
+        {
+          executionMode,
+          sendExternalTransaction: sendConnectedTransaction,
+          onStatus: (status) => setMarketStatusText(
+            status === "VERIFYING" ? t.marketplacePage.verifyingListing : actionStatusCopy(status),
+          ),
+        },
+      );
 
       setMarketSuccess({ mode: "list", explorerUrl });
       closeMarketDrawer();
@@ -627,31 +566,19 @@ export default function TicketsPage() {
 
     setMarketBusy(key);
     setError("");
-    setMarketStatusText(state?.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
+    setMarketStatusText(actionStatusCopy(isCircleSession ? "WAITING_FOR_CIRCLE" : "PREPARING"));
 
     try {
-      const outcome = await confirmMarketplaceUpdatePriceWithPasskey({ listingId, newAskUsdcRaw });
-
-      let explorerUrl: string;
-      if (outcome.executionMode === "BACKEND_WALLET") {
-        explorerUrl = outcome.result.explorerUrl;
-      } else {
-        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.sellerAddress.toLowerCase()) {
-          throw new Error(t.marketplacePage.connectMatchingWallet);
-        }
-
-        setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendConnectedTransaction({
-          to: outcome.transactionRequest.to,
-          data: outcome.transactionRequest.data,
-          value: outcome.transactionRequest.value,
-          from: outcome.transactionRequest.from,
-        });
-
-        setMarketStatusText(t.marketplacePage.verifyingPriceChange);
-        const result = await confirmExternalMarketplaceUpdatePriceReceipt(outcome.actionId, txHash);
-        explorerUrl = result.explorerUrl;
-      }
+      const { explorerUrl } = await executeMarketplaceUpdatePrice(
+        { listingId, newAskUsdcRaw },
+        {
+          executionMode,
+          sendExternalTransaction: sendConnectedTransaction,
+          onStatus: (status) => setMarketStatusText(
+            status === "VERIFYING" ? t.marketplacePage.verifyingPriceChange : actionStatusCopy(status),
+          ),
+        },
+      );
 
       setMarketSuccess({ mode: "changePrice", explorerUrl });
       closeMarketDrawer();
@@ -673,31 +600,19 @@ export default function TicketsPage() {
     const key = ticketKey(ticket);
     setMarketBusy(key);
     setError("");
-    setMarketStatusText(state?.executionMode === "EXTERNAL_WALLET" ? t.marketplacePage.waitingForWalletTransaction : t.marketplacePage.confirmingWithPasskey);
+    setMarketStatusText(actionStatusCopy(isCircleSession ? "WAITING_FOR_CIRCLE" : "PREPARING"));
 
     try {
-      const outcome = await confirmMarketplaceCancelWithPasskey({ listingId });
-
-      let explorerUrl: string;
-      if (outcome.executionMode === "BACKEND_WALLET") {
-        explorerUrl = outcome.result.explorerUrl;
-      } else {
-        if (!isConnected || !ownerAddress || ownerAddress.toLowerCase() !== outcome.sellerAddress.toLowerCase()) {
-          throw new Error(t.marketplacePage.connectMatchingWallet);
-        }
-
-        setMarketStatusText(t.marketplacePage.waitingForWalletTransaction);
-        const txHash = await sendConnectedTransaction({
-          to: outcome.transactionRequest.to,
-          data: outcome.transactionRequest.data,
-          value: outcome.transactionRequest.value,
-          from: outcome.transactionRequest.from,
-        });
-
-        setMarketStatusText(t.marketplacePage.verifyingCancellation);
-        const result = await confirmExternalMarketplaceCancelReceipt(outcome.actionId, txHash);
-        explorerUrl = result.explorerUrl;
-      }
+      const { explorerUrl } = await executeMarketplaceCancel(
+        { listingId },
+        {
+          executionMode,
+          sendExternalTransaction: sendConnectedTransaction,
+          onStatus: (status) => setMarketStatusText(
+            status === "VERIFYING" ? t.marketplacePage.verifyingCancellation : actionStatusCopy(status),
+          ),
+        },
+      );
 
       setMarketSuccess({ mode: "cancel", explorerUrl });
       closeMarketDrawer();
@@ -715,7 +630,7 @@ export default function TicketsPage() {
     }
   }
 
-  function renderTicketCard(ticket: OwnedTicket, options: { showTransfer: boolean; isBackendWallet: boolean }) {
+  function renderTicketCard(ticket: OwnedTicket, options: { showTransfer: boolean; isCircleWallet: boolean }) {
     const key = ticketKey(ticket);
     const transferOpen = transferTicketKey === key;
     const refundOpen = refundTicketKey === key;
@@ -728,7 +643,7 @@ export default function TicketsPage() {
     const isListed = Boolean(listing) && (listing?.state === "ACTIVE" || listing?.state === "ACTION_NEEDED");
     const canList = isTradeEligible(ticket) && !isListed;
     const hasPriorListing = Boolean(listing);
-    const marketApproved = options.isBackendWallet || Boolean(marketApproval?.isApproved);
+    const marketApproved = options.isCircleWallet || Boolean(marketApproval?.isApproved);
     const anyOtherBusy = Boolean(transferBusy) || Boolean(refundBusy) || Boolean(claimBusy) || Boolean(marketBusy);
 
     return (
@@ -794,21 +709,21 @@ export default function TicketsPage() {
             </button>
           )}
           {canList && (
-            <button type="button" onClick={() => void openMarketDrawer(ticket, "list", options.isBackendWallet)} disabled={anyOtherBusy}>
+            <button type="button" onClick={() => void openMarketDrawer(ticket, "list", options.isCircleWallet)} disabled={anyOtherBusy}>
               {hasPriorListing ? t.marketplacePage.relistAction : t.marketplacePage.listAction} →
             </button>
           )}
           {isListed && listing && (
             <button
               type="button"
-              onClick={() => void openMarketDrawer(ticket, "changePrice", options.isBackendWallet, listing.askUsdc)}
+              onClick={() => void openMarketDrawer(ticket, "changePrice", options.isCircleWallet, listing.askUsdc)}
               disabled={anyOtherBusy}
             >
               {t.marketplacePage.changePriceAction} →
             </button>
           )}
           {isListed && (
-            <button type="button" onClick={() => void openMarketDrawer(ticket, "cancel", options.isBackendWallet)} disabled={anyOtherBusy}>
+            <button type="button" onClick={() => void openMarketDrawer(ticket, "cancel", options.isCircleWallet)} disabled={anyOtherBusy}>
               {t.marketplacePage.cancelListingAction} →
             </button>
           )}
@@ -882,10 +797,10 @@ export default function TicketsPage() {
             ) : (
               <>
                 <p>
-                  {options.isBackendWallet
+                  {options.isCircleWallet
                     ? marketOpen === "list"
-                      ? t.marketplacePage.listBodyBackend
-                      : t.marketplacePage.changePriceBodyBackend
+                      ? t.marketplacePage.listBodyCircle
+                      : t.marketplacePage.changePriceBodyCircle
                     : marketApprovalLoading
                       ? t.marketplacePage.approvingTicket
                       : marketApproved
@@ -917,7 +832,7 @@ export default function TicketsPage() {
                   onClick={() => listing && void handleCancelListing(ticket, listing.listingId)}
                   disabled={Boolean(marketBusy)}
                 >
-                  {marketBusy === key ? marketStatusText || t.marketplacePage.confirmingWithPasskey : t.marketplacePage.confirmCancelListing}
+                  {marketBusy === key ? marketStatusText || t.marketplacePage.confirmingInCircle : t.marketplacePage.confirmCancelListing}
                 </button>
               ) : !marketApproved ? (
                 <button type="button" onClick={() => void handleApproveTicket(ticket)} disabled={marketApproveBusy || marketApprovalLoading}>
@@ -934,7 +849,7 @@ export default function TicketsPage() {
                   disabled={Boolean(marketBusy)}
                 >
                   {marketBusy === key
-                    ? marketStatusText || t.marketplacePage.confirmingWithPasskey
+                    ? marketStatusText || t.marketplacePage.confirmingInCircle
                     : marketOpen === "list"
                       ? hasPriorListing
                         ? t.marketplacePage.confirmRelist
@@ -968,9 +883,8 @@ export default function TicketsPage() {
           </div>
 
           <dl className="ex-tickets__summary">
-            <div><dt>{state?.executionMode === "EXTERNAL_WALLET" ? (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET") : (locale === "tr" ? "EXTREMA CÜZDANI" : "EXTREMA WALLET")}</dt><dd className="ex-num">{state?.backendWallet.ticketCount ?? "—"}</dd></div>
-            <div><dt>{locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET"}</dt><dd className="ex-num">{state?.ownerWallet?.ticketCount ?? 0}</dd></div>
-            <div><dt>Arc Testnet</dt><dd className="ex-num">{state?.backendWallet.chain.blockNumber ?? "—"}</dd></div>
+            <div><dt>{isCircleSession ? (locale === "tr" ? "CIRCLE CÜZDANI" : "CIRCLE WALLET") : (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET")}</dt><dd className="ex-num">{state ? state.wallet.ticketCount : null}</dd></div>
+            <div><dt>Arc Testnet</dt><dd className="ex-num">{state ? state.wallet.chain.blockNumber : null}</dd></div>
           </dl>
         </section>
 
@@ -1057,7 +971,7 @@ export default function TicketsPage() {
           </section>
         )}
 
-        {!loading && state && state.backendWallet.ticketCount === 0 && (!state.ownerWallet || state.ownerWallet.ticketCount === 0) && (
+        {!loading && state && state.wallet.ticketCount === 0 && (
           <section className="ex-tickets__empty">
             <p className="ex-eyebrow">{locale === "tr" ? "BİLET YOK" : "NO TICKETS"}</p>
             <h2 className="ex-display ex-display--md">{locale === "tr" ? "Henüz sahip olduğun bir tahmin bileti yok." : "No prediction tickets yet."}</h2>
@@ -1066,24 +980,13 @@ export default function TicketsPage() {
           </section>
         )}
 
-        {!loading && state && state.backendWallet.ticketCount > 0 && (
+        {!loading && state && state.wallet.ticketCount > 0 && (
           <section className="ex-ticket-group">
             <header className="ex-ticket-group__head">
-              <div><p className="ex-eyebrow">{state.executionMode === "EXTERNAL_WALLET" ? (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET") : (locale === "tr" ? "YÖNETİLEN CÜZDAN" : "MANAGED WALLET")}</p><h2 className="ex-display ex-display--md">{state.backendWallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.backendWallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
-              <p className="ex-num">Arc Testnet · {state.backendWallet.chain.blockNumber}</p>
+              <div><p className="ex-eyebrow">{isCircleSession ? (locale === "tr" ? "CIRCLE CÜZDANI" : "CIRCLE WALLET") : (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET")}</p><h2 className="ex-display ex-display--md">{state.wallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.wallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
+              <p className="ex-num">Arc Testnet · {state.wallet.chain.blockNumber}</p>
             </header>
-            <div className="ex-ticket-list">{state.backendWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isBackendWallet: state.executionMode === "BACKEND_WALLET" }))}</div>
-          </section>
-        )}
-
-        {!loading && state?.ownerWallet && state.ownerWallet.ticketCount > 0 && (
-          <section className="ex-ticket-group">
-            <header className="ex-ticket-group__head">
-              <div><p className="ex-eyebrow">{locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET"}</p><h2 className="ex-display ex-display--md">{locale === "tr" ? "Doğrudan sahip olduğun biletler." : "Tickets held directly."}</h2></div>
-              <p className="ex-num">{state.ownerWallet.wallet.address}</p>
-            </header>
-            <p className="ex-ticket-group__note">{locale === "tr" ? "Bu biletler EXTREMA yönetimli cüzdanında değil, bağlı cüzdanında tutulur. Ödül ve iade işlemleri bağlı cüzdandan gönderilir." : "These NFTs are held by your connected wallet, not the EXTREMA-managed wallet. Reward claims and refunds are sent from the connected wallet."}</p>
-            <div className="ex-ticket-list">{state.ownerWallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: false, isBackendWallet: false }))}</div>
+            <div className="ex-ticket-list">{state.wallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isCircleWallet: isCircleSession }))}</div>
           </section>
         )}
       </div>

@@ -1,0 +1,701 @@
+"use client";
+
+// Circle user controlled wallet financial action client.
+//
+// Every Circle transaction is signed by the user's own Circle wallet inside a
+// Circle hosted challenge; EXTREMA never signs for a Circle user. One shared
+// machinery covers every action:
+//
+//   confirmCircleEntry()   ENTRY, the first Circle action proven live
+//   confirmCircleAction()  transfer, refund, claim, and the four marketplace
+//                          actions, one phase or approval plus action
+//
+// Both share the same session refresh, hosted challenge execution, polling,
+// durable per tab recovery, and the same rule: an uncertain outcome is always
+// reconciled against the existing server action and never answered by
+// creating a second financial intent.
+
+import {
+  backendApi,
+  type CircleActionApprovalVerifyResponse,
+  type CircleActionPayloadMap,
+  type CircleActionPendingResponse,
+  type CircleActionResultMap,
+  type CircleActionStartResponse,
+  type CircleActionType,
+  type CircleActionVerifyResponse,
+  type CircleApprovalActionType,
+  type CircleEntryApprovalVerifyResponse,
+  type CircleEntryVerifyResponse,
+} from "./backend-api";
+import {
+  clearCircleActionRecovery,
+  clearCircleEntryRecovery,
+  matchesCircleEntryRecovery,
+  readCircleActionRecovery,
+  readCircleEntryRecovery,
+  readCircleTabAuth,
+  storeCircleActionRecovery,
+  storeCircleEntryRecovery,
+  type CircleActionRecovery,
+  type CircleEntryRecovery,
+} from "./circle-auth";
+
+type CircleChallengeResult = {
+  type?: string;
+  status?: string;
+};
+
+type CircleSdk = {
+  getDeviceId(): Promise<string>;
+  setAuthentication(auth: { userToken: string; encryptionKey: string }): void;
+  execute(
+    challengeId: string,
+    onCompleted?: (
+      error: { message: string } | undefined,
+      result?: CircleChallengeResult,
+    ) => void,
+  ): void;
+};
+
+const CIRCLE_VERIFY_POLL_INTERVAL_MS = 4000;
+const CIRCLE_VERIFY_MAX_ATTEMPTS = 45;
+
+const EXTREMA_SESSION_ERRORS = new Set([
+  "authentication_required",
+  "invalid_session",
+  "session_expired",
+]);
+
+let circleSessionRefreshPromise: Promise<unknown> | null = null;
+
+async function withFreshExtremaCircleSession<T>(
+  userToken: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (cause) {
+    if (
+      !(cause instanceof Error) ||
+      !EXTREMA_SESSION_ERRORS.has(cause.message)
+    ) {
+      throw cause;
+    }
+
+    if (!circleSessionRefreshPromise) {
+      circleSessionRefreshPromise = backendApi.circle
+        .session(userToken)
+        .finally(() => {
+          circleSessionRefreshPromise = null;
+        });
+    }
+
+    await circleSessionRefreshPromise;
+
+    // Retry the SAME read/start request once. Never create a second
+    // financial intent or automatically execute a hosted challenge.
+    return operation();
+  }
+}
+
+async function verifyCircleApprovalOnce(
+  actionId: string,
+  userToken: string,
+) {
+  return withFreshExtremaCircleSession(
+    userToken,
+    () => backendApi.actions.verifyCircleEntryApproval(actionId, userToken),
+  );
+}
+
+async function verifyCircleEntryOnce(
+  actionId: string,
+  userToken: string,
+) {
+  return withFreshExtremaCircleSession(
+    userToken,
+    () => backendApi.actions.verifyCircleEntry(actionId, userToken),
+  );
+}
+
+async function executeHostedChallenge(challengeId: string) {
+  const auth = readCircleTabAuth();
+  const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
+  if (!auth || !appId) throw new Error("circle_reauthentication_required");
+  const module = await import("@circle-fin/w3s-pw-web-sdk");
+  const sdk = new module.W3SSdk({ appSettings: { appId } }) as unknown as CircleSdk;
+  // The hosted SDK establishes its device context before a challenge executes.
+  // The value is intentionally transient and never added to recovery storage.
+  await sdk.getDeviceId();
+  sdk.setAuthentication(auth);
+  const result = await new Promise<CircleChallengeResult | undefined>(
+    (resolve, reject) => {
+      sdk.execute(
+        challengeId,
+        (error, challengeResult) =>
+          error
+            ? reject(new Error(error.message))
+            : resolve(challengeResult),
+      );
+    },
+  );
+
+  if (result?.status === "FAILED" || result?.status === "EXPIRED") {
+    throw new Error("circle_transaction_failed");
+  }
+
+  return auth.userToken;
+}
+
+function recoveryFor(
+  input: { poolAddress: string; roundId: number; predictionPriceCents: number },
+  requestId: string,
+  started: { actionId: string; payloadHash: string },
+  phase: CircleEntryRecovery["phase"],
+  challengeId: string | null,
+  expiresInSeconds: number,
+): CircleEntryRecovery {
+  return {
+    ...input,
+    requestId,
+    actionId: started.actionId,
+    payloadHash: started.payloadHash,
+    phase,
+    challengeId,
+    approvalTxHash: null,
+    expiresAtMs: Date.now() + expiresInSeconds * 1000,
+  };
+}
+
+function clearRecoveryForTerminalError(error: unknown) {
+  if (error instanceof Error && (
+    error.message === "circle_transaction_failed" ||
+    error.message === "circle_entry_action_expired_after_approval"
+  )) {
+    clearCircleEntryRecovery();
+  }
+}
+
+async function resumeCircleEntry(recovery: CircleEntryRecovery, userToken: string) {
+  if (recovery.phase === "APPROVAL_CHALLENGE") {
+    if (!recovery.challengeId) throw new Error("circle_entry_recovery_invalid");
+    const probe = await verifyCircleApprovalOnce(
+      recovery.actionId,
+      userToken,
+    );
+    if ("pending" in probe && probe.pending && probe.transactionObserved) {
+      const pending = { ...recovery, phase: "APPROVAL_PENDING" as const, challengeId: null };
+      storeCircleEntryRecovery(pending);
+      return resumeCircleEntry(pending, userToken);
+    }
+    if (!("pending" in probe) && probe.confirmed) {
+      const entryRecovery = {
+        ...recovery,
+        phase: "ENTRY_CHALLENGE" as const,
+        challengeId: probe.challengeId,
+        approvalTxHash: probe.approvalTxHash,
+      };
+      storeCircleEntryRecovery(entryRecovery);
+      return resumeCircleEntry(entryRecovery, userToken);
+    }
+    await executeHostedChallenge(recovery.challengeId);
+    storeCircleEntryRecovery({ ...recovery, phase: "APPROVAL_PENDING", challengeId: null });
+    return resumeCircleEntry({ ...recovery, phase: "APPROVAL_PENDING", challengeId: null }, userToken);
+  }
+  if (recovery.phase === "APPROVAL_PENDING") {
+    const approval = await waitForCircleResult(
+      () => verifyCircleApprovalOnce(recovery.actionId, userToken),
+    ) as CircleEntryApprovalVerifyResponse;
+    if (approval.actionId !== recovery.actionId || approval.payloadHash !== recovery.payloadHash) {
+      throw new Error("circle_approval_verification_failed");
+    }
+    const entryRecovery = {
+      ...recovery,
+      phase: "ENTRY_CHALLENGE" as const,
+      challengeId: approval.challengeId,
+      approvalTxHash: approval.approvalTxHash,
+    };
+    storeCircleEntryRecovery(entryRecovery);
+    return resumeCircleEntry(entryRecovery, userToken);
+  }
+  if (recovery.phase === "ENTRY_CHALLENGE") {
+    if (!recovery.challengeId) throw new Error("circle_entry_recovery_invalid");
+    const probe = await verifyCircleEntryOnce(
+      recovery.actionId,
+      userToken,
+    );
+    if ("pending" in probe && probe.pending && probe.transactionObserved) {
+      const pending = { ...recovery, phase: "ENTRY_PENDING" as const, challengeId: null };
+      storeCircleEntryRecovery(pending);
+      return resumeCircleEntry(pending, userToken);
+    }
+    if (!("pending" in probe) && probe.confirmed) {
+      if (
+        probe.actionId !== recovery.actionId || probe.payloadHash !== recovery.payloadHash ||
+        probe.result.roundId !== recovery.roundId ||
+        probe.result.predictionPriceCents !== recovery.predictionPriceCents ||
+        probe.result.poolAddress.toLowerCase() !== recovery.poolAddress.toLowerCase()
+      ) throw new Error("circle_entry_verification_failed");
+      clearCircleEntryRecovery();
+      return { ...probe.result, approvalTxHash: recovery.approvalTxHash ?? probe.result.approvalTxHash };
+    }
+    await executeHostedChallenge(recovery.challengeId);
+    const pending = { ...recovery, phase: "ENTRY_PENDING" as const, challengeId: null };
+    storeCircleEntryRecovery(pending);
+    return resumeCircleEntry(pending, userToken);
+  }
+  const verified = await waitForCircleResult(
+    () => verifyCircleEntryOnce(recovery.actionId, userToken),
+  ) as CircleEntryVerifyResponse;
+  if (
+    verified.actionId !== recovery.actionId || verified.payloadHash !== recovery.payloadHash ||
+    verified.result.roundId !== recovery.roundId ||
+    verified.result.predictionPriceCents !== recovery.predictionPriceCents ||
+    verified.result.poolAddress.toLowerCase() !== recovery.poolAddress.toLowerCase()
+  ) throw new Error("circle_entry_verification_failed");
+  clearCircleEntryRecovery();
+  return { ...verified.result, approvalTxHash: recovery.approvalTxHash ?? verified.result.approvalTxHash };
+}
+
+async function waitForCircleResult<T>(read: () => Promise<T>) {
+  for (
+    let attempt = 0;
+    attempt < CIRCLE_VERIFY_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    const result = await read();
+
+    if (
+      !(
+        typeof result === "object" &&
+        result !== null &&
+        "pending" in result &&
+        result.pending === true
+      )
+    ) {
+      return result;
+    }
+
+    await new Promise((resolve) =>
+      window.setTimeout(resolve, CIRCLE_VERIFY_POLL_INTERVAL_MS),
+    );
+  }
+
+  throw new Error("circle_transaction_pending");
+}
+
+export async function confirmCircleEntry(input: {
+  poolAddress: string;
+  roundId: number;
+  predictionPriceCents: number;
+  requestId: string;
+}) {
+  const auth = readCircleTabAuth();
+  if (!auth) throw new Error("circle_reauthentication_required");
+
+  let pending = readCircleEntryRecovery();
+
+  if (pending && !matchesCircleEntryRecovery(pending, input)) {
+    try {
+      const [walletState, rounds] = await withFreshExtremaCircleSession(
+        auth.userToken,
+        () => Promise.all([
+          backendApi.wallet.get(),
+          backendApi.rounds.list(),
+        ]),
+      );
+
+      const walletAddress = walletState.wallet?.address ?? null;
+      const recoveryPool = rounds.pools.find(
+        (pool) => pool.poolAddress.toLowerCase() === pending!.poolAddress.toLowerCase(),
+      );
+
+      if (walletAddress && recoveryPool) {
+        const entries = await backendApi.rounds.entries(
+          recoveryPool.slug,
+          pending.roundId,
+        );
+
+        const completed = entries.entries.some(
+          (entry) =>
+            entry.originalEntrant.toLowerCase() === walletAddress.toLowerCase() &&
+            entry.predictionPriceCents === String(pending!.predictionPriceCents),
+        );
+
+        if (completed) {
+          clearCircleEntryRecovery();
+          pending = null;
+        }
+      }
+    } catch {
+      // A failed read must never discard a genuinely pending action.
+    }
+  }
+
+  if (pending && !matchesCircleEntryRecovery(pending, input)) {
+    throw new Error("circle_pending_action_for_different_intent");
+  }
+
+  if (pending && pending.expiresAtMs <= Date.now()) {
+    const probe = pending.phase === "APPROVAL_CHALLENGE" ||
+        pending.phase === "APPROVAL_PENDING"
+      ? await verifyCircleApprovalOnce(pending.actionId, auth.userToken)
+      : await verifyCircleEntryOnce(pending.actionId, auth.userToken);
+
+    if (
+      "pending" in probe &&
+      probe.pending &&
+      !probe.transactionObserved
+    ) {
+      clearCircleEntryRecovery();
+      throw new Error("circle_entry_recovery_expired");
+    }
+
+    // If Circle already sees a transaction, do not discard recovery merely
+    // because the local action TTL elapsed. Resume the existing action and
+    // reconcile that single financial intent to its terminal state.
+  }
+
+  if (pending) {
+    try {
+      return await resumeCircleEntry(pending, auth.userToken);
+    } catch (error) {
+      clearRecoveryForTerminalError(error);
+      throw error;
+    }
+  }
+  const started = await withFreshExtremaCircleSession(
+    auth.userToken,
+    () => backendApi.actions.startCircleEntry({
+      poolAddress: input.poolAddress,
+      roundId: input.roundId,
+      predictionPriceCents: input.predictionPriceCents,
+      circleUserToken: auth.userToken,
+      circleRequestId: input.requestId,
+    }),
+  );
+  const recovery = recoveryFor(
+    input,
+    input.requestId,
+    started,
+    started.step === "APPROVAL_REQUIRED" ? "APPROVAL_CHALLENGE" : "ENTRY_CHALLENGE",
+    started.challengeId,
+    started.expiresInSeconds,
+  );
+  storeCircleEntryRecovery(recovery);
+  try {
+    return await resumeCircleEntry(recovery, auth.userToken);
+  } catch (error) {
+    clearRecoveryForTerminalError(error);
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Generic Circle financial actions
+// ---------------------------------------------------------------------------
+
+const CIRCLE_ACTION_RECOVERY_TTL_MS = 30 * 60 * 1000;
+
+// Errors after which the bound action can never complete, so its recovery
+// record is cleared. Anything else keeps the record so a later attempt
+// resumes (and reconciles) the same action.
+const CIRCLE_ACTION_TERMINAL_ERRORS = new Set([
+  "circle_transaction_failed",
+  "circle_action_expired_after_approval",
+  "circle_action_recovery_invalid",
+  "circle_action_verification_failed",
+]);
+
+// Transient failures of the start request itself. The request ID is kept so
+// the retry is idempotent on the server and returns the same challenge.
+const CIRCLE_START_RETRYABLE_ERRORS = new Set([
+  "circle_service_unavailable",
+  "circle_rate_limited",
+  "circle_transaction_pending",
+]);
+
+function isCircleActionPending(
+  value: unknown,
+): value is CircleActionPendingResponse {
+  return typeof value === "object" && value !== null && "pending" in value &&
+    (value as { pending?: unknown }).pending === true;
+}
+
+function hasApprovalPhase(actionType: CircleActionType): actionType is CircleApprovalActionType {
+  return actionType === "MARKETPLACE_LIST" || actionType === "MARKETPLACE_BUY";
+}
+
+async function verifyCircleActionApprovalOnce(
+  actionType: CircleActionType,
+  actionId: string,
+  userToken: string,
+) {
+  if (!hasApprovalPhase(actionType)) throw new Error("circle_action_recovery_invalid");
+  return withFreshExtremaCircleSession(
+    userToken,
+    () => backendApi.actions.verifyCircleActionApproval(actionType, actionId, userToken),
+  );
+}
+
+async function verifyCircleActionOnce<T extends CircleActionType>(
+  actionType: T,
+  actionId: string,
+  userToken: string,
+) {
+  return withFreshExtremaCircleSession(
+    userToken,
+    () => backendApi.actions.verifyCircleAction(actionType, actionId, userToken),
+  );
+}
+
+function storeCircleActionPhase(
+  record: CircleActionRecovery,
+  update: Partial<CircleActionRecovery>,
+): CircleActionRecovery {
+  const next = { ...record, ...update };
+  storeCircleActionRecovery(next);
+  return next;
+}
+
+function completeCircleAction<T extends CircleActionType>(
+  record: CircleActionRecovery,
+  verified: CircleActionVerifyResponse<CircleActionResultMap[T]>,
+): CircleActionResultMap[T] {
+  if (
+    verified.confirmed !== true ||
+    verified.executionMode !== "CIRCLE_USER_WALLET" ||
+    verified.actionId !== record.actionId ||
+    verified.payloadHash !== record.payloadHash
+  ) {
+    throw new Error("circle_action_verification_failed");
+  }
+  clearCircleActionRecovery();
+  return verified.result;
+}
+
+async function continueAfterCircleApproval<T extends CircleActionType>(
+  record: CircleActionRecovery,
+  approval: CircleActionApprovalVerifyResponse,
+  userToken: string,
+): Promise<CircleActionResultMap[T]> {
+  if (
+    approval.confirmed !== true ||
+    approval.actionId !== record.actionId ||
+    approval.payloadHash !== record.payloadHash ||
+    approval.step !== "ACTION_READY" ||
+    !approval.challengeId
+  ) {
+    throw new Error("circle_action_verification_failed");
+  }
+  const next = storeCircleActionPhase(record, {
+    phase: "ACTION_CHALLENGE",
+    challengeId: approval.challengeId,
+    approvalTxHash: approval.approvalTxHash,
+  });
+  return resumeCircleAction<T>(next, userToken);
+}
+
+async function resumeCircleAction<T extends CircleActionType>(
+  record: CircleActionRecovery,
+  userToken: string,
+): Promise<CircleActionResultMap[T]> {
+  const actionType = record.actionType as T;
+  const actionId = record.actionId;
+  if (!actionId || !record.payloadHash) throw new Error("circle_action_recovery_invalid");
+
+  if (record.phase === "APPROVAL_CHALLENGE") {
+    if (!record.challengeId) throw new Error("circle_action_recovery_invalid");
+    // Probe before executing: a challenge that was already approved in a
+    // previous tab or before a reload is reconciled, never shown again.
+    const probe = await verifyCircleActionApprovalOnce(actionType, actionId, userToken);
+    if (isCircleActionPending(probe)) {
+      if (!probe.transactionObserved) await executeHostedChallenge(record.challengeId);
+      const next = storeCircleActionPhase(record, { phase: "APPROVAL_PENDING", challengeId: null });
+      return resumeCircleAction<T>(next, userToken);
+    }
+    return continueAfterCircleApproval<T>(record, probe, userToken);
+  }
+
+  if (record.phase === "APPROVAL_PENDING") {
+    const approval = await waitForCircleResult(
+      () => verifyCircleActionApprovalOnce(actionType, actionId, userToken),
+    ) as CircleActionApprovalVerifyResponse;
+    return continueAfterCircleApproval<T>(record, approval, userToken);
+  }
+
+  if (record.phase === "ACTION_CHALLENGE") {
+    if (!record.challengeId) throw new Error("circle_action_recovery_invalid");
+    const probe = await verifyCircleActionOnce(actionType, actionId, userToken);
+    if (isCircleActionPending(probe)) {
+      if (!probe.transactionObserved) await executeHostedChallenge(record.challengeId);
+      const next = storeCircleActionPhase(record, { phase: "ACTION_PENDING", challengeId: null });
+      return resumeCircleAction<T>(next, userToken);
+    }
+    return completeCircleAction<T>(record, probe);
+  }
+
+  if (record.phase === "ACTION_PENDING") {
+    const verified = await waitForCircleResult(
+      () => verifyCircleActionOnce(actionType, actionId, userToken),
+    ) as CircleActionVerifyResponse<CircleActionResultMap[T]>;
+    return completeCircleAction<T>(record, verified);
+  }
+
+  throw new Error("circle_action_recovery_invalid");
+}
+
+// A recovery record for a different intent may only be dropped once it can
+// no longer lead to a transaction: its start never returned (so no challenge
+// was ever shown), its action verified, or it expired with no transaction.
+async function settleForeignCircleAction(
+  record: CircleActionRecovery,
+  userToken: string,
+): Promise<boolean> {
+  if (record.phase === "START_PENDING") return true;
+  if (!record.actionId) return true;
+  try {
+    const probe = record.phase === "APPROVAL_CHALLENGE" || record.phase === "APPROVAL_PENDING"
+      ? await verifyCircleActionApprovalOnce(record.actionType, record.actionId, userToken)
+      : await verifyCircleActionOnce(record.actionType, record.actionId, userToken);
+    if (!isCircleActionPending(probe)) {
+      return !(record.phase === "APPROVAL_CHALLENGE" || record.phase === "APPROVAL_PENDING");
+    }
+    return !probe.transactionObserved && record.expiresAtMs <= Date.now();
+  } catch (error) {
+    return error instanceof Error && error.message === "circle_transaction_failed";
+  }
+}
+
+function clearCircleActionRecoveryForTerminalError(error: unknown) {
+  if (error instanceof Error && CIRCLE_ACTION_TERMINAL_ERRORS.has(error.message)) {
+    clearCircleActionRecovery();
+  }
+}
+
+export type CircleActionIntent<T extends CircleActionType> = {
+  actionType: T;
+  // Stable identity of the financial intent, e.g. the ticket, destination and
+  // ask. The same intent always resumes; a different one never overwrites it.
+  intentKey: string;
+  start: (credentials: {
+    circleUserToken: string;
+    circleRequestId: string;
+  }) => Promise<CircleActionStartResponse<CircleActionPayloadMap[T]>>;
+  // Client side binding check of the server's canonical payload against what
+  // the user asked for, before any Circle challenge is shown.
+  matchesIntent: (payload: CircleActionPayloadMap[T]) => boolean;
+};
+
+export async function confirmCircleAction<T extends CircleActionType>(
+  intent: CircleActionIntent<T>,
+): Promise<CircleActionResultMap[T]> {
+  const auth = readCircleTabAuth();
+  if (!auth) throw new Error("circle_reauthentication_required");
+
+  let pending = readCircleActionRecovery();
+
+  if (pending && (pending.intentKey !== intent.intentKey || pending.actionType !== intent.actionType)) {
+    if (await settleForeignCircleAction(pending, auth.userToken)) {
+      clearCircleActionRecovery();
+      pending = null;
+    } else {
+      throw new Error("circle_pending_action_for_different_intent");
+    }
+  }
+
+  if (pending && pending.expiresAtMs <= Date.now()) {
+    if (pending.phase === "START_PENDING" || !pending.actionId) {
+      clearCircleActionRecovery();
+      pending = null;
+    } else {
+      const probe = pending.phase === "APPROVAL_CHALLENGE" || pending.phase === "APPROVAL_PENDING"
+        ? await verifyCircleActionApprovalOnce(pending.actionType, pending.actionId, auth.userToken)
+        : await verifyCircleActionOnce(pending.actionType, pending.actionId, auth.userToken);
+      if (isCircleActionPending(probe) && !probe.transactionObserved) {
+        clearCircleActionRecovery();
+        throw new Error("circle_action_recovery_expired");
+      }
+      // Circle already sees a transaction: reconcile it to its terminal
+      // state rather than discarding it because the local TTL elapsed.
+    }
+  }
+
+  if (pending && pending.phase !== "START_PENDING") {
+    try {
+      return await resumeCircleAction<T>(pending, auth.userToken);
+    } catch (error) {
+      clearCircleActionRecoveryForTerminalError(error);
+      throw error;
+    }
+  }
+
+  // The request ID is persisted BEFORE the start request, so a lost response
+  // or a reload retries with the same ID and the server returns the same
+  // action and challenge instead of a second one.
+  const requestId = pending?.requestId ?? crypto.randomUUID();
+  storeCircleActionRecovery({
+    actionType: intent.actionType,
+    intentKey: intent.intentKey,
+    requestId,
+    actionId: null,
+    payloadHash: null,
+    phase: "START_PENDING",
+    challengeId: null,
+    approvalTxHash: null,
+    expiresAtMs: Date.now() + CIRCLE_ACTION_RECOVERY_TTL_MS,
+  });
+
+  let started: CircleActionStartResponse<CircleActionPayloadMap[T]>;
+  try {
+    started = await withFreshExtremaCircleSession(
+      auth.userToken,
+      () => intent.start({ circleUserToken: auth.userToken, circleRequestId: requestId }),
+    );
+  } catch (error) {
+    // A definitive refusal happened before any challenge existed, so nothing
+    // can have been signed. Transport failures keep the request ID for an
+    // idempotent retry.
+    const message = error instanceof Error ? error.message : "";
+    if (/^[a-z_]+$/.test(message) && !CIRCLE_START_RETRYABLE_ERRORS.has(message)) {
+      clearCircleActionRecovery();
+    }
+    throw error;
+  }
+
+  if (
+    started.executionMode !== "CIRCLE_USER_WALLET" ||
+    !started.actionId || !started.payloadHash || !started.challengeId ||
+    (started.step !== "APPROVAL_REQUIRED" && started.step !== "ACTION_READY") ||
+    (started.step === "APPROVAL_REQUIRED" && !hasApprovalPhase(intent.actionType)) ||
+    !started.action ||
+    started.action.action !== intent.actionType ||
+    started.action.executionMode !== "CIRCLE_USER_WALLET" ||
+    started.action.chainId !== 5042002 ||
+    !intent.matchesIntent(started.action)
+  ) {
+    clearCircleActionRecovery();
+    throw new Error("circle_action_verification_failed");
+  }
+
+  const record: CircleActionRecovery = {
+    actionType: intent.actionType,
+    intentKey: intent.intentKey,
+    requestId,
+    actionId: started.actionId,
+    payloadHash: started.payloadHash,
+    phase: started.step === "APPROVAL_REQUIRED" ? "APPROVAL_CHALLENGE" : "ACTION_CHALLENGE",
+    challengeId: started.challengeId,
+    approvalTxHash: null,
+    expiresAtMs: Date.now() + started.expiresInSeconds * 1000,
+  };
+  storeCircleActionRecovery(record);
+
+  try {
+    return await resumeCircleAction<T>(record, auth.userToken);
+  } catch (error) {
+    clearCircleActionRecoveryForTerminalError(error);
+    throw error;
+  }
+}

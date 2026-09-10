@@ -53,10 +53,10 @@ function entryAction(overrides = {}) {
     circleApprovalRefId: null,
     circleApprovalTransactionId: null,
     circleApprovalTxHash: null,
-    circleEntryChallengeId: null,
-    circleEntryIdempotencyKey: null,
-    circleEntryRefId: null,
-    circleEntryTransactionId: null,
+    circleActionChallengeId: null,
+    circleActionIdempotencyKey: null,
+    circleActionRefId: null,
+    circleActionTransactionId: null,
     verifiedTxHash: null,
     ...overrides,
   };
@@ -76,7 +76,7 @@ function createMemoryAuthorization(initial) {
   };
   const phaseFields = (phase) => phase === 'APPROVAL'
     ? ['circleApprovalIdempotencyKey', 'circleApprovalRefId', 'circleApprovalChallengeId', 'circleApprovalTransactionId', 'circleApprovalTxHash']
-    : ['circleEntryIdempotencyKey', 'circleEntryRefId', 'circleEntryChallengeId', 'circleEntryTransactionId', 'verifiedTxHash'];
+    : ['circleActionIdempotencyKey', 'circleActionRefId', 'circleActionChallengeId', 'circleActionTransactionId', 'verifiedTxHash'];
   return {
     get state() { return state; },
     async getCircleEntryAction(...args) { checkIdentity(...args); return state; },
@@ -303,15 +303,15 @@ async function main() {
   const issued = [];
   const action = {
     id: ACTION_ID, payloadHash: 'payload-hash', payload: payload(), circleApprovalChallengeId: null,
-    circleApprovalIdempotencyKey: null, circleApprovalRefId: null, circleEntryChallengeId: null,
-    circleEntryIdempotencyKey: null, circleEntryRefId: null,
+    circleApprovalIdempotencyKey: null, circleApprovalRefId: null, circleActionChallengeId: null,
+    circleActionIdempotencyKey: null, circleActionRefId: null,
   };
   const challengeResult = await circleEntry.issueChallenge({
     action, auth, userToken: 'circle-user-token-long-enough', phaseName: 'ENTRY', transactionRequest: ready.transactionRequest,
   }, {
     actionAuthorizationService: {
       async reserveCircleEntryChallenge() {
-        return { ...action, circleEntryIdempotencyKey: '66666666-6666-4666-8666-666666666666', circleEntryRefId: `${ACTION_ID}:entry` };
+        return { ...action, circleActionIdempotencyKey: '66666666-6666-4666-8666-666666666666', circleActionRefId: `${ACTION_ID}:entry` };
       },
       async persistCircleEntryChallenge(...args) { issued.push(args); return 'circle-challenge-2'; },
     },
@@ -321,7 +321,7 @@ async function main() {
   assert.equal(issued.length, 1);
   assert.equal(calls[1].refId, `${ACTION_ID}:entry`);
   const replay = await circleEntry.issueChallenge({
-    action: { ...action, circleEntryChallengeId: 'circle-challenge-2' }, auth,
+    action: { ...action, circleActionChallengeId: 'circle-challenge-2' }, auth,
     userToken: 'circle-user-token-long-enough', phaseName: 'ENTRY', transactionRequest: ready.transactionRequest,
   }, { actionAuthorizationService: {}, circleService: circle });
   assert.equal(replay.challengeId, 'circle-challenge-2', 'a saved challenge must never create a second Circle request');
@@ -366,8 +366,8 @@ async function main() {
       /simulated_crash_after_reserve/,
     );
     const reserved = authorization.state;
-    const key = phase === 'APPROVAL' ? reserved.circleApprovalIdempotencyKey : reserved.circleEntryIdempotencyKey;
-    const ref = phase === 'APPROVAL' ? reserved.circleApprovalRefId : reserved.circleEntryRefId;
+    const key = phase === 'APPROVAL' ? reserved.circleApprovalIdempotencyKey : reserved.circleActionIdempotencyKey;
+    const ref = phase === 'APPROVAL' ? reserved.circleApprovalRefId : reserved.circleActionRefId;
     const recoveryDependencies = circleDependencies(authorization, null);
     const recovered = await circleEntry.issueChallenge({
       action: reserved, auth, userToken: 'circle-user-token-long-enough', phaseName: phase,
@@ -403,8 +403,8 @@ async function main() {
     id: '99999999-9999-4999-8999-999999999999', txHash: `0x${'c'.repeat(64)}`, state: 'SENT',
   };
   const entryAuthorization = createMemoryAuthorization(entryAction({
-    circleState: 'ENTRY_CHALLENGE', circleEntryChallengeId: 'entry-challenge',
-    circleEntryIdempotencyKey: '77777777-7777-4777-8777-777777777777', circleEntryRefId: `${ACTION_ID}:entry`,
+    circleState: 'ENTRY_CHALLENGE', circleActionChallengeId: 'entry-challenge',
+    circleActionIdempotencyKey: '77777777-7777-4777-8777-777777777777', circleActionRefId: `${ACTION_ID}:entry`,
   }));
   const entryDependencies = circleDependencies(entryAuthorization, entryTransaction);
   const firstEntry = await circleEntry.verifyCircleEntry({
@@ -437,7 +437,7 @@ async function main() {
 
   for (const state of ['FAILED', 'DENIED', 'CANCELLED']) {
     const terminalDependencies = circleDependencies(
-      createMemoryAuthorization(entryAction({ circleState: 'ENTRY_CHALLENGE', circleEntryRefId: `${ACTION_ID}:entry` })),
+      createMemoryAuthorization(entryAction({ circleState: 'ENTRY_CHALLENGE', circleActionRefId: `${ACTION_ID}:entry` })),
       { id: entryTransaction.id, state },
     );
     await assert.rejects(
@@ -446,7 +446,7 @@ async function main() {
     );
   }
   const pendingDependencies = circleDependencies(
-    createMemoryAuthorization(entryAction({ circleState: 'ENTRY_CHALLENGE', circleEntryRefId: `${ACTION_ID}:entry` })),
+    createMemoryAuthorization(entryAction({ circleState: 'ENTRY_CHALLENGE', circleActionRefId: `${ACTION_ID}:entry` })),
     { id: entryTransaction.id, state: 'SENT' },
   );
   assert.equal((await circleEntry.resolveCircleTransaction({
@@ -457,7 +457,7 @@ async function main() {
   let lookupCalls = 0;
   const discoveredId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const discoveredAuthorization = createMemoryAuthorization(entryAction({
-    circleState: 'ENTRY_CHALLENGE', circleEntryRefId: `${ACTION_ID}:entry`,
+    circleState: 'ENTRY_CHALLENGE', circleActionRefId: `${ACTION_ID}:entry`,
   }));
   const discoveredDependencies = {
     ...circleDependencies(discoveredAuthorization, null),
@@ -476,7 +476,7 @@ async function main() {
   assert.equal((await circleEntry.resolveCircleTransaction({
     auth, actionId: ACTION_ID, userToken: 'circle-user-token-long-enough', phaseName: 'ENTRY',
   }, discoveredDependencies)).pending, true);
-  assert.equal(discoveredAuthorization.state.circleEntryTransactionId, discoveredId);
+  assert.equal(discoveredAuthorization.state.circleActionTransactionId, discoveredId);
   const gainedHash = await circleEntry.resolveCircleTransaction({
     auth, actionId: ACTION_ID, userToken: 'circle-user-token-long-enough', phaseName: 'ENTRY',
   }, discoveredDependencies);
@@ -490,8 +490,8 @@ async function main() {
 
   const challengeCorrelationAuthorization = createMemoryAuthorization(entryAction({
     circleState: 'ENTRY_CHALLENGE',
-    circleEntryChallengeId: 'entry-challenge',
-    circleEntryRefId: `${ACTION_ID}:entry`,
+    circleActionChallengeId: 'entry-challenge',
+    circleActionRefId: `${ACTION_ID}:entry`,
   }));
 
   const challengeCorrelationDependencies = {
@@ -532,7 +532,7 @@ async function main() {
 
   assert.equal(challengeResolved.pending, false);
   assert.equal(
-    challengeCorrelationAuthorization.state.circleEntryTransactionId,
+    challengeCorrelationAuthorization.state.circleActionTransactionId,
     discoveredId,
   );
   assert.equal(challengeLookupCalls, 1);
@@ -541,8 +541,8 @@ async function main() {
 
   const failedChallengeAuthorization = createMemoryAuthorization(entryAction({
     circleState: 'ENTRY_CHALLENGE',
-    circleEntryChallengeId: 'failed-entry-challenge',
-    circleEntryRefId: `${ACTION_ID}:entry`,
+    circleActionChallengeId: 'failed-entry-challenge',
+    circleActionRefId: `${ACTION_ID}:entry`,
   }));
 
   const failedChallengeDependencies = {
@@ -573,7 +573,7 @@ async function main() {
   );
 
   const terminalLookupAuthorization = createMemoryAuthorization(entryAction({
-    circleState: 'ENTRY_CHALLENGE', circleEntryRefId: `${ACTION_ID}:entry`, circleEntryTransactionId: discoveredId,
+    circleState: 'ENTRY_CHALLENGE', circleActionRefId: `${ACTION_ID}:entry`, circleActionTransactionId: discoveredId,
   }));
   const terminalLookupDependencies = {
     ...circleDependencies(terminalLookupAuthorization, null),
@@ -590,7 +590,7 @@ async function main() {
   );
 
   const receiptPendingAuthorization = createMemoryAuthorization(entryAction({
-    circleState: 'ENTRY_CHALLENGE', circleEntryRefId: `${ACTION_ID}:entry`,
+    circleState: 'ENTRY_CHALLENGE', circleActionRefId: `${ACTION_ID}:entry`,
   }));
   const receiptPendingDependencies = circleDependencies(receiptPendingAuthorization, entryTransaction);
   receiptPendingDependencies.verifyCircleEntryReceipt = async () => { throw new Error('entry_transaction_not_found'); };
@@ -638,7 +638,7 @@ async function main() {
   );
 
   const frontendSource = require('node:fs').readFileSync(
-    require('node:path').resolve(__dirname, '../../app/lib/circle-entry.ts'), 'utf8',
+    require('node:path').resolve(__dirname, '../../app/lib/circle-actions.ts'), 'utf8',
   );
   assert.ok(frontendSource.indexOf('await sdk.getDeviceId()') < frontendSource.indexOf('sdk.setAuthentication(auth)'));
   assert.match(frontendSource, /readCircleEntryRecovery\(\)/);

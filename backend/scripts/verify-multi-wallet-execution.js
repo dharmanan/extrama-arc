@@ -46,13 +46,24 @@ const owner = '0x1000000000000000000000000000000000000001';
 const other = '0x2000000000000000000000000000000000000002';
 
 async function main() {
-const legacy = createSessionIdentity({
-  executionMode: EXECUTION_MODES.BACKEND_WALLET,
-  ownerAddress: owner,
-  walletAddress: null,
-});
-assert.equal(legacy.executionMode, 'BACKEND_WALLET');
-assert.equal(legacy.walletAddress, null);
+// The locked architecture has exactly three execution identities, and only
+// the two human ones can ever back a session. There is no default mode.
+assert.deepEqual(
+  Object.keys(EXECUTION_MODES).sort(),
+  ['CIRCLE_USER_WALLET', 'EXTERNAL_WALLET', 'SYSTEM_SEED_WALLET'],
+);
+throwsCode(
+  () => createSessionIdentity({ executionMode: undefined, ownerAddress: owner, walletAddress: owner }),
+  'wallet_execution_mode_invalid',
+);
+throwsCode(
+  () => createSessionIdentity({ executionMode: 'LEGACY_SERVER_WALLET', ownerAddress: owner, walletAddress: null }),
+  'wallet_execution_mode_invalid',
+);
+throwsCode(
+  () => createSessionIdentity({ executionMode: EXECUTION_MODES.SYSTEM_SEED_WALLET, ownerAddress: owner, walletAddress: owner }),
+  'system_seed_wallet_forbidden',
+);
 
 const external = createSessionIdentity({
   executionMode: EXECUTION_MODES.EXTERNAL_WALLET,
@@ -111,15 +122,45 @@ const transfers = read('../src/services/ticketTransferExecutionService.js');
 const claims = read('../src/services/claimExecutionService.js');
 const refunds = read('../src/services/refundExecutionService.js');
 const marketplace = read('../src/services/marketplaceExecutionService.js');
-const clientActions = read('../../app/lib/passkey-client.ts');
+const clientActions = read('../../app/lib/wallet-actions.ts');
+const circleActions = read('../../app/lib/circle-actions.ts');
 const walletPage = read('../../app/wallet/page.tsx');
+const walletService = read('../src/services/walletService.js');
+const seedBots = read('../src/services/seedBotExecutionService.js');
 
-assert.match(schema, /execution_mode VARCHAR\(32\) NOT NULL DEFAULT 'BACKEND_WALLET'/);
+// schema.sql keeps its historical column definitions (no destructive
+// migration); the runtime never relies on the column default.
+assert.match(schema, /execution_mode VARCHAR\(32\) NOT NULL/);
 assert.match(schema, /wallet_address VARCHAR\(42\)/);
 assert.match(schema, /circle_wallet_id UUID/);
-assert.match(sessions, /executionMode: options\.executionMode \|\| EXECUTION_MODES\.BACKEND_WALLET/);
-assert.match(middleware, /active\.executionMode !== \(payload\.executionMode \|\| 'BACKEND_WALLET'\)/);
+assert.match(sessions, /executionMode: options\.executionMode,/);
+assert.ok(!/options\.executionMode \|\|/.test(sessions), 'a session never falls back to a default mode');
+assert.match(middleware, /!isHumanExecutionMode\(active\.executionMode\)/);
+assert.match(middleware, /active\.executionMode !== payload\.executionMode/);
 assert.match(middleware, /active\.walletAddress \|\| null/);
+
+// No human path signs with a server held key, and no WebAuthn ceremony
+// remains in the human runtime.
+for (const removed of [
+  '../src/services/passkeyService.js',
+  '../../app/lib/passkey-client.ts',
+  '../../app/lib/circle-entry.ts',
+]) {
+  assert.ok(!fs.existsSync(path.resolve(__dirname, removed)), `${removed} must not exist`);
+}
+for (const [name, source] of [
+  ['routes/auth.js', auth],
+  ['routes/actions.js', actions],
+  ['wallet-actions.ts', clientActions],
+  ['circle-actions.ts', circleActions],
+  ['wallet/page.tsx', walletPage],
+]) {
+  assert.ok(!/passkey|webauthn|PublicKeyCredential/i.test(source), `${name} must not reference a passkey flow`);
+}
+assert.match(walletService, /async function getSignerForUser/);
+assert.ok(!/encrypt\(|createWallet|generateWallet|Wallet\.createRandom/.test(walletService),
+  'walletService never creates a wallet; it only signs for seed agents');
+assert.match(seedBots, /executionMode: 'SYSTEM_SEED_WALLET'/);
 
 const walletLogin = auth.slice(
   auth.indexOf("router.post('/wallet-login/challenge'"),
@@ -132,7 +173,7 @@ assert.match(walletPage, /walletLoginChallenge/);
 assert.match(walletPage, /finishWalletLogin/);
 
 assert.match(legacyEntry, /walletService\.getSignerForUser/);
-assert.match(legacyEntry, /payload\.executionMode !== 'BACKEND_WALLET'/);
+assert.match(legacyEntry, /payload\.executionMode !== 'SYSTEM_SEED_WALLET'/);
 assert.ok(!externalEntry.includes('getSignerForUser'));
 assert.ok(!externalEntry.includes('new ethers.Wallet'));
 assert.ok(!externalEntry.includes('.sendTransaction('));
@@ -317,8 +358,9 @@ await throwsCodeAsync(
 
 const externalEntryStart = actions.slice(
   actions.indexOf("router.post('/entry/start'"),
-  actions.indexOf("router.post('/entry/finish'"),
+  actions.indexOf("router.post('/entry/approval/verify'"),
 );
+assert.ok(!actions.includes("'/entry/finish'"), 'entry has no finish step: the wallet signs, then verify');
 assert.match(externalEntryStart, /prepareExternalEntry/);
 assert.match(externalEntryStart, /executionMode: EXECUTION_MODES\.EXTERNAL_WALLET/);
 assert.ok(!externalEntryStart.includes('executeEntry('));
@@ -358,7 +400,16 @@ for (const functionName of [
 ]) assert.match(marketplace, new RegExp(`function ${functionName}`));
 
 assert.match(actions, /assertExternalSessionAddress\(req\.auth, action\.payload\.walletAddress\)/);
-assert.match(actions, /circle_wallet_not_configured/);
+for (const route of [
+  'ticket-transfer', 'refund', 'claim', 'marketplace-list', 'marketplace-update-price',
+  'marketplace-cancel', 'marketplace-buy',
+]) {
+  assert.ok(actions.includes(`'/${route}/start'`), `${route} start route`);
+  assert.ok(actions.includes(`'/${route}/verify'`), `${route} verify route`);
+}
+assert.match(actions, /circleActionExecutionService\.startCircleAction/);
+assert.match(actions, /circleActionExecutionService\.verifyCircleAction\(/);
+assert.match(actions, /circleActionExecutionService\.verifyCircleActionApproval/);
 assert.ok(!walletPage.includes('createCircleWallet'));
 
 // The multi wallet preparation phase blocked every Gateway reference on the
@@ -369,10 +420,10 @@ assert.ok(!walletPage.includes('createCircleWallet'));
 assert.ok(walletPage.includes('backendApi.wallet.gatewayBalance()'));
 assert.ok(!/gatewayTransfer|gatewayDeposit|gatewayMint|burnIntent/i.test(walletPage));
 
-console.log('multi-wallet-execution: PASS');
+console.log('multi wallet execution: PASS');
 }
 
 main().catch((error) => {
-  console.error('multi-wallet-execution: FAIL', error.message);
+  console.error('multi wallet execution: FAIL', error.message);
   process.exitCode = 1;
 });

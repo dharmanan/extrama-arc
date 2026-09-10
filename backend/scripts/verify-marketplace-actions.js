@@ -60,8 +60,18 @@ assert.ok(!executionSource.includes('setApprovalForAll'), 'setApprovalForAll mus
 assert.ok(!routesSource.includes('setApprovalForAll'), 'setApprovalForAll must never be used');
 
 // Approval, when sent, is always for exactly one tokenId via approve(...),
-// never a blanket operator approval.
-assert.match(executionSource, /ticket\.approve\(marketplaceAddress, tokenId\)/);
+// never a blanket operator approval. The same per token calldata backs the
+// Circle approval phase and its onchain verification.
+assert.match(executionSource, /TICKET_INTERFACE\.encodeFunctionData\('approve', \[marketplaceAddress, tokenId\]\)/);
+for (const fn of ['prepareCircleListApproval', 'verifyCircleListApprovalReceipt']) {
+  const body = executionSource.slice(executionSource.indexOf(`async function ${fn}`));
+  assert.match(body.slice(0, body.indexOf('\n}\n')), /perTokenApprovalCalldata\(marketplaceAddress, BigInt\(payload\.tokenId\)\)/,
+    `${fn} must use the exact per token approval`);
+}
+
+// A purchase approval is always exactly the expected ask, never unlimited.
+assert.ok(!executionSource.includes('MaxUint256'), 'an unlimited USDC approval must never be built');
+assert.match(executionSource, /USDC_INTERFACE\.encodeFunctionData\('approve', \[marketplaceAddress, expectedAskUsdc\]\)/);
 
 // ---------------------------------------------------------------------------
 // Cancel must never gate on approval -- the one flow explicitly required to
@@ -84,9 +94,9 @@ assert.ok(!buySection.includes('while ('), 'buy path must not contain a retry lo
 assert.ok(!buySection.includes('for (let attempt'), 'buy path must not contain a retry loop');
 
 // ---------------------------------------------------------------------------
-// Every new action type is registered on both allow-lists in
-// actionAuthorizationService.js (one gate is not enough -- both the
-// challenge-consuming and already-consumed lookup paths must recognise it).
+// Every marketplace action type is registered on the single action type
+// allow list that the consumed action lookup enforces, and on the Circle
+// phase table (list and buy carry an approval phase, the others do not).
 // ---------------------------------------------------------------------------
 const marketplaceActionTypes = [
   'MARKETPLACE_LIST',
@@ -95,15 +105,17 @@ const marketplaceActionTypes = [
   'MARKETPLACE_BUY',
 ];
 
-const authAllowlists = [...authSource.matchAll(/\[('ENTRY'[\s\S]*?)\]\.includes/g)];
-assert.equal(authAllowlists.length, 2, 'expected exactly two action-type allow-lists');
-for (const allowlist of authAllowlists) {
-  for (const actionType of marketplaceActionTypes) {
-    assert.ok(
-      allowlist[1].includes(`'${actionType}'`),
-      `${actionType} missing from an action-type allow-list`,
-    );
-  }
+const actionTypesMatch = authSource.match(/const ACTION_TYPES = Object\.freeze\(\[([\s\S]*?)\]\);/);
+assert.ok(actionTypesMatch, 'ACTION_TYPES allow list not found');
+assert.match(authSource, /if \(!ACTION_TYPES\.includes\(expectedActionType\)\)/, 'the consumed action lookup must enforce ACTION_TYPES');
+const circlePhasesMatch = authSource.match(/const CIRCLE_ACTION_PHASES = Object\.freeze\(\{([\s\S]*?)\}\);/);
+assert.ok(circlePhasesMatch, 'CIRCLE_ACTION_PHASES not found');
+for (const actionType of marketplaceActionTypes) {
+  assert.ok(actionTypesMatch[1].includes(`'${actionType}'`), `${actionType} missing from ACTION_TYPES`);
+  const expectedPhases = actionType === 'MARKETPLACE_LIST' || actionType === 'MARKETPLACE_BUY'
+    ? "['APPROVAL', 'ACTION']"
+    : "['ACTION']";
+  assert.ok(circlePhasesMatch[1].includes(`${actionType}: ${expectedPhases},`), `${actionType} Circle phases`);
 }
 
 for (const actionType of marketplaceActionTypes) {
@@ -126,6 +138,14 @@ for (const prefix of routePrefixes) {
       `route missing: /${prefix}/${suffix}`,
     );
   }
+}
+// The Circle approval phase has its own verify route for list and buy only.
+for (const prefix of ['marketplace-list', 'marketplace-buy']) {
+  assert.ok(routesSource.includes(`'/${prefix}/approval/verify', circleActionApprovalVerifyLimiter,`),
+    `route missing: /${prefix}/approval/verify`);
+}
+for (const prefix of ['marketplace-update-price', 'marketplace-cancel']) {
+  assert.ok(!routesSource.includes(`'/${prefix}/approval/verify'`), `/${prefix} has no approval phase`);
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +182,7 @@ assert.match(
 // ---------------------------------------------------------------------------
 // Duplicate-listing preflight. A ticket that already has an active listing
 // must be rejected by a direct, uncached chain read before any action
-// authorization or WebAuthn challenge is ever created -- not only at the
+// authorization or Circle challenge is ever created -- not only at the
 // final list() revert. Regression coverage for the bug where /tickets kept
 // offering "List for sale" after a listing had already gone through.
 // ---------------------------------------------------------------------------
@@ -194,7 +214,7 @@ assert.ok(
   'the duplicate-listing preflight must never read through the cached board',
 );
 
-// --- active listing blocks /marketplace-list/start before WebAuthn -------
+// --- active listing blocks /marketplace-list/start before any challenge ---
 const startRouteSection = routesSource.slice(
   routesSource.indexOf("router.post('/marketplace-list/start'"),
   routesSource.indexOf("router.post('/marketplace-list/finish'"),
@@ -211,25 +231,37 @@ assert.ok(
 {
   const preflightIndex = startRouteSection.indexOf('activeListing.activeListingId');
   const actionCreatedIndex = startRouteSection.indexOf('createMarketplaceListRequest');
+  const circleStartIndex = startRouteSection.indexOf("startCircleFinancialAction(req, res, input, 'MARKETPLACE_LIST'");
   assert.ok(
     preflightIndex >= 0 && actionCreatedIndex >= 0 && preflightIndex < actionCreatedIndex,
-    'the active-listing check must reject before createMarketplaceListRequest (and therefore before the WebAuthn challenge)',
+    'the active listing check must reject before createMarketplaceListRequest',
+  );
+  assert.ok(
+    circleStartIndex >= 0 && preflightIndex < circleStartIndex,
+    'the active listing check must reject before any Circle action or challenge is created',
   );
 }
 
 // --- stale client cannot trigger a second valid list flow -----------------
-// The same fresh check runs again on both execution paths, immediately
-// before a list() transaction is ever built -- closing the window between
-// /start and /finish where another client's listing could have landed.
+// The same fresh check runs again immediately before any list related
+// transaction is built, on the connected wallet list() and on the Circle
+// approval phase alike, closing the window between start and the signature
+// where another client's listing could have landed.
 const listSection = executionSource.slice(
   executionSource.indexOf('// List'),
   executionSource.indexOf('// Update price'),
 );
-const assertNotListedCallCount = [...listSection.matchAll(/assertTicketNotAlreadyListed\(/g)].length;
-assert.ok(
-  assertNotListedCallCount >= 2,
-  `expected the not-already-listed guard on both the bundled and external list paths, found ${assertNotListedCallCount}`,
+const listableReader = listSection.slice(
+  listSection.indexOf('async function readListableTicket'),
+  listSection.indexOf('async function buildListTransactionRequest'),
 );
+assert.match(listableReader, /await assertTicketNotAlreadyListed\(ticketAddress, payload\.tokenId\)/,
+  'the fresh reader must run the not already listed guard');
+for (const fn of ['buildListTransactionRequest', 'prepareCircleListApproval']) {
+  const body = listSection.slice(listSection.indexOf(`async function ${fn}`));
+  assert.match(body.slice(0, body.indexOf('\n}\n')), /await readListableTicket\(payload\)/,
+    `${fn} must take a fresh listable ticket read`);
+}
 
 // --- successful list refreshes current listing state deterministically ---
 // The cache refresh is awaited at every write-action call site, never left
@@ -251,9 +283,14 @@ assert.ok(
   const restOfFile = afterDeclaration.slice(bodyEnd);
   const callSites = [...restOfFile.matchAll(/refreshMarketplaceCaches\(/g)];
   assert.ok(
-    callSites.length >= 8,
-    `expected at least 8 refreshMarketplaceCaches call sites (one per write action), found ${callSites.length}`,
+    callSites.length >= 4,
+    `expected at least 4 refreshMarketplaceCaches call sites (one per verified write action), found ${callSites.length}`,
   );
+  for (const fn of ['verifyListReceipt', 'verifyUpdatePriceReceipt', 'verifyCancelReceipt', 'verifyBuyReceipt']) {
+    const body = executionSource.slice(executionSource.indexOf(`async function ${fn}(`));
+    assert.match(body.slice(0, body.indexOf('\n}\n')), /await refreshMarketplaceCaches\(/,
+      `${fn} must refresh the board before returning`);
+  }
   for (const match of callSites) {
     const precedingText = restOfFile.slice(Math.max(0, match.index - 10), match.index);
     assert.match(
@@ -294,4 +331,4 @@ assert.match(
   'ActiveListingExists must still map to marketplace_already_listed as the final safeguard',
 );
 
-console.log('marketplace-actions: PASS');
+console.log('marketplace actions: PASS');

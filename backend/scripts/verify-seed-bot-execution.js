@@ -234,7 +234,8 @@ async function main() {
   assert.equal(enabledExecutorCalls, 1);
   assert.equal(capturedPayload.userId, 'seed-user-1');
   assert.equal(capturedPayload.payload.action, 'ENTRY');
-  assert.equal(capturedPayload.payload.executionMode, 'BACKEND_WALLET');
+  // Agents are SYSTEM_SEED_WALLET participants, never a human session mode.
+  assert.equal(capturedPayload.payload.executionMode, 'SYSTEM_SEED_WALLET');
   assert.equal(capturedPayload.payload.chainId, 5042002);
   assert.equal(capturedPayload.payload.amountRaw, STAKE_AMOUNT_RAW.toString());
   assert.equal(capturedPayload.payload.walletAddress.toLowerCase(), sample.wallet.toLowerCase());
