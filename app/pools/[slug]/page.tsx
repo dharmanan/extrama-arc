@@ -228,7 +228,7 @@ export default function PoolDetailPage() {
   const { locale } = useLocale();
   const t = useCopy();
   const { address, executionMode } = useWalletSession();
-  const { address: connectedAddress, chainId: connectedChainId } = useAccount();
+  const { address: connectedAddress, connector: connectedConnector } = useAccount();
   const publicClient = usePublicClient({ chainId: 5042002 });
   const { sendTransactionAsync } = useSendTransaction();
 
@@ -385,11 +385,20 @@ export default function PoolDetailPage() {
     // Circle user wallets use their own execution path and are intentionally
     // unaffected by this browser-wallet network guard.
     if (executionMode === "EXTERNAL_WALLET") {
-      if (!connectedAddress) {
+      if (!connectedAddress || !connectedConnector) {
         setEntryError("Reconnect the wallet bound to this EXTREMA session.");
         return;
       }
-      if (connectedChainId !== 5042002) {
+
+      let activeChainId: number;
+      try {
+        activeChainId = await connectedConnector.getChainId();
+      } catch {
+        setEntryError("Reconnect the wallet bound to this EXTREMA session.");
+        return;
+      }
+
+      if (activeChainId !== 5042002) {
         setEntryError("Switch your connected wallet to Arc Testnet.");
         return;
       }
@@ -413,7 +422,11 @@ export default function PoolDetailPage() {
           ) {
             throw new Error("Reconnect the wallet bound to this EXTREMA session.");
           }
-          if (connectedChainId !== request.chainId) {
+          if (!connectedConnector) {
+            throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+          }
+          const activeChainId = await connectedConnector.getChainId();
+          if (activeChainId !== request.chainId) {
             throw new Error("Switch your connected wallet to Arc Testnet.");
           }
           if (!publicClient) throw new Error("Arc Testnet receipt service is unavailable.");

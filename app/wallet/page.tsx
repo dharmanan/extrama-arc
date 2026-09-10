@@ -185,7 +185,6 @@ export default function WalletPage() {
     setError("");
     setBusy("Waiting for wallet signature...");
     try {
-      await ensureArcTestnet();
       const challenge = await backendApi.auth.walletLoginChallenge(connectedAddress);
       const signature = await signMessageAsync({ message: challenge.message });
       const session = await backendApi.auth.finishWalletLogin(
@@ -201,8 +200,10 @@ export default function WalletPage() {
       }
       setWalletReady(session.walletAddress, "EXTERNAL_WALLET");
       setOwnerAddress(session.ownerAddress);
+      setSessionNeedsAuth(false);
       setWalletNotice("Connected wallet session ready. Every transaction remains wallet approved.");
       setStep("ready");
+      await refreshChainState();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Wallet sign in failed.");
     } finally {
@@ -501,7 +502,9 @@ export default function WalletPage() {
                   <div className="ex-wallet-summary__item">
                     <span>Network</span>
                     <strong className="ex-num">
-                      {chainState.chain.name} · {chainState.chain.id}
+                      {executionMode === "EXTERNAL_WALLET"
+                        ? (chain ? `${chain.name} · ${chain.id}` : t.wallet.notConnected)
+                        : `${chainState.chain.name} · ${chainState.chain.id}`}
                     </strong>
                   </div>
 
@@ -528,6 +531,15 @@ export default function WalletPage() {
               {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
 
               <div className="ex-wallet-actions">
+                {executionMode === "EXTERNAL_WALLET" && chain?.id !== arcTestnet.id && (
+                  <button
+                    className="ex-btn ex-btn--ghost"
+                    type="button"
+                    onClick={() => switchChainAsync({ chainId: arcTestnet.id })}
+                  >
+                    {t.wallet.switchToArc}
+                  </button>
+                )}
                 <button
                   className="ex-btn ex-btn--ghost"
                   type="button"
