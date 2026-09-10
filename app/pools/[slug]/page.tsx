@@ -24,7 +24,6 @@ import { applyBinanceLiveMarketToPool, readBinanceLiveMarket } from "../../lib/l
 import { formatLocalDateTime, formatUsdc, humanRoundStatus } from "../../lib/display";
 import {
   buildPredictionMap,
-  formatAxisScaled,
   parsePredictionCents,
   parsePredictionInput,
 } from "../../lib/prediction-distribution";
@@ -194,7 +193,7 @@ function Distribution({
             style={{ left: `${model.livePositionPercent}%` }}
             aria-label={`${t.liveMark}: ${formatMarketPrice(liveMarkPrice, locale)}`}
           >
-            <span className="ex-dist__live-label">{t.liveMark}</span>
+            <span className="ex-dist__live-label">{t.liveMark} {formatMarketPrice(liveMarkPrice, locale)}</span>
           </span>
         )}
         {model.offscaleLive !== null && (
@@ -226,23 +225,27 @@ function Distribution({
               aria-label={`${isOwn ? `${t.poolYourPrediction}. ` : ""}${priceLabel}. Ticket ${point.id}.`}
               title={priceLabel}
             >
-              <span aria-hidden="true" />
-            </button>
-          );
-        })}
-      </div>
+            <span aria-hidden="true" />
+          </button>
+        );
+      })}
 
       {activePoint && (
-        <p className="ex-dist__tooltip" role="status">
+        <span
+          className="ex-dist__detail"
+          style={{ left: `${activePoint.positionPercent}%`, "--map-lane": activePoint.lane } as CSSProperties}
+          role="status"
+        >
           {ownPriceCents !== null && activePoint.priceCents === ownPriceCents ? `${t.poolYourPrediction} · ` : ""}
           {formatPredictionPrice(activePoint.priceCents.toString(), locale)} · Ticket #{activePoint.id}
-        </p>
+        </span>
       )}
+    </div>
 
       <div className="ex-dist__axis">
-        <span>{formatAxisScaled(model.fromScaled, locale)}</span>
-        <span>{formatAxisScaled((model.fromScaled + model.toScaled) / BigInt(2), locale)}</span>
-        <span>{formatAxisScaled(model.toScaled, locale)}</span>
+        <span aria-label={t.poolLowest}>{formatPredictionPrice(model.minCents.toString(), locale)}</span>
+        <span aria-hidden="true" />
+        <span aria-label={t.poolHighest}>{formatPredictionPrice(model.maxCents.toString(), locale)}</span>
       </div>
     </div>
   );
