@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ProductHeader } from "../../product-components";
@@ -23,8 +23,8 @@ import { useWalletSession } from "../../wallet-session";
 import { applyBinanceLiveMarketToPool, readBinanceLiveMarket } from "../../lib/live-market";
 import { formatLocalDateTime, formatUsdc, humanRoundStatus } from "../../lib/display";
 import {
-  buildPredictionDistribution,
-  distributionOffsetPercent,
+  buildPredictionMap,
+  formatAxisScaled,
   parsePredictionCents,
   parsePredictionInput,
 } from "../../lib/prediction-distribution";
@@ -65,13 +65,6 @@ function formatMarketPrice(value: string | null, locale: Locale) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(numeric);
-}
-
-function formatAxisPrice(cents: bigint, locale: Locale) {
-  const whole = cents / BigInt(100);
-  const fraction = (cents % BigInt(100)).toString().padStart(2, "0");
-  const separator = locale === "tr" ? "," : ".";
-  return `${new Intl.NumberFormat(localeTag(locale)).format(whole)}${separator}${fraction}`;
 }
 
 function formatWindowRange(startIso: string, endIso: string, locale: Locale) {
@@ -144,6 +137,7 @@ function Distribution({
   entriesError,
   entryCount,
   ownPriceCents,
+  liveMarkPrice,
   locale,
   t,
 }: {
@@ -151,16 +145,22 @@ function Distribution({
   entriesError: boolean;
   entryCount: number;
   ownPriceCents: bigint | null;
+  liveMarkPrice: string | null;
   locale: Locale;
   t: Copy;
 }) {
-  const pricesCents = useMemo(
-    () => (entriesState?.entries ?? [])
-      .map((entry) => parsePredictionCents(entry.predictionPriceCents))
-      .filter((price): price is bigint => price !== null),
+  const predictionInputs = useMemo(
+    () => (entriesState?.entries ?? []).flatMap((entry) => {
+      const priceCents = parsePredictionCents(entry.predictionPriceCents);
+      return priceCents === null ? [] : [{ id: entry.ticketId, priceCents }];
+    }),
     [entriesState],
   );
-  const model = useMemo(() => buildPredictionDistribution(pricesCents), [pricesCents]);
+  const model = useMemo(
+    () => buildPredictionMap(predictionInputs, liveMarkPrice),
+    [liveMarkPrice, predictionInputs],
+  );
+  const [activePointId, setActivePointId] = useState<string | null>(null);
 
   // The round read already knows how many entries exist. An empty round is
   // stated as empty even when the entry read failed, because "no predictions
@@ -183,41 +183,66 @@ function Distribution({
     );
   }
 
-  const ownOffset = ownPriceCents === null
-    ? null
-    : distributionOffsetPercent(ownPriceCents, model);
-  const ownPriceLabel = ownPriceCents === null
-    ? null
-    : formatPredictionPrice(ownPriceCents.toString(), locale);
+  const activePoint = model.points.find((point) => point.id === activePointId) ?? null;
 
   return (
-    <div className="ex-dist">
-      {ownOffset !== null && ownPriceLabel !== null && (
-        <div className="ex-dist__own" style={{ left: `${ownOffset}%` }}>
-          <span className="ex-dist__own-tag">
-            <span className="ex-dist__own-key">{t.poolYourPrediction}</span>
-            <span className="ex-dist__own-val">{ownPriceLabel}</span>
+    <div className="ex-dist" style={{ "--map-lanes": model.laneCount } as CSSProperties}>
+      <div className="ex-dist__plot" role="group" aria-label={t.poolDistribution}>
+        {model.livePositionPercent !== null && (
+          <span
+            className="ex-dist__live"
+            style={{ left: `${model.livePositionPercent}%` }}
+            aria-label={`${t.liveMark}: ${formatMarketPrice(liveMarkPrice, locale)}`}
+          >
+            <span className="ex-dist__live-label">{t.liveMark}</span>
           </span>
-          <span className="ex-dist__own-line" aria-hidden="true" />
-        </div>
-      )}
-
-      <div className="ex-dist__plot" role="img" aria-label={t.poolDistribution}>
-        {model.bins.map((bin, index) => (
-          <span className="ex-dist__bin" key={index}>
-            <span
-              className="ex-dist__bar"
-              data-empty={bin.count === 0}
-              style={{ height: `${(bin.count / model.peak) * 100}%` }}
-            />
+        )}
+        {model.offscaleLive !== null && (
+          <span
+            className="ex-dist__offscale-live"
+            data-edge={model.offscaleLive}
+            aria-label={`${t.liveMark}: ${formatMarketPrice(liveMarkPrice, locale)}. ${model.offscaleLive === "LEFT" ? "Below" : "Above"} the displayed prediction range.`}
+          >
+            <span aria-hidden="true">{model.offscaleLive === "LEFT" ? "←" : "→"}</span>
+            {t.liveMark} · {formatMarketPrice(liveMarkPrice, locale)}
           </span>
-        ))}
+        )}
+        {model.points.map((point) => {
+          const isOwn = ownPriceCents !== null && point.priceCents === ownPriceCents;
+          const priceLabel = formatPredictionPrice(point.priceCents.toString(), locale);
+          return (
+            <button
+              type="button"
+              className="ex-dist__marker"
+              key={point.id}
+              data-own={isOwn || undefined}
+              data-active={activePoint?.id === point.id || undefined}
+              style={{ left: `${point.positionPercent}%`, "--map-lane": point.lane } as CSSProperties}
+              onMouseEnter={() => setActivePointId(point.id)}
+              onMouseLeave={() => setActivePointId((current) => current === point.id ? null : current)}
+              onFocus={() => setActivePointId(point.id)}
+              onBlur={() => setActivePointId((current) => current === point.id ? null : current)}
+              onClick={() => setActivePointId(point.id)}
+              aria-label={`${isOwn ? `${t.poolYourPrediction}. ` : ""}${priceLabel}. Ticket ${point.id}.`}
+              title={priceLabel}
+            >
+              <span aria-hidden="true" />
+            </button>
+          );
+        })}
       </div>
 
+      {activePoint && (
+        <p className="ex-dist__tooltip" role="status">
+          {ownPriceCents !== null && activePoint.priceCents === ownPriceCents ? `${t.poolYourPrediction} · ` : ""}
+          {formatPredictionPrice(activePoint.priceCents.toString(), locale)} · Ticket #{activePoint.id}
+        </p>
+      )}
+
       <div className="ex-dist__axis">
-        <span>{formatAxisPrice(model.fromCents, locale)}</span>
-        <span>{formatAxisPrice((model.fromCents + model.toCents) / BigInt(2), locale)}</span>
-        <span>{formatAxisPrice(model.toCents, locale)}</span>
+        <span>{formatAxisScaled(model.fromScaled, locale)}</span>
+        <span>{formatAxisScaled((model.fromScaled + model.toScaled) / BigInt(2), locale)}</span>
+        <span>{formatAxisScaled(model.toScaled, locale)}</span>
       </div>
     </div>
   );
@@ -793,6 +818,7 @@ export default function PoolDetailPage() {
               entriesError={entriesError}
               entryCount={pool.round.entryCount}
               ownPriceCents={ownPriceCents}
+              liveMarkPrice={pool.market.available ? pool.market.markPrice : null}
               locale={locale}
               t={t}
             />

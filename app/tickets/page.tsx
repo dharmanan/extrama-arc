@@ -281,12 +281,31 @@ export default function TicketsPage() {
     for (const listing of marketplaceListings) {
       const key = listingLookupKey(listing.ticketAddress, listing.tokenId);
       const existing = map.get(key);
-      if (!existing || Number(listing.listingId) > Number(existing.listingId)) {
+      if (
+        !existing ||
+        BigInt(listing.listingId) > BigInt(existing.listingId)
+      ) {
         map.set(key, listing);
       }
     }
     return map;
   }, [marketplaceListings]);
+
+  // A currently buyable listing is presented once, in its own marketplace
+  // section. Historical, expired, and action-needed records stay with the
+  // owned ticket because they are not an active marketplace offer.
+  const listedTickets = useMemo(
+    () => (state?.wallet.tickets ?? []).filter((ticket) =>
+      listingByTicket.get(listingLookupKey(ticket.ticketAddress, ticket.tokenId))?.state === "ACTIVE",
+    ),
+    [listingByTicket, state],
+  );
+  const unlistedTickets = useMemo(
+    () => (state?.wallet.tickets ?? []).filter((ticket) =>
+      listingByTicket.get(listingLookupKey(ticket.ticketAddress, ticket.tokenId))?.state !== "ACTIVE",
+    ),
+    [listingByTicket, state],
+  );
 
   function openTransfer(ticket: OwnedTicket) {
     setTransferTicketKey(ticketKey(ticket));
@@ -980,13 +999,27 @@ export default function TicketsPage() {
           </section>
         )}
 
+        {!loading && state && listedTickets.length > 0 && (
+          <section className="ex-ticket-group">
+            <header className="ex-ticket-group__head">
+              <div><p className="ex-eyebrow">{locale === "tr" ? "PAZARYERİ" : "MARKETPLACE"}</p><h2 className="ex-display ex-display--md">{locale === "tr" ? "Pazaryerinde listelenen" : "Listed on Marketplace"}</h2></div>
+              <p className="ex-num">{listedTickets.length} {locale === "tr" ? "aktif listeleme" : listedTickets.length === 1 ? "active listing" : "active listings"}</p>
+            </header>
+            <div className="ex-ticket-list">{listedTickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isCircleWallet: isCircleSession }))}</div>
+          </section>
+        )}
+
         {!loading && state && state.wallet.ticketCount > 0 && (
           <section className="ex-ticket-group">
             <header className="ex-ticket-group__head">
-              <div><p className="ex-eyebrow">{isCircleSession ? (locale === "tr" ? "CIRCLE CÜZDANI" : "CIRCLE WALLET") : (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET")}</p><h2 className="ex-display ex-display--md">{state.wallet.ticketCount} {locale === "tr" ? "zincir üstü bilet" : state.wallet.ticketCount === 1 ? "onchain ticket" : "onchain tickets"}</h2></div>
+              <div><p className="ex-eyebrow">{isCircleSession ? (locale === "tr" ? "CIRCLE CÜZDANI" : "CIRCLE WALLET") : (locale === "tr" ? "BAĞLI CÜZDAN" : "CONNECTED WALLET")}</p><h2 className="ex-display ex-display--md">{locale === "tr" ? "Biletlerim" : "My Tickets"}</h2></div>
               <p className="ex-num">Arc Testnet · {state.wallet.chain.blockNumber}</p>
             </header>
-            <div className="ex-ticket-list">{state.wallet.tickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isCircleWallet: isCircleSession }))}</div>
+            {unlistedTickets.length > 0 ? (
+              <div className="ex-ticket-list">{unlistedTickets.map((ticket) => renderTicketCard(ticket, { showTransfer: true, isCircleWallet: isCircleSession }))}</div>
+            ) : (
+              <p className="ex-ticket-group__note">{locale === "tr" ? "Sahip olduğun tüm biletler şu anda pazaryerinde listeleniyor." : "Every ticket you own is currently listed on the marketplace."}</p>
+            )}
           </section>
         )}
       </div>
