@@ -4,25 +4,33 @@ ETHOnline 2026 Arc hackathon project.
 
 ## Current phase
 
-Core implementation is in production. The project is now in production hardening plus final UI and proof work.
+Core implementation is live on Arc Testnet. EXTREMA is now in final hackathon acceptance, UI polish, and submission packaging.
 
 What is live:
 
 - 24 pool contracts and 24 paired ERC-721 ticket collections on Arc Testnet (chain `5042002`)
-- Real Arc Testnet USDC, real 1 USDC prediction entry, real ticket minting and transfer
-- Passkey authentication and passkey step-up for critical signing
+- Real Arc Testnet USDC with fixed 1 USDC prediction entries
+- Real ERC-721 ticket minting and transferable claim/refund rights
+- Passkey authentication and fresh passkey step-up for critical signing
 - Backend on Railway, frontend on Vercel, PostgreSQL on Railway
-- Round lifecycle automation: scan, Daily/Weekly/Quarterly canonical V2 round creation, permissionless locking, and resolver-authorized cancellation and settlement
-- Binance mark-price settlement source with deterministic evidence hashing
+- Automated Daily, Weekly, and Quarterly round creation and lifecycle handling
+- Resolver-authorized real cancellation and settlement transactions
+- Binance USDⓈ-M Futures Mark Price settlement evidence with deterministic hashing
+- Real winner calculation, treasury accounting, claim, and refund flows proven on Arc Testnet
+- Real leaderboard and settlement verification surfaces backed by production data
+- Secondary marketplace contract/backend lifecycle implemented and deterministically verified
+- Circle-powered production entry path proven on Arc Testnet
+- Nine autonomous seed wallets with gated production scheduling, immutable plans, fresh onchain preflight checks, and fail-closed transaction handling
 
-What is still open:
+Final hackathon work:
 
-- Demo state still exists on some routes and is being removed
-- Leaderboard and settlement verification pages are not yet backed by real data
-- Cancellation, settlement, winners, payouts, and claim are implemented but not yet proven by a live Arc transaction
-- Visual design is partially complete
+- Wrong-network detection and switch proof
+- Final security acceptance checks
+- Submission materials and demo video
+- Final browser-level UI polish and official brand/link treatment
+- Final single-round Arc Testnet end-to-end proof in Section 15
 
-`EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md` is the source of truth for what is proven versus what is merely implemented. This README is a summary and does not claim a complete product.
+`EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md` remains the detailed proof record.
 
 ## Architecture
 
@@ -100,8 +108,8 @@ Returning user:
 | `/pools` | 24 standard pools |
 | `/pools/[slug]` | Prediction entry |
 | `/rounds/[slug]` | Live pool |
-| `/results/[roundId]` | Result and claim |
-| `/verify/[roundId]` | Settlement verification |
+| `/results/[slug]/[roundId]` | Result and claim |
+| `/verify/[slug]/[roundId]` | Settlement verification |
 | `/tickets` | NFT tickets |
 | `/leaderboard` | Rankings |
 | `/how-it-works` | Product explanation |
@@ -199,11 +207,14 @@ Symbols:
 
 ## Design
 
-Visual design has begun. The prerequisites that originally gated it are met: frontend and backend checks pass, migrations run, passkey registration and login work end to end, EXTREMA wallet creation and reconnect work, and the Arc contract and USDC flows are stable in production.
+The global EXTREMA visual system is active across the canonical product routes. The obsolete structural wireframe runtime layer has been removed.
 
-Current state:
+Final browser-level polish remains:
 
-- Complete: the global design token foundation in `app/globals.css`, and the homepage
-- Not started: the remaining routes, which still render the structural wireframe
+- spacing, alignment, overflow, and responsive checks
+- Koray Çifci identity/logo and `koraycifci.com`
+- GitHub mark and `dharmanan/extrama-arc` repository link
+- official Arc branding
+- official Circle branding
 
-The redesign is presentation only. It has not modified any backend, contract, schedule, or signer path, and the live data routes continue to read real Arc state.
+This final polish is presentation only. It does not modify backend, contract, schedule, signer, settlement, or financial execution paths.

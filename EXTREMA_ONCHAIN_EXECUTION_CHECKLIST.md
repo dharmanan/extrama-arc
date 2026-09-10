@@ -80,14 +80,23 @@ The deterministic suite separately proves replay rejection, double claim prevent
 
 Section 15 remains open: the evidence above spans multiple real rounds and therefore does not yet satisfy the stricter requirement for one single round demonstrated from creation through final claim.
 
-### Remaining implementation
+### Final hackathon acceptance work
 
-1. Final browser-level visual polish and missing brand assets
-2. Wrong-network detection and switch proof
-3. Final security gate items
-4. Final Arc Testnet single-round end-to-end proof
-5. Secondary NFT marketplace live trade proof; core contract/backend lifecycle is already covered by deterministic E2E
-6. Hackathon submission packaging
+The project is now feature-frozen for submission. No architecture changes, refactors, or new product features are planned unless a reproduced P0 submission blocker requires one.
+
+1. Wrong-network detection and switch proof
+2. Final security acceptance gate
+3. Secondary marketplace live trade proof if required for final product acceptance; deterministic marketplace lifecycle coverage already passes
+4. Hackathon submission packaging, architecture diagram, project copy, and demo video
+5. Final browser-level visual polish:
+   - spacing, alignment, overflow, and responsive checks
+   - Koray Çifci identity/logo + `koraycifci.com`
+   - GitHub mark + repository link
+   - official Arc branding
+   - official Circle branding
+6. Final Arc Testnet single-round end-to-end proof in Section 15
+
+Target: complete items 1-5 before the final Section 15 live round proof.
 
 See [Current roadmap](#current-roadmap) at the end of this document for the execution order.
 
@@ -1740,12 +1749,16 @@ These proofs intentionally do **not** imply that every negative case was redunda
 
 ### Next execution order
 
-1. **Final browser-level visual polish and missing brand assets.** Structural wireframe removal and canonical route cleanup are complete; inspect the current rendered pages for spacing, responsive behavior, overflow, alignment, and the remaining Arc/USDC brand treatment.
-2. **Wrong-network detection and switch proof.** Confirm transaction actions block the wrong chain and the switch-to-Arc flow works in the current UI.
-3. **Final security gate.** Replay/JWT rejection, rate limits, session expiry, dependency review, secret rotation procedure, and secret scan.
-4. **Final Arc Testnet single-round end-to-end proof.** Section 15 remains open. Existing production evidence is strong but spans multiple rounds; the stricter acceptance test requires one complete round from creation through final claim.
-5. **Secondary marketplace live proof.** Core marketplace list/update/cancel/buy behavior is already covered by deterministic E2E and a live listing/cache refresh has been observed. Section 16.3 still needs a recorded real secondary sale if the final acceptance gate requires it.
-6. **Hackathon submission packaging.**
+The hackathon build is feature-frozen. Existing architecture stays unchanged unless a reproduced P0 submission blocker requires a change.
+
+1. **Documentation truth.** Synchronize README and proof documentation with the live production state.
+2. **Wrong-network proof.** Confirm transaction actions block the wrong chain and switching to Arc works.
+3. **Final security gate.** Close only submission-relevant acceptance items; no speculative refactors.
+4. **Marketplace proof decision.** Complete one real Arc Testnet sale only if needed for final EXTREMA acceptance.
+5. **Submission packaging.** Architecture diagram, project description, prize-track explanation, demo script, and video.
+6. **Final UI polish.** Only small spacing/responsive/overflow fixes plus Koray/site, GitHub/repository, official Arc, and official Circle branding.
+7. **Final deterministic E2E and production smoke.** Freeze after PASS.
+8. **Section 15 single-round live proof.** Existing production evidence proves the component paths across multiple rounds; this final test consolidates them into one round from creation through claim.
 
 ### Live actions pending
 
