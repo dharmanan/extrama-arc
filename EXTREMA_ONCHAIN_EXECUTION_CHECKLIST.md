@@ -1556,7 +1556,7 @@ Current canonical surfaces use real backend and Arc Testnet state.
 - [ ] Fresh passkey step-up implemented for claim **(IMPLEMENTED / BROWSER EVIDENCE NOT RECORDED)**
   - `CLAIM_ACTION_AUTH_SMOKE=PASS` covers payload binding, single use, and replay rejection in an in-memory harness. A real browser WebAuthn claim requires a settled round.
 - [x] Fresh passkey step-up implemented for refund
-- [ ] Action challenge bound to:
+- [x] Action challenge bound to:
   - action type
   - chain ID
   - contract
@@ -1565,16 +1565,31 @@ Current canonical surfaces use real backend and Arc Testnet state.
   - destination
   - expiry
   - one-time nonce
-- [ ] Replay prevention verified
-- [ ] JWT alone cannot trigger signer endpoints
-- [ ] Rate limits verified
-- [ ] Session expiry verified
-- [ ] `npm audit` remains 0
-- [ ] Backend dependency audit remains 0
-- [ ] Secret rotation procedure documented
-  - Must now cover `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED` alongside `ENCRYPTION_KEY` and `JWT_SECRET`. Rotating `ENCRYPTION_KEY` invalidates the resolver envelope and every per-user wallet envelope, so the procedure has to sequence re-encryption, not just replacement.
-- [ ] No private key, JWT secret, encryption key, or credentials committed to Git
-  - Requires a repeatable secret scan, not a one-time inspection.
+  - Proof: `CLAIM_PAYLOAD_AND_TYPE_BINDING=PASS`; canonical action payload hashing includes the bound fields above and action authorizations use a cryptographically random one-time nonce plus expiry.
+- [x] Replay prevention verified
+  - Proof: `CLAIM_CHALLENGE_SINGLE_USE=PASS`, `CLAIM_ACTION_SINGLE_USE=PASS`, and `HTTP_ACTIONS_E2E=PASS` replay scenario.
+- [x] JWT alone cannot trigger backend-wallet signer endpoints
+  - `BACKEND_WALLET` financial actions require `startPasskeyStepUp`, one-time WebAuthn challenge consumption, and `finishStepUpAuthentication` before the verified action can be consumed.
+  - External-wallet execution is separate because the user's connected wallet signs the transaction instead of an EXTREMA backend private key.
+- [x] Rate limits verified
+  - Proof: `HTTP_ACTIONS_E2E=PASS`; security scenarios include `rate-limit`.
+- [x] Session expiry verified
+  - Proof: expired authenticated action request returns `401 session_expired` in the HTTP E2E security harness.
+- [x] Root/frontend dependency audit is 0
+  - Security overrides pin patched transitive versions for `axios`, `ws`, `uuid`, `query-string`, and `decode-uri-component` without changing the EXTREMA wallet-stack API surface.
+  - Clean `npm ci` completed successfully and reported 0 vulnerabilities.
+  - `npm audit --omit=dev --json` reported 0 vulnerabilities: 0 critical, 0 high, 0 moderate, 0 low.
+  - The exact override set was validated by production build/typecheck, Circle and multi-wallet security tests, Forge 67/67, and the full deterministic E2E matrix: 47 PASS, 0 FAIL, 4 unsupported by design.
+- [x] Backend dependency audit remains 0
+  - Proof: `npm --prefix backend audit --json` reported 0 vulnerabilities.
+- [x] Secret rotation procedure documented
+  - Procedure: `docs/SECURITY_OPERATIONS.md`.
+  - Covers `JWT_SECRET`, `ENCRYPTION_KEY`, `EXTREMA_RESOLVER_PRIVATE_KEY_ENCRYPTED`, resolver-key rotation, Circle credentials, and database credentials.
+  - `ENCRYPTION_KEY` rotation explicitly requires re-encryption of both per-user wallet envelopes and the resolver envelope before production resumes.
+- [x] No private key, JWT secret, encryption key, or credentials committed to Git
+  - Repeatable verifier: `backend/scripts/verify-no-committed-secrets.js`.
+  - The verifier prints rule/file names only, skips binary assets, and does not print matched secret values.
+  - Verification result: `COMMITTED_SECRET_SCAN=PASS`.
 
 Note on the resolver secret: the resolver key is held only as an AES-256-GCM envelope in the Railway environment. Neither the envelope nor the key is in this repository, and `backend/src/config.js` rejects any value that is not in envelope shape.
 
