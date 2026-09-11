@@ -247,12 +247,21 @@ UI VISIBILITY STATUS: **IMPLEMENTED / VALIDATED, DUAL MODE.**
 - A Base Sepolia source sub-section shows source balance, source readiness, and the approve/deposit action; Circle sessions additionally see a same address Base wallet preparation action when needed.
 - Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
 
-LIVE PROOF STATUS: **NOT LIVE PROVEN, EITHER MODE.**
+LIVE PROOF STATUS: **PARTIAL, CIRCLE MODE ONLY (approval stage). NOT LIVE PROVEN for deposit, Gateway credit, or burn/transfer, either mode.**
+
+Live proven in production, Circle mode, for `0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876`:
+
+- Circle Base Sepolia companion EOA preparation succeeded, same address as the Arc EOA.
+- Base Sepolia source held 20 test USDC; Base native gas was funded.
+- The first hosted Circle contract execution challenge (`USDC.approve(GatewayWallet, 2000000)`) was shown and explicitly approved by the user.
+- Onchain read-only proof after the challenge: Base USDC balance 20.0, Gateway allowance exactly 2.0 USDC. The approval definitely landed on Base Sepolia.
+
+Production bug found at this exact stage: reconciliation (`circleExecutionEngine.resolvePhaseTransaction`, called from `gatewayDepositService.resolveCirclePhase`) fetched the Circle transaction without passing the source blockchain, so `circleUserWalletService`'s default `ARC-TESTNET` was used to validate a transaction that genuinely lives on `BASE-SEPOLIA`, surfacing `circle_transaction_mismatch` instead of binding the already-landed approval. See "Production bug fixed" below. `GatewayWallet.deposit` was never reached because of this bug; no deposit, no Gateway credit, and no burn/transfer have been executed by either mode.
 
 Still required:
 
-- [ ] Read only production prerequisites
-- [ ] Circle Base Sepolia to Gateway to Arc: one controlled real deposit, then one controlled real burn intent transfer
+- [x] Read only production prerequisites for the Circle approval stage (funded Base Sepolia source, prepared companion EOA)
+- [ ] Circle Base Sepolia to Gateway to Arc: reconcile the already-approved production action (`769088d9-cd91-4466-92e1-726ac76e8cf4`) forward past the fixed bug, then one controlled real deposit, then one controlled real burn intent transfer
 - [ ] External Base Sepolia to Gateway to Arc: one controlled real deposit, then one controlled real burn intent transfer
 - [ ] Explicit Koray approval before enabling broadcast
 - [ ] Transaction, transfer ID and destination reconciliation proof
@@ -1981,6 +1990,12 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
   - Fix: `handlePrepareBaseWallet()` now reads/reuses a live `CircleBaseWalletRecovery` (same idempotency key across retries), persists the challenge id before executing it, calls the existing `executeHostedChallenge` from `circle-actions.ts`, reconciles read only and bounded afterward (Circle eventual consistency), and clears recovery only once the resulting address is confirmed to match the Arc session wallet. A definite non-landing after a reported failure/expiry clears recovery for an explicit restart; every other uncertain outcome preserves it for the next click.
   - Proof: `CIRCLE_BASE_WALLET_UI=PASS` (new, in `verify-circle-base-wallet.js`) statically proves the executor is wired in, recovery is stored before execution, an existing challenge is resumed without a second `createWallet` call, a new idempotency key is never minted while a live recovery exists, and every "ready" transition clears recovery first. No Circle wallet creation, Base USDC approval, Gateway deposit, or Gateway broadcast was executed to produce this proof.
   - **Still NOT LIVE PROVEN**: this closes the code bug; it has not yet been re-verified against the live production Circle flow for the Arc wallet `0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876` that reported the symptom.
+- [x] Production bug fixed: Gateway Circle approval reconciliation defaulted to ARC-TESTNET and rejected a genuine Base Sepolia transaction
+  - Found live at commit `bc48389`, for the same Arc wallet `0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876`: after the user explicitly approved the hosted `USDC.approve(GatewayWallet, 2000000)` challenge and Base Sepolia allowance genuinely became 2.0 USDC, the durable action (`769088d9-cd91-4466-92e1-726ac76e8cf4`, request `5208053f-c67e-44b1-907c-8bc4f04c5d27`) stayed stuck at `APPROVAL_CHALLENGE` and the UI surfaced `circle_transaction_mismatch`. Root cause: `circleExecutionEngine.resolvePhaseTransaction` never threaded a `blockchain` parameter into `circle.getContractExecutionTransaction`/`findContractExecutionTransaction`, so `circleUserWalletService`'s `ARC-TESTNET` default was used to validate a transaction that genuinely lives on `BASE-SEPOLIA`.
+  - Fix: `resolvePhaseTransaction` takes an additive `blockchain = circleUserWalletService.ARC_TESTNET` parameter (every existing Arc caller is unchanged since none pass it), and `gatewayDepositService.resolveCirclePhase` now passes `blockchain: source.circleBlockchain` (`'BASE-SEPOLIA'` for the current source). Challenge creation was untouched; this was a reconciliation-only bug.
+  - Recovery: the existing production action reconciles forward with no manual database mutation, no new approval challenge, no new idempotency key, and no re-issued approve calldata — the next call to `verifyApproval` for the SAME action binds the already-known Circle transaction id and moves the SAME action to `DEPOSIT_REQUIRED` / `DEPOSIT_CHALLENGE`.
+  - Proof: `GATEWAY_DEPOSIT_PRODUCTION_RECONCILIATION=PASS` (new) replays the exact production row shape and proves the reconciliation binds the already-landed transaction with zero new Circle mutations; `CIRCLE_ENGINE_BLOCKCHAIN_DEFAULT=PASS` (new) proves the engine still defaults to `ARC-TESTNET` when no blockchain is given; `GATEWAY_DEPOSIT_WRONG_BLOCKCHAIN_FAILS_CLOSED=PASS` (new) proves a genuine mismatch still fails closed. Verified by temporarily reverting the fix and confirming these tests fail with the exact same `circle_transaction_mismatch` production saw, then restoring it.
+  - **Still NOT LIVE PROVEN**: the fix has not yet been exercised against the live, still-pending production action. `GatewayWallet.deposit`, the Gateway domain-6 balance increase, and the Gateway to Arc burn/transfer remain unexecuted for both execution modes.
 
 ### Remaining open work
 

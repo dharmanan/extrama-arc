@@ -139,7 +139,7 @@ async function issuePhaseChallenge({
 
 async function resolvePhaseTransaction({
   auth, actionId, userToken, phaseName, contractAddressFor, port, circle, dependencies = {},
-  walletId = auth.circleWalletId,
+  walletId = auth.circleWalletId, blockchain = circleUserWalletService.ARC_TESTNET,
 }) {
   await assertCircleTokenSession({ auth, userToken }, dependencies);
   let action = await port.getAction(auth.userId, actionId, auth.walletAddress, auth.circleWalletId);
@@ -174,6 +174,7 @@ async function resolvePhaseTransaction({
       walletId,
       refId: record.refId,
       contractAddress,
+      blockchain,
     });
   } else {
     transaction = await circle.findContractExecutionTransaction({
@@ -181,6 +182,7 @@ async function resolvePhaseTransaction({
       walletId,
       refId: record.refId,
       contractAddress,
+      blockchain,
     });
 
     if (transaction?.id) {

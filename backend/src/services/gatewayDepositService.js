@@ -440,6 +440,12 @@ function createGatewayDepositService({
       auth, actionId: row.id, userToken, phaseName, dependencies,
       contractAddressFor: () => contractAddress,
       port: depositPort(), circle, walletId,
+      // The Circle transaction being reconciled lives on the SOURCE chain
+      // (Base Sepolia here), never Arc. Without this, the shared engine's
+      // ARC-TESTNET default compares a real Base Sepolia transaction as if
+      // it were an Arc one and rejects it as circle_transaction_mismatch
+      // even though the approval genuinely landed onchain.
+      blockchain: source.circleBlockchain,
     });
     if (resolved.pending) {
       return {

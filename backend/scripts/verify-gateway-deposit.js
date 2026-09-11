@@ -21,6 +21,8 @@ global.fetch = async () => {
 };
 
 const { createGatewayDepositService } = require('../src/services/gatewayDepositService');
+const circleExecutionEngine = require('../src/services/circleExecutionEngine');
+const gatewayServiceForDeposit = require('../src/services/gatewayService');
 
 const DOMAIN = 6;
 const CHAIN_ID = 84532;
@@ -382,6 +384,14 @@ async function verifyCircleBranch() {
   let baseWalletResolved = null;
   const challenges = new Map();
   let nextChallengeId = 1;
+  let createChallengeCalls = 0;
+  const transactionLookupCalls = [];
+  // The real Circle transaction genuinely lives on BASE-SEPOLIA. This fake
+  // reproduces circleUserWalletService's real mismatch-throwing behavior
+  // (matchesFetchedContractExecutionTransaction) instead of ignoring the
+  // blockchain argument: production's circle_transaction_mismatch bug came
+  // exactly from the engine defaulting this to ARC-TESTNET, and a fake that
+  // accepts any blockchain would never have caught it.
   const circle = {
     async listBaseSepoliaEoa() {
       return baseWalletResolved
@@ -389,6 +399,7 @@ async function verifyCircleBranch() {
         : null;
     },
     async createContractExecutionChallenge({ walletId, contractAddress, callData, refId }) {
+      createChallengeCalls += 1;
       assert.equal(walletId, baseCircleWalletId, 'must sign with the Base wallet id, never the Arc session id');
       const challengeId = `challenge-${nextChallengeId}`;
       nextChallengeId += 1;
@@ -399,12 +410,15 @@ async function verifyCircleBranch() {
       const challenge = challenges.get(challengeId);
       return { id: challengeId, status: challenge.status, transactionId: challenge.txHash ? challengeId : null };
     },
-    async getContractExecutionTransaction({ id }) {
+    async getContractExecutionTransaction({ id, blockchain }) {
+      transactionLookupCalls.push({ fn: 'get', id, blockchain });
       const challenge = challenges.get(id);
       if (!challenge?.txHash) return null;
-      return { id, state: 'COMPLETE', txHash: challenge.txHash };
+      if (blockchain !== 'BASE-SEPOLIA') throw new Error('circle_transaction_mismatch');
+      return { id, state: 'COMPLETE', txHash: challenge.txHash, blockchain: 'BASE-SEPOLIA' };
     },
-    async findContractExecutionTransaction() {
+    async findContractExecutionTransaction({ blockchain } = {}) {
+      transactionLookupCalls.push({ fn: 'find', blockchain });
       return null;
     },
   };
@@ -464,6 +478,20 @@ async function verifyCircleBranch() {
   assert.equal(approvalResolved.approvalTxHash, approvalHash);
   assert.equal(approvalResolved.depositChallengeId, 'challenge-2');
   assert.equal(challenges.get('challenge-2').walletId, baseCircleWalletId);
+  // The exact production bug: the Circle transaction reconciled above lives
+  // on Base Sepolia, not Arc. Reconciliation must request it as such, not
+  // fall back to the engine's ARC-TESTNET default.
+  assert.ok(
+    transactionLookupCalls.some((call) => call.fn === 'get' && call.blockchain === 'BASE-SEPOLIA'),
+    'approval reconciliation must fetch the Circle transaction as BASE-SEPOLIA, never the ARC-TESTNET default',
+  );
+  assert.ok(
+    !transactionLookupCalls.some((call) => call.blockchain === 'ARC-TESTNET'),
+    'no Base Sepolia Gateway deposit lookup may ever default to ARC-TESTNET',
+  );
+  // Exactly one Circle challenge was ever created per phase: the approval
+  // challenge from service.start, and now exactly one deposit challenge.
+  assert.equal(createChallengeCalls, 2, 'exactly one approval challenge and one deposit challenge, never more');
 
   // Duplicate deposit challenge is never created on a repeat call.
   const depositReplay = await service.verifyDeposit({
@@ -506,9 +534,233 @@ async function verifyCircleBranch() {
   console.log('GATEWAY_DEPOSIT_CIRCLE=PASS');
 }
 
+// ---------------------------------------------------------------------------
+// Direct, low-level proof that circleExecutionEngine.resolvePhaseTransaction
+// defaults to ARC-TESTNET when no blockchain is given, and passes through
+// whatever blockchain IS given, for both lookup functions. This is the
+// engine-level guarantee every existing Arc caller (entry, ticket transfer,
+// refund, claim, all four marketplace actions) relies on implicitly by never
+// passing the parameter at all.
+// ---------------------------------------------------------------------------
+
+function minimalEnginePort(action) {
+  return {
+    invalidError: 'test_action_invalid',
+    async getAction() { return action; },
+    async persistTransactionId(_u, _a, _w, _c, _phase, transactionId) {
+      action = { ...action, circleApprovalTransactionId: transactionId };
+      return action;
+    },
+    async bindTransaction(_u, _a, _w, _c, _phase, transaction) {
+      action = { ...action, circleApprovalTransactionId: transaction.id };
+      return action;
+    },
+  };
+}
+
+async function verifyEngineBlockchainDefaulting() {
+  const auth = { userId: 'u1', walletAddress: '0x1000000000000000000000000000000000000001', circleWalletId: 'arc-wallet-1' };
+  const dependencies = { listArcEoa: async () => ({ id: auth.circleWalletId, address: auth.walletAddress }) };
+  const action = {
+    id: 'action-1', payloadHash: null,
+    circleApprovalChallengeId: null, circleApprovalIdempotencyKey: null,
+    circleApprovalRefId: 'ref-1', circleApprovalTransactionId: 'tx-1',
+  };
+
+  const calls = [];
+  const circle = {
+    async getContractExecutionTransaction({ id, blockchain }) {
+      calls.push({ fn: 'get', id, blockchain });
+      return { id, state: 'COMPLETE', txHash: `0x${'11'.repeat(32)}`, blockchain };
+    },
+    async findContractExecutionTransaction({ blockchain } = {}) {
+      calls.push({ fn: 'find', blockchain });
+      return null;
+    },
+  };
+
+  // No blockchain argument at all: this is exactly how every existing Arc
+  // caller (circleEntryExecutionService, circleActionExecutionService)
+  // invokes this function today.
+  await circleExecutionEngine.resolvePhaseTransaction({
+    auth, actionId: action.id, userToken: 'circle-user-token-long-enough', phaseName: 'APPROVAL',
+    contractAddressFor: () => '0x2000000000000000000000000000000000000002',
+    port: minimalEnginePort(action), circle, dependencies,
+  });
+  assert.equal(calls[0].blockchain, 'ARC-TESTNET', 'omitting blockchain must still resolve as ARC-TESTNET for existing Arc callers');
+
+  // Explicit blockchain is threaded straight through, unmodified.
+  calls.length = 0;
+  await circleExecutionEngine.resolvePhaseTransaction({
+    auth, actionId: action.id, userToken: 'circle-user-token-long-enough', phaseName: 'APPROVAL',
+    contractAddressFor: () => '0x2000000000000000000000000000000000000002',
+    port: minimalEnginePort(action), circle, dependencies,
+    blockchain: 'BASE-SEPOLIA',
+  });
+  assert.equal(calls[0].blockchain, 'BASE-SEPOLIA', 'an explicit blockchain must be passed through exactly as given');
+
+  console.log('CIRCLE_ENGINE_BLOCKCHAIN_DEFAULT=PASS');
+}
+
+// ---------------------------------------------------------------------------
+// Reproduces the exact live production incident: a durable action already
+// has approval_circle_transaction_id persisted (from a resolve call made
+// before this fix), approval_tx_hash is still null, and the prior code's
+// ARC-TESTNET default caused circle_transaction_mismatch even though the
+// approval had genuinely landed on Base Sepolia (allowance already 2 USDC).
+// The very next explicit call must reconcile the SAME action using the SAME
+// transaction id: no new approval challenge, no new idempotency key, no
+// second gateway_deposit_actions row, no re-issued approve calldata.
+// ---------------------------------------------------------------------------
+
+async function verifyProductionApprovalReconciliation() {
+  const walletAddress = '0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876';
+  const baseCircleWalletId = 'base-wallet-prod-1';
+  const auth = {
+    userId: 'circle-user-prod', executionMode: 'CIRCLE_USER_WALLET',
+    walletAddress, circleWalletId: 'arc-wallet-prod-1',
+  };
+  const source = createFakeSourceChain();
+  // Onchain read-only proof from production: allowance is already 2 USDC.
+  source.state.allowanceRaw = AMOUNT;
+  const sourceChains = new Map([[DOMAIN, source]]);
+  const gateway = {
+    async readUnifiedUsdcBalance() {
+      return { balances: [{ domain: DOMAIN, balanceRaw: '0', transferable: true }] };
+    },
+  };
+  const database = createFakeDatabase();
+
+  const PROD_APPROVAL_TX_ID = '4087c4ae-a983-534c-9bc3-c1c454eab0fa';
+  const PROD_TX_HASH = `0x${'ab'.repeat(32)}`;
+  let createChallengeCalls = 0;
+  const transactionLookupCalls = [];
+  const circle = {
+    async listBaseSepoliaEoa() {
+      return { id: baseCircleWalletId, address: walletAddress, blockchain: 'BASE-SEPOLIA', accountType: 'EOA' };
+    },
+    async createContractExecutionChallenge({ contractAddress }) {
+      createChallengeCalls += 1;
+      if (contractAddress.toLowerCase() === source.usdcAddress.toLowerCase()) {
+        throw new Error('must_not_recreate_the_approval_challenge');
+      }
+      // Only the deposit (GatewayWallet) challenge may ever be created here.
+      assert.equal(contractAddress.toLowerCase(), gatewayServiceForDeposit.GATEWAY_WALLET_CONTRACT.toLowerCase());
+      return { challengeId: 'deposit-challenge-prod-1' };
+    },
+    async getContractExecutionChallenge() {
+      throw new Error('must_not_poll_the_challenge_when_the_transaction_id_is_already_known');
+    },
+    async getContractExecutionTransaction({ id, blockchain }) {
+      transactionLookupCalls.push({ id, blockchain });
+      assert.equal(id, PROD_APPROVAL_TX_ID, 'must reconcile the SAME already-known transaction id, never a different one');
+      if (blockchain !== 'BASE-SEPOLIA') throw new Error('circle_transaction_mismatch');
+      return { id, state: 'COMPLETE', txHash: PROD_TX_HASH, blockchain: 'BASE-SEPOLIA' };
+    },
+    async findContractExecutionTransaction() {
+      throw new Error('must_not_list_transactions_when_the_transaction_id_is_already_known');
+    },
+  };
+
+  const service = createGatewayDepositService({ database, gateway, circle, sourceChains });
+  const requestId = '5208053f-c67e-44b1-907c-8bc4f04c5d27';
+  const actionId = '769088d9-cd91-4466-92e1-726ac76e8cf4';
+  const sessionDeps = { listArcEoa: async () => ({ id: auth.circleWalletId, address: walletAddress }) };
+
+  // Seed the durable row exactly as production held it after the bug.
+  database.rows.set(actionId, {
+    id: actionId, user_id: auth.userId, request_id: requestId, execution_mode: 'CIRCLE_USER_WALLET',
+    wallet_address: walletAddress, source_domain: DOMAIN, source_chain_id: CHAIN_ID, amount_raw: AMOUNT,
+    source_circle_wallet_id: baseCircleWalletId, baseline_domain_balance_raw: '0',
+    approval_tx_hash: null, approval_circle_challenge_id: '0b06a6fe-6f0b-58df-a9e4-a8c35c16383d',
+    approval_circle_idempotency_key: 'idem-approval-1', approval_circle_ref_id: 'ref-approval-1',
+    approval_circle_transaction_id: PROD_APPROVAL_TX_ID,
+    deposit_tx_hash: null, deposit_circle_challenge_id: null, deposit_circle_idempotency_key: null,
+    deposit_circle_ref_id: null, deposit_circle_transaction_id: null,
+    state: 'APPROVAL_CHALLENGE', last_error: null, expires_at: new Date(Date.now() + 30 * 60 * 1000),
+  });
+
+  const reconciled = await service.verifyApproval({
+    auth, actionId, userToken: 'circle-user-token-long-enough',
+  }, sessionDeps);
+
+  assert.equal(reconciled.state, 'DEPOSIT_CHALLENGE');
+  assert.equal(reconciled.approvalTxHash, PROD_TX_HASH, 'the already-landed Base Sepolia approval must be bound by its real hash');
+  assert.ok(reconciled.depositChallengeId, 'exactly one deposit challenge is prepared once approval reconciles');
+  assert.equal(createChallengeCalls, 1, 'the only Circle challenge created here is the ONE deposit challenge; the approval is never recreated');
+  assert.equal(database.rows.get(actionId).request_id, requestId, 'the same durable row and request id are reused, never a new one');
+  assert.equal([...database.rows.values()].length, 1, 'no second gateway_deposit_actions row is ever created');
+  assert.ok(
+    transactionLookupCalls.length > 0 && transactionLookupCalls.every((call) => call.blockchain === 'BASE-SEPOLIA'),
+    'every transaction lookup for this Base Sepolia action must use BASE-SEPOLIA, never the ARC-TESTNET default',
+  );
+
+  console.log('GATEWAY_DEPOSIT_PRODUCTION_RECONCILIATION=PASS');
+}
+
+// A transaction that genuinely does not belong to the expected blockchain
+// must still fail closed, even after the fix: the fix threads the CONFIGURED
+// blockchain through, it does not disable the mismatch check.
+async function verifyWrongBlockchainStillFailsClosed() {
+  const walletAddress = '0x5000000000000000000000000000000000000005';
+  const baseCircleWalletId = 'base-wallet-2';
+  const auth = {
+    userId: 'circle-user-2', executionMode: 'CIRCLE_USER_WALLET',
+    walletAddress, circleWalletId: 'arc-wallet-2',
+  };
+  const source = createFakeSourceChain();
+  source.state.allowanceRaw = AMOUNT;
+  const sourceChains = new Map([[DOMAIN, source]]);
+  const gateway = { async readUnifiedUsdcBalance() { return { balances: [{ domain: DOMAIN, balanceRaw: '0', transferable: true }] }; } };
+  const database = createFakeDatabase();
+  const TX_ID = 'tx-wrong-chain-1';
+  const circle = {
+    async listBaseSepoliaEoa() {
+      return { id: baseCircleWalletId, address: walletAddress, blockchain: 'BASE-SEPOLIA', accountType: 'EOA' };
+    },
+    async createContractExecutionChallenge() { throw new Error('must_not_create_a_challenge_in_this_case'); },
+    async getContractExecutionChallenge() { throw new Error('must_not_poll_challenge'); },
+    // The transaction genuinely belongs to a different blockchain than the
+    // one this Gateway deposit action expects: reconciliation must reject
+    // it exactly like the real Circle service does, not accept it.
+    async getContractExecutionTransaction({ id, blockchain }) {
+      assert.equal(id, TX_ID);
+      if (blockchain !== 'BASE-SEPOLIA') throw new Error('circle_transaction_mismatch');
+      throw new Error('circle_transaction_mismatch');
+    },
+    async findContractExecutionTransaction() { throw new Error('must_not_list_transactions'); },
+  };
+  const service = createGatewayDepositService({ database, gateway, circle, sourceChains });
+  const requestId = '66666666-6666-4666-8666-666666666666';
+  const actionId = '77777777-7777-4777-8777-777777777777';
+  const sessionDeps = { listArcEoa: async () => ({ id: auth.circleWalletId, address: walletAddress }) };
+  database.rows.set(actionId, {
+    id: actionId, user_id: auth.userId, request_id: requestId, execution_mode: 'CIRCLE_USER_WALLET',
+    wallet_address: walletAddress, source_domain: DOMAIN, source_chain_id: CHAIN_ID, amount_raw: AMOUNT,
+    source_circle_wallet_id: baseCircleWalletId, baseline_domain_balance_raw: '0',
+    approval_tx_hash: null, approval_circle_challenge_id: 'challenge-wrong-chain',
+    approval_circle_idempotency_key: 'idem-1', approval_circle_ref_id: 'ref-1',
+    approval_circle_transaction_id: TX_ID,
+    deposit_tx_hash: null, deposit_circle_challenge_id: null, deposit_circle_idempotency_key: null,
+    deposit_circle_ref_id: null, deposit_circle_transaction_id: null,
+    state: 'APPROVAL_CHALLENGE', last_error: null, expires_at: new Date(Date.now() + 30 * 60 * 1000),
+  });
+
+  await rejectsCode(
+    () => service.verifyApproval({ auth, actionId, userToken: 'circle-user-token-long-enough' }, sessionDeps),
+    'circle_transaction_mismatch',
+  );
+  assert.equal(database.rows.get(actionId).state, 'APPROVAL_CHALLENGE', 'a genuine mismatch must never advance the action');
+
+  console.log('GATEWAY_DEPOSIT_WRONG_BLOCKCHAIN_FAILS_CLOSED=PASS');
+}
+
 (async () => {
   await verifyExternalBranch();
   await verifyCircleBranch();
+  await verifyEngineBlockchainDefaulting();
+  await verifyProductionApprovalReconciliation();
+  await verifyWrongBlockchainStillFailsClosed();
   assert.equal(liveNetworkCalls, 0);
   console.log('GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0');
   console.log('GATEWAY_DEPOSIT=PASS');
