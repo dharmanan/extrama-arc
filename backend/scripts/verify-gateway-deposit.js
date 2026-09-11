@@ -984,9 +984,18 @@ function verifyWalletPageDepositRecoveryWiring() {
   const fundingMarkup = walletPage.slice(fundingMarkupStart, fundingMarkupEnd);
   assert.match(walletPage, /const GATEWAY_SOURCE_CONFIGS = \[/);
   assert.match(walletPage, /label: "Base Sepolia"/);
-  assert.match(fundingMarkup, /gatewaySourceNetworkLabel\(item\.domain\)/);
-  assert.match(fundingMarkup, /formatGatewayUsdcDisplay\(item\.balance, locale\)/);
-  assert.ok(!fundingMarkup.includes('Domain ${item.domain}'), 'a Gateway domain number must not enter the primary source label');
+  const sourceSelectorStart = fundingMarkup.indexOf('<select');
+  const sourceSelectorEnd = fundingMarkup.indexOf('</select>', sourceSelectorStart);
+  assert.ok(sourceSelectorStart > -1 && sourceSelectorEnd > sourceSelectorStart);
+  const sourceSelectorMarkup = fundingMarkup.slice(sourceSelectorStart, sourceSelectorEnd);
+  assert.match(
+    sourceSelectorMarkup,
+    /<option key=\{item\.domain\} value=\{item\.domain\}>\s*\{gatewaySourceNetworkLabel\(item\.domain\)\}\s*<\/option>/,
+    'the source option must render only its configured network name',
+  );
+  assert.ok(!sourceSelectorMarkup.includes('formatGatewayUsdcDisplay(item.balance, locale)'), 'the source option must not render a Gateway unified balance');
+  assert.ok(!sourceSelectorMarkup.includes('2.00 USDC'), 'the source option must not contain a displayed Gateway balance');
+  assert.ok(!sourceSelectorMarkup.includes('Domain ${item.domain}'), 'a Gateway domain number must not enter the primary source label');
   assert.match(copy, /gatewayPrepareTitle: "Move USDC to Arc"/);
   assert.match(copy, /gatewayPrepareTitle: "USDC'yi Arc'a taşı"/);
   assert.match(copy, /gatewayPrepareBody: "Use your Gateway balance on Arc\. You'll review and approve before anything moves\."/);
@@ -1026,7 +1035,13 @@ function verifyWalletPageDepositRecoveryWiring() {
     'Circle must show Arc Testnet while an external wallet shows its connected network name',
   );
   assert.ok(!/\b(?:chainState\.chain|chain)\.id\b/.test(summaryMarkup), 'the primary network label must not expose a numeric chain ID');
-  assert.match(walletPage, /formatGatewayUsdcDisplay\(gateway\.totalUsdc, locale\)/);
+  assert.match(summaryMarkup, /formatGatewayUsdcDisplay\(gateway\.totalUsdc, locale\)/, 'the summary must retain the Gateway unified balance');
+  const baseBalanceStart = walletPage.indexOf('{t.wallet.gatewayBaseUsdcBalance}');
+  const baseBalanceEnd = walletPage.indexOf('</strong>', baseBalanceStart);
+  assert.ok(baseBalanceStart > -1 && baseBalanceEnd > baseBalanceStart);
+  const baseBalanceMarkup = walletPage.slice(baseBalanceStart, baseBalanceEnd);
+  assert.match(baseBalanceMarkup, /baseUsdcRaw !== null/);
+  assert.match(baseBalanceMarkup, /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(baseUsdcRaw\), locale\)/, 'the Base wallet balance must remain separate from Gateway unified balance');
   assert.match(walletPage, /placeholder="0\.00"/);
 
   // Finality is a read-only status mode: it prevents a duplicate resume or a
@@ -1145,6 +1160,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_DEPOSIT_REVIEW_FIXES=PASS');
   console.log('GATEWAY_WALLET_UI_CLEANUP=PASS');
   console.log('GATEWAY_WALLET_UI_REGRESSIONS=PASS');
+  console.log('GATEWAY_SOURCE_SELECTOR_PRESENTATION=PASS');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_LIVE_NETWORK_CALLS=0');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS');
 }

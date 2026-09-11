@@ -1233,7 +1233,7 @@ export default function WalletPage() {
                         >
                           {gatewaySources.map((item) => (
                             <option key={item.domain} value={item.domain}>
-                              {`${gatewaySourceNetworkLabel(item.domain)} · ${formatGatewayUsdcDisplay(item.balance, locale)} ${gateway?.token || "USDC"}`}
+                              {gatewaySourceNetworkLabel(item.domain)}
                             </option>
                           ))}
                         </select>
