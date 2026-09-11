@@ -7,6 +7,8 @@
 // network call fails the run instead of silently succeeding.
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { ethers } = require('ethers');
 
 process.env.NODE_ENV = 'test';
@@ -755,12 +757,131 @@ async function verifyWrongBlockchainStillFailsClosed() {
   console.log('GATEWAY_DEPOSIT_WRONG_BLOCKCHAIN_FAILS_CLOSED=PASS');
 }
 
+// ---------------------------------------------------------------------------
+// Static wiring proof for the wallet page's Gateway deposit RECOVERY UI.
+// Reproduces the exact production symptom: recovery is detected, the input
+// is disabled and empty, and clicking "continue" must use the recovery's own
+// durable amount/sourceDomain rather than the empty editable field, and must
+// resume the SAME action rather than minting a new requestId or clearing
+// recovery first. Pure source-text check: no network, no component mount.
+// ---------------------------------------------------------------------------
+
+function verifyWalletPageDepositRecoveryWiring() {
+  const walletPage = fs.readFileSync(
+    path.join(__dirname, '../../app/wallet/page.tsx'),
+    'utf8',
+  );
+
+  const handlerStart = walletPage.indexOf('async function handleGatewayBaseDeposit');
+  assert.ok(handlerStart > -1, 'handleGatewayBaseDeposit must exist');
+  const handlerEnd = walletPage.indexOf('\n  async function ensureArcTestnet', handlerStart);
+  assert.ok(handlerEnd > handlerStart);
+  const handler = walletPage.slice(handlerStart, handlerEnd);
+
+  // The recovery branch is checked, and resolved, BEFORE any input parsing.
+  const recoveryBranchIndex = handler.indexOf('if (depositRecovery) {');
+  const sourceDomainCheckIndex = handler.indexOf('if (depositRecovery.sourceDomain !== BASE_SEPOLIA_SOURCE.domain) {');
+  const useRecoveryAmountIndex = handler.indexOf('amountRaw = depositRecovery.amountRaw;');
+  const elseBranchIndex = handler.indexOf('} else {', recoveryBranchIndex);
+  const parseInputIndex = handler.indexOf('parseGatewayUsdcRaw(depositAmount)');
+  assert.ok(
+    recoveryBranchIndex > -1 && sourceDomainCheckIndex > recoveryBranchIndex &&
+    useRecoveryAmountIndex > sourceDomainCheckIndex && elseBranchIndex > useRecoveryAmountIndex &&
+    parseInputIndex > elseBranchIndex,
+    'a live recovery must be resolved (with its own source domain check) before the editable input is ever parsed',
+  );
+
+  // The "enter a valid amount" input-parsing error exists ONLY inside the
+  // no-recovery else branch: a recovery can never trigger it.
+  const recoveryBranchSlice = handler.slice(recoveryBranchIndex, elseBranchIndex);
+  const elseBranchSlice = handler.slice(elseBranchIndex);
+  assert.ok(
+    !recoveryBranchSlice.includes('parseGatewayUsdcRaw') && !recoveryBranchSlice.includes('valid USDC amount'),
+    'recovery present must never fall through to input parsing or its error',
+  );
+  assert.match(elseBranchSlice, /parseGatewayUsdcRaw\(depositAmount\)/);
+  assert.match(elseBranchSlice, /Enter a valid USDC amount/);
+
+  // sourceDomain/amountRaw actually used to call confirmGatewayBaseDeposit
+  // are the local variables resolved above, not a hardcoded constant or a
+  // fresh parse, so the same call site serves both the recovery and fresh
+  // paths correctly.
+  assert.match(handler, /confirmGatewayBaseDeposit\(\s*\{ sourceDomain, amountRaw \},/);
+
+  // No new requestId is ever minted in the page itself, and recovery is
+  // never cleared before the call: the ONLY setDepositRecovery(null) is
+  // after a call that reported COMPLETED.
+  assert.ok(!handler.includes('crypto.randomUUID()'), 'the page must never mint its own requestId for a Gateway deposit');
+  const confirmCallIndex = handler.indexOf('await confirmGatewayBaseDeposit(');
+  const clearRecoveryIndex = handler.indexOf('setDepositRecovery(null);');
+  assert.ok(confirmCallIndex > -1 && clearRecoveryIndex > confirmCallIndex,
+    'recovery must never be cleared before confirmGatewayBaseDeposit is called');
+  const completedGuardIndex = handler.lastIndexOf('if (result.state === "COMPLETED") {', clearRecoveryIndex);
+  assert.ok(completedGuardIndex > confirmCallIndex && completedGuardIndex < clearRecoveryIndex,
+    'recovery may only be cleared after the SAME call reports COMPLETED');
+
+  // Expiry fails closed: an expired report never clears recovery or retries.
+  const catchStart = handler.indexOf('} catch (cause) {');
+  const catchEnd = handler.indexOf('} finally {', catchStart);
+  assert.ok(catchStart > -1 && catchEnd > catchStart);
+  const catchSlice = handler.slice(catchStart, catchEnd);
+  assert.match(catchSlice, /gateway_deposit_expired/);
+  assert.ok(
+    !catchSlice.includes('setDepositRecovery(null)') && !catchSlice.includes('confirmGatewayBaseDeposit') &&
+    !catchSlice.includes('crypto.randomUUID()'),
+    'an expired report must never clear recovery, retry, or mint a replacement request id',
+  );
+
+  // Recovery seeds the (disabled) display field with the durable amount, on
+  // both the Circle and external recovery load effects, so it is never
+  // shown empty while a real recovery amount exists.
+  const seedMatches = [...walletPage.matchAll(/setDepositAmount\(formatGatewayUsdcRaw\(recovery\.amountRaw\)\);/g)];
+  assert.equal(seedMatches.length, 2, 'both the Circle and external recovery load effects must seed the display amount');
+
+  // The amount input for Gateway deposit stays disabled while a recovery is
+  // live (unchanged by this fix, reconfirmed here since it is load-bearing
+  // for why the field can appear empty in the first place).
+  assert.match(walletPage, /gatewayDepositAmount[\s\S]{0,400}?disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/);
+
+  // Button copy: idle with a live recovery says "continue", never
+  // "recovering" (which falsely implies something is already in progress);
+  // an actual busy resume may still say "recovering". This is the JSX
+  // render, a different part of the file than the handler above.
+  const onClickIndex = walletPage.indexOf('onClick={handleGatewayBaseDeposit}');
+  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewayBaseDeposit');
+  const buttonStart = walletPage.indexOf('{depositBusy', onClickIndex);
+  const buttonEnd = walletPage.indexOf('</button>', buttonStart);
+  assert.ok(buttonStart > -1 && buttonEnd > buttonStart);
+  const buttonSlice = walletPage.slice(buttonStart, buttonEnd);
+  // The busy ternary's final fallback (no specific phase yet) closes with
+  // this exact marker; everything after it is the idle (non-busy) ternary.
+  const busyEndMarker = 't.wallet.gatewayReading)';
+  const busyEndIndex = buttonSlice.indexOf(busyEndMarker);
+  assert.ok(busyEndIndex > -1, 'expected the busy ternary to end with the gatewayReading fallback');
+  const busySlice = buttonSlice.slice(0, busyEndIndex + busyEndMarker.length);
+  const idleSlice = buttonSlice.slice(busyEndIndex + busyEndMarker.length);
+  assert.match(idleSlice, /\? t\.wallet\.gatewayResumeDeposit/, 'idle + recovery must show the explicit "continue" label');
+  assert.ok(!idleSlice.includes('gatewayRecoveringOperation'), 'idle state must never show "Recovering previous operation..."');
+  assert.match(busySlice, /depositRecovery \? t\.wallet\.gatewayRecoveringOperation/, 'an actual busy resume may still show "Recovering previous operation..."');
+
+  // gateway-actions.ts's existing recovery-first logic (unmodified by this
+  // fix) is still what actually resumes the SAME durable action.
+  const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
+  assert.match(gatewayActions, /readCircleGatewayDepositRecovery\(\)/);
+  assert.match(gatewayActions, /readExternalGatewayDepositRecovery\(\)/);
+  assert.match(gatewayActions, /verifyGatewayDepositApproval/);
+
+  console.log('WALLET_PAGE_DEPOSIT_RECOVERY_LIVE_NETWORK_CALLS=0');
+  console.log('WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS');
+}
+
 (async () => {
   await verifyExternalBranch();
   await verifyCircleBranch();
   await verifyEngineBlockchainDefaulting();
   await verifyProductionApprovalReconciliation();
   await verifyWrongBlockchainStillFailsClosed();
+  verifyWalletPageDepositRecoveryWiring();
   assert.equal(liveNetworkCalls, 0);
   console.log('GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0');
   console.log('GATEWAY_DEPOSIT=PASS');

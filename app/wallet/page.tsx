@@ -686,13 +686,21 @@ export default function WalletPage() {
       return;
     }
     const recovery = readCircleGatewayDepositRecovery();
-    if (recovery) setDepositRecovery(recovery);
+    if (!recovery) return;
+    setDepositRecovery(recovery);
+    // The durable recovery amount is authoritative; seed the (disabled)
+    // display field with it so it never shows empty/0.000000 while a real
+    // recovery amount exists, matching the burn-signing recovery convention
+    // above.
+    setDepositAmount(formatGatewayUsdcRaw(recovery.amountRaw));
   }, [executionMode]);
 
   useEffect(() => {
     if (executionMode !== "EXTERNAL_WALLET") return;
     const recovery = readExternalGatewayDepositRecovery();
-    if (recovery) setDepositRecovery(recovery);
+    if (!recovery) return;
+    setDepositRecovery(recovery);
+    setDepositAmount(formatGatewayUsdcRaw(recovery.amountRaw));
   }, [executionMode]);
 
   async function ensureBaseSepolia() {
@@ -726,17 +734,41 @@ export default function WalletPage() {
   }
 
   async function handleGatewayBaseDeposit() {
-    const valueRaw = parseGatewayUsdcRaw(depositAmount);
-    if (!valueRaw) {
-      setDepositError(locale === "tr" ? "6 ondalığa kadar geçerli bir USDC tutarı gir." : "Enter a valid USDC amount with up to 6 decimals.");
-      return;
+    // A live durable recovery is the authoritative financial intent: the
+    // input is disabled and may be empty/stale while it exists, so the
+    // amount (and source domain) must come from the recovery record itself,
+    // never re-derived from the editable field. This also means clicking
+    // "continue" resumes the SAME action (via confirmGatewayBaseDeposit's
+    // own recovery lookup) rather than starting a new one.
+    let sourceDomain: number;
+    let amountRaw: string;
+    if (depositRecovery) {
+      if (depositRecovery.sourceDomain !== BASE_SEPOLIA_SOURCE.domain) {
+        setDepositError(
+          locale === "tr"
+            ? "Kayıtlı işlem beklenmeyen bir kaynağa ait. Güvenlik nedeniyle devam edilemiyor."
+            : "The stored recovery targets an unexpected source. Refusing to continue for safety.",
+        );
+        return;
+      }
+      sourceDomain = depositRecovery.sourceDomain;
+      amountRaw = depositRecovery.amountRaw;
+    } else {
+      const parsed = parseGatewayUsdcRaw(depositAmount);
+      if (!parsed) {
+        setDepositError(locale === "tr" ? "6 ondalığa kadar geçerli bir USDC tutarı gir." : "Enter a valid USDC amount with up to 6 decimals.");
+        return;
+      }
+      sourceDomain = BASE_SEPOLIA_SOURCE.domain;
+      amountRaw = parsed;
     }
+
     setDepositBusy(true);
     setDepositError("");
     setDepositNotice("");
     try {
       const result = await confirmGatewayBaseDeposit(
-        { sourceDomain: BASE_SEPOLIA_SOURCE.domain, amountRaw: valueRaw },
+        { sourceDomain, amountRaw },
         {
           executionMode,
           sendExternalTransaction: sendBaseSepoliaTransaction,
@@ -767,11 +799,18 @@ export default function WalletPage() {
         );
       }
     } catch (cause) {
-      setDepositError(
-        cause instanceof Error
-          ? cause.message
-          : (locale === "tr" ? "Gateway yatırması tamamlanamadı." : "Gateway deposit could not be completed."),
-      );
+      const message = cause instanceof Error ? cause.message : "";
+      if (message === "gateway_deposit_expired") {
+        // Fail closed: an expired report is never treated as license to
+        // clear recovery or start a replacement deposit automatically. The
+        // recovery record is left exactly as it is for read-only
+        // investigation and an explicit, deliberate decision.
+        setDepositError(t.wallet.gatewayDepositExpired);
+      } else {
+        setDepositError(
+          message || (locale === "tr" ? "Gateway yatırması tamamlanamadı." : "Gateway deposit could not be completed."),
+        );
+      }
     } finally {
       setDepositBusy(false);
       setDepositPhase("");
@@ -1107,9 +1146,17 @@ export default function WalletPage() {
                             : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
                             : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
                             : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality
+                            // No specific phase reported yet: if this click is
+                            // resuming a recovery, "Recovering..." is the
+                            // honest busy label; otherwise it's a fresh read.
+                            : depositRecovery ? t.wallet.gatewayRecoveringOperation
                             : t.wallet.gatewayReading)
                           : depositRecovery
-                            ? t.wallet.gatewayRecoveringOperation
+                            // Idle: nothing happens until the user explicitly
+                            // clicks, so the label must say "continue", never
+                            // "recovering" (which implies it is already in
+                            // progress).
+                            ? t.wallet.gatewayResumeDeposit
                             : t.wallet.gatewayConfirmDeposit}
                       </button>
                     </div>
