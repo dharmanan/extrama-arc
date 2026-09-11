@@ -1,12 +1,26 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Link, { useLinkStatus } from "next/link";
 import { ProductHeader } from "../product-components";
 import { assetConfigs } from "../lib/asset-config";
-import { backendApi, type ArchiveRound } from "../lib/backend-api";
+import { backendApi, type ArchiveResponse, type ArchiveRound } from "../lib/backend-api";
+import { readCachedArchive, writeCachedArchive } from "../lib/archive-cache";
+import { saveResultSnapshot } from "../lib/result-snapshot";
 import { humanRoundStatus } from "../lib/display";
 import { useLocale } from "../i18n";
+
+const ARCHIVE_DAYS = 90;
+
+// Hydrates from the tab cache before the first paint on the client; the
+// server render has no cache and keeps its first load state.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+// Immediate feedback on the clicked result link while its route is loading.
+function PendingLinkLabel({ children }: { children: ReactNode }) {
+  const { pending } = useLinkStatus();
+  return <span className="ex-link-status" data-pending={pending || undefined}>{children}</span>;
+}
 
 function utcDateKey(value: string) {
   return new Date(value).toISOString().slice(0, 10);
@@ -67,39 +81,61 @@ function directionLabel(value: ArchiveRound["direction"], locale: "en" | "tr") {
 
 export default function ArchivePage() {
   const { locale } = useLocale();
-  const [rounds, setRounds] = useState<ArchiveRound[]>([]);
-  const [blockNumber, setBlockNumber] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [archive, setArchive] = useState<ArchiveResponse | null>(null);
   const [error, setError] = useState("");
   const [selectedDateKey, setSelectedDateKey] = useState("");
+  const hasArchive = useRef(false);
+  // When the archive on screen was read. Clicking a result link hands that
+  // known round to the Result page as a snapshot before navigating; nothing
+  // is fetched at click time.
+  const archiveReadAt = useRef(0);
 
-  useEffect(() => {
+  // Stale while revalidate: render the last successful archive at once, then
+  // refresh silently. Fresh data replaces it only on success; a failed
+  // refresh keeps what is on screen and never falls back to an error page.
+  useIsomorphicLayoutEffect(() => {
     let cancelled = false;
 
-    backendApi.rounds.archive(90)
+    function applyArchive(next: ArchiveResponse, readAt: number) {
+      hasArchive.current = true;
+      archiveReadAt.current = readAt;
+      setArchive(next);
+      setError("");
+      const dates = Array.from(new Set(next.rounds.map((round) => utcDateKey(round.marketPeriodStartAt)))).sort((a, b) => b.localeCompare(a));
+      const requested = new URLSearchParams(window.location.search).get("date");
+      // Keep the date the reader is already looking at when it still exists.
+      setSelectedDateKey((current) => {
+        if (current && dates.includes(current)) return current;
+        return requested && dates.includes(requested) ? requested : (dates[0] ?? "");
+      });
+    }
+
+    const cached = readCachedArchive(ARCHIVE_DAYS);
+    if (cached) applyArchive(cached.archive, cached.cachedAt);
+
+    // Cancelled on unmount (for example when a result is opened): a slow
+    // revalidation must not hold a browser connection and stall navigation.
+    const controller = new AbortController();
+    backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal })
       .then((result) => {
         if (cancelled) return;
-        setRounds(result.rounds);
-        setBlockNumber(result.chain.blockNumber);
-        const dates = Array.from(new Set(result.rounds.map((round) => utcDateKey(round.marketPeriodStartAt)))).sort((a, b) => b.localeCompare(a));
-        const requested = typeof window !== "undefined"
-          ? new URLSearchParams(window.location.search).get("date")
-          : null;
-        setSelectedDateKey(requested && dates.includes(requested) ? requested : (dates[0] ?? ""));
-        setError("");
+        writeCachedArchive(ARCHIVE_DAYS, result);
+        applyArchive(result, Date.now());
       })
       .catch((cause: unknown) => {
-        if (cancelled) return;
+        if (cancelled || hasArchive.current) return;
         setError(cause instanceof Error ? cause.message : "Unable to load archive.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
+
+  const rounds = useMemo<ArchiveRound[]>(() => archive?.rounds ?? [], [archive]);
+  const blockNumber = archive?.chain.blockNumber ?? null;
+  const loading = archive === null && !error;
 
   const availableDates = useMemo(
     () => Array.from(new Set(rounds.map((round) => utcDateKey(round.marketPeriodStartAt)))).sort((a, b) => b.localeCompare(a)),
@@ -149,9 +185,9 @@ export default function ArchivePage() {
           </div>
 
           <dl className="ex-archive__summary">
-            <div><dt>{locale === "tr" ? "Turlar" : "Rounds"}</dt><dd className="ex-num">{rounds.length}</dd></div>
-            <div><dt>{locale === "tr" ? "Kesinleşti" : "Settled"}</dt><dd className="ex-num">{settledCount}</dd></div>
-            <div><dt>{locale === "tr" ? "İptal" : "Cancelled"}</dt><dd className="ex-num">{cancelledCount}</dd></div>
+            <div><dt>{locale === "tr" ? "Turlar" : "Rounds"}</dt><dd className="ex-num">{archive ? rounds.length : "—"}</dd></div>
+            <div><dt>{locale === "tr" ? "Kesinleşti" : "Settled"}</dt><dd className="ex-num">{archive ? settledCount : "—"}</dd></div>
+            <div><dt>{locale === "tr" ? "İptal" : "Cancelled"}</dt><dd className="ex-num">{archive ? cancelledCount : "—"}</dd></div>
             <div><dt>Arc Testnet</dt><dd className="ex-num">{blockNumber ?? "—"}</dd></div>
           </dl>
         </section>
@@ -261,8 +297,13 @@ export default function ArchivePage() {
 
                     <div className="ex-archive-row__actions">
                       {round.roundId !== null ? (
-                        <Link href={"/results/" + round.slug + "/" + round.roundId}>
-                          {locale === "tr" ? "Sonucu aç" : "Open result"} →
+                        <Link
+                          href={"/results/" + round.slug + "/" + round.roundId}
+                          onClick={() => {
+                            if (archive) saveResultSnapshot(round, archive.chain.explorerUrl, archiveReadAt.current || Date.now());
+                          }}
+                        >
+                          <PendingLinkLabel>{locale === "tr" ? "Sonucu aç" : "Open result"} →</PendingLinkLabel>
                         </Link>
                       ) : (
                         <span className="ex-num">{locale === "tr" ? "Piyasa sonucu" : "Market result"}</span>

@@ -1290,6 +1290,8 @@ async function readClaimAuthorizationState({
 }
 
 
+const ROUND_RESULT_WINNER_READ_CONCURRENCY = 3;
+
 async function readRoundResult({ slug, roundId }) {
   if (
     typeof slug !== 'string' ||
@@ -1348,12 +1350,18 @@ async function readRoundResult({ slug, roundId }) {
   const resolvedPriceCents = BigInt(round.resolvedPriceCents);
   const winnerTicketIds = Array.from(round.winnerTicketIds, (id) => BigInt(id));
 
-  const winners = [];
+  let winners = [];
   if (contractStatus === 'SETTLED') {
-    for (let index = 0; index < winnerTicketIds.length; index += 1) {
-      const tokenId = winnerTicketIds[index];
-      if (tokenId === 0n) continue;
+    // The winner bundles are independent authoritative reads, so they run
+    // concurrently instead of as a sequential waterfall. Fan out is bounded:
+    // at most ROUND_RESULT_WINNER_READ_CONCURRENCY bundles (the contract has
+    // three winner slots) of four view calls each. Rank order, the round ID
+    // integrity checks and every returned value are unchanged.
+    const rankedWinners = winnerTicketIds
+      .map((tokenId, index) => ({ tokenId, rank: index + 1 }))
+      .filter(({ tokenId }) => tokenId !== 0n);
 
+    winners = await mapWithConcurrency(rankedWinners, ROUND_RESULT_WINNER_READ_CONCURRENCY, async ({ tokenId, rank }) => {
       const [entry, currentOwner, claimableRaw, metadata] = await Promise.all([
         rpcRead(() => pool.entries(tokenId)),
         rpcRead(() => ticket.ownerOf(tokenId)),
@@ -1371,8 +1379,8 @@ async function readRoundResult({ slug, roundId }) {
           ? predictionPriceCents - resolvedPriceCents
           : resolvedPriceCents - predictionPriceCents;
 
-      winners.push({
-        rank: index + 1,
+      return {
+        rank,
         tokenId: tokenId.toString(),
         currentOwner: ethers.getAddress(currentOwner),
         originalEntrant: ethers.getAddress(entry.originalEntrant),
@@ -1385,8 +1393,8 @@ async function readRoundResult({ slug, roundId }) {
         isClaimed: Boolean(metadata.isClaimed),
         claimableRaw: claimableRaw.toString(),
         claimableUsdc: ethers.formatUnits(claimableRaw, 6),
-      });
-    }
+      };
+    });
   }
 
   return {

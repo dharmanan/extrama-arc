@@ -73,8 +73,10 @@ export default function LeaderboardPage() {
 
   useEffect(() => {
     let cancelled = false;
+    // Cancelled on unmount so a slow archive read never stalls navigation.
+    const controller = new AbortController();
 
-    backendApi.rounds.archive(90)
+    backendApi.rounds.archive(90, { signal: controller.signal })
       .then((result) => {
         if (cancelled) return;
         // Only SETTLED rounds carry real winners; LOCKED/ENTRY_OPEN/CANCELLED
@@ -96,6 +98,7 @@ export default function LeaderboardPage() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, []);
 

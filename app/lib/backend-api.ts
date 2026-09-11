@@ -1143,8 +1143,16 @@ export const backendApi = {
     get(slug: string) {
       return request<LiveRoundResponse>(`/rounds/${encodeURIComponent(slug)}`);
     },
-    archive(days = 90) {
-      return request<ArchiveResponse>(`/rounds/archive?days=${days}`);
+    // Both reads can take tens of seconds when Arc RPC is slow. Callers pass
+    // an abort signal and cancel on unmount, so an abandoned read never keeps
+    // one of the browser's few connections to this origin busy and never
+    // queues the next page navigation behind it.
+    archive(days = 90, init: RequestInit = {}) {
+      return request<ArchiveResponse>(`/rounds/archive?days=${days}`, init);
+    },
+    // Authoritative round result. The Result page types the payload itself.
+    result<T>(slug: string, roundId: number, init: RequestInit = {}) {
+      return request<T>(`/rounds/${encodeURIComponent(slug)}/${roundId}/result`, init);
     },
     entries(slug: string, roundId: number) {
       return request<RoundEntriesResponse>(

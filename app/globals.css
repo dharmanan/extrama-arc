@@ -1364,6 +1364,22 @@ img{max-width:100%}
    number, one proof sequence, and no visual claims beyond contract state.
    ========================================================================== */
 .ex-result__unavailable{display:grid;gap:16px;padding-block:clamp(46px,7vw,100px)}
+/* Result route feedback. The route shows an intentional loading state (or a
+   result this tab already opened, under a thin progress line) the moment it
+   is requested; no placeholder values are ever drawn. */
+.ex-result-loading{display:grid;gap:14px;max-width:40rem;padding-block:clamp(46px,7vw,100px) clamp(38px,5vw,72px)}
+.ex-result-loading .ex-display{margin:0}
+.ex-result-loading__body{margin:0;font-size:clamp(1rem,1.3vw,1.14rem);line-height:1.55;color:var(--ink-2)}
+.ex-result-loading__line{position:relative;display:block;width:min(240px,60%);height:1px;margin-top:10px;overflow:hidden;background:var(--line-strong)}
+.ex-result-loading__line::after,.ex-route-progress::after{content:"";position:absolute;top:0;bottom:0;left:0;width:34%;background:var(--ember);animation:ex-progress-sweep 1.4s cubic-bezier(.45,0,.2,1) infinite}
+.ex-route-progress{position:fixed;top:0;left:0;right:0;z-index:60;height:2px;overflow:hidden;pointer-events:none}
+@keyframes ex-progress-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+.ex-link-status[data-pending="true"]{animation:ex-link-pending 1s ease-in-out infinite}
+@keyframes ex-link-pending{50%{opacity:.4}}
+.ex-archive-row__actions a:active{border-bottom-color:var(--ember)}
+.ex-result__refresh{margin:10px 0 0;font-family:var(--mono);font-size:.74rem;letter-spacing:.02em;color:var(--muted)}
+.ex-result__refresh[data-failed="true"]{color:var(--ember)}
+@media (prefers-reduced-motion:reduce){.ex-result-loading__line::after,.ex-route-progress::after{animation:none;width:100%;opacity:.55}.ex-link-status[data-pending="true"]{animation:none;opacity:.55}}
 .ex-result__head{display:grid;grid-template-columns:minmax(0,6fr) minmax(280px,4fr);gap:clamp(32px,6vw,100px);padding-block:clamp(30px,4vw,58px) clamp(42px,6vw,82px);border-bottom:1px solid var(--line-strong)}
 .ex-result__identity{display:grid;align-content:start;gap:clamp(12px,1.8vw,22px);min-width:0}
 .ex-result__market{margin:0;font-family:var(--mono);font-size:.87rem;color:var(--muted);letter-spacing:.03em}
@@ -1392,8 +1408,42 @@ img{max-width:100%}
 .ex-proof__hero{display:grid;gap:10px;padding-top:16px;border-top:1px solid var(--line-strong);color:var(--ink-2);line-height:1.58}.ex-proof__hero>span{font-size:.75rem;font-weight:600;letter-spacing:.15em;text-transform:uppercase;color:var(--muted)}.ex-proof__hero>strong{font-size:clamp(2rem,4vw,3.8rem);font-weight:400;letter-spacing:-.05em;color:var(--ink);line-height:1}.ex-proof__hero p{margin:0}.ex-proof__hero dl{display:grid;gap:9px;margin:0}.ex-proof__hero dl>div{display:grid;gap:3px}.ex-proof__reason{font-family:var(--mono);font-size:.78rem;overflow-wrap:anywhere;color:var(--ink-2)}
 .ex-proof__sequence{margin:0;padding:0;list-style:none;border-top:1px solid var(--line-strong)}
 .ex-proof__sequence>li{display:grid;grid-template-columns:clamp(58px,8vw,100px) minmax(0,1fr);gap:clamp(18px,3vw,48px);padding-block:clamp(23px,3.2vw,42px);border-bottom:1px solid var(--line)}
-.ex-proof__number{font-family:var(--mono);font-size:.85rem;color:var(--ember);letter-spacing:.08em}.ex-proof__sequence h2{margin:0 0 16px;font-family:var(--serif);font-weight:400;font-size:clamp(1.5rem,2.7vw,2.25rem);line-height:1}.ex-proof__sequence dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px clamp(18px,3vw,48px);margin:0}.ex-proof__sequence dl>div{display:grid;gap:5px;min-width:0}.ex-proof__code{font-family:var(--mono);font-size:.78rem;letter-spacing:-.02em;word-break:break-all}
+.ex-proof__number{font-family:var(--mono);font-size:.85rem;color:var(--ember);letter-spacing:.08em}.ex-proof__sequence h2{margin:0 0 16px;font-family:var(--serif);font-weight:400;font-size:clamp(1.5rem,2.7vw,2.25rem);line-height:1}.ex-proof__sequence dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px clamp(18px,3vw,48px);margin:0}.ex-proof__sequence dl>div{display:grid;gap:5px;min-width:0}.ex-proof__code{font-family:var(--mono);font-size:.78rem;letter-spacing:-.02em;word-break:normal;overflow-wrap:anywhere}
 .ex-proof__checks{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,6fr);gap:clamp(26px,5vw,80px);align-items:start;padding-block:clamp(34px,4.6vw,64px);border-bottom:1px solid var(--line-strong)}.ex-proof__checks .ex-eyebrow{margin-bottom:9px}.ex-proof__checks ul{display:grid;margin:0;padding:0;list-style:none;border-top:1px solid var(--line-strong)}.ex-proof__checks li{display:flex;justify-content:space-between;gap:20px;padding-block:13px;border-bottom:1px solid var(--line);font-size:.94rem}.ex-proof__checks li b{font-family:var(--mono);font-size:.8rem;font-weight:400;color:var(--ink-2)}.ex-proof__checks li[data-valid="false"] b,.ex-proof__checks[data-warning="true"] h2{color:var(--ember)}
+/* Result verification reads user first: a plain language verdict, four human
+   checks, then the full technical proof behind a native disclosure. */
+.ex-proof__verdict{max-width:36rem;margin:18px 0 0;font-size:clamp(1rem,1.3vw,1.14rem);line-height:1.55;color:var(--ink-2)}
+.ex-proof__summary{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,6fr);gap:clamp(26px,5vw,80px);align-items:start;padding-block:clamp(28px,3.6vw,48px);border-bottom:1px solid var(--line-strong)}
+.ex-proof__summary .ex-eyebrow{margin:0;padding-top:14px}
+.ex-proof__summary ul{display:grid;margin:0;padding:0;list-style:none;border-top:1px solid var(--line-strong)}
+.ex-proof__check{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:14px;align-items:baseline;padding-block:14px;border-bottom:1px solid var(--line)}
+.ex-proof__mark{font-family:var(--mono);font-size:.9rem;line-height:1;color:var(--ink)}
+.ex-proof__check>div{display:grid;gap:4px;min-width:0}
+.ex-proof__check strong{font-weight:500;font-size:.98rem;color:var(--ink)}
+.ex-proof__check>div>span{font-size:.86rem;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+.ex-proof__check small{font-family:var(--mono);font-size:.78rem;color:var(--ember);white-space:nowrap}
+.ex-proof__check[data-state="fail"] .ex-proof__mark{color:var(--ember)}
+.ex-proof__check[data-state="none"] .ex-proof__mark{color:var(--muted)}
+.ex-proof__sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+.ex-proof__technical{border-bottom:1px solid var(--line-strong)}
+.ex-proof__technical>summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 20px;align-items:center;padding-block:clamp(22px,2.8vw,34px);cursor:pointer;list-style:none}
+.ex-proof__technical>summary::-webkit-details-marker{display:none}
+.ex-proof__technical>summary>span{font-family:var(--serif);font-size:clamp(1.35rem,2.2vw,1.8rem);line-height:1.05;color:var(--ink)}
+.ex-proof__technical>summary>small{grid-column:1;font-size:.86rem;color:var(--muted)}
+.ex-proof__technical>summary::after{content:"";grid-column:2;grid-row:1 / span 2;width:9px;height:9px;margin-right:4px;border-right:1px solid var(--ink);border-bottom:1px solid var(--ink);transform:rotate(45deg) translateY(-3px);transition:transform .18s ease}
+.ex-proof__technical[open]>summary::after{transform:rotate(-135deg) translateY(-3px)}
+.ex-proof__technical>summary:hover>span{color:var(--ember)}
+.ex-proof__technical>summary:focus-visible{outline:1px solid var(--ink);outline-offset:4px}
+.ex-proof__technical-body{padding-bottom:clamp(8px,1.6vw,20px)}
+.ex-proof__technical-body .ex-proof__checks{border-bottom:0}
+.ex-proof__technical-body .ex-proof__document-meta{margin-top:0}
+/* Long addresses, hashes and endpoints get a full row and wrap only at the
+   edge, never mid column. */
+.ex-proof__sequence dl>div.ex-proof__wide{grid-column:1 / -1}
+.ex-proof__code-link{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.ex-proof__code-link:hover{color:var(--ember);text-decoration-color:currentColor}
+@media(max-width:900px){.ex-proof__summary{grid-template-columns:minmax(0,1fr);gap:14px}.ex-proof__summary .ex-eyebrow{padding-top:0}}
 
 @media(max-width:900px){.ex-result__head,.ex-result__section-head,.ex-proof__head,.ex-proof__checks{grid-template-columns:minmax(0,1fr)}.ex-result__section-head{align-items:start}.ex-winner{grid-template-columns:auto minmax(0,1fr) minmax(0,1fr)}.ex-winner__claim{grid-column:2 / -1;justify-items:start;text-align:left}.ex-proof__sequence dl{grid-template-columns:repeat(2,minmax(0,1fr))}
   /* Round, entries and stake are short figures: one row of three instead of

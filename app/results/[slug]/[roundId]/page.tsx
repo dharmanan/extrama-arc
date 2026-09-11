@@ -1,78 +1,9 @@
-import { ResultClient, type LiveResult } from "./ResultClient";
+import { ResultClient } from "./ResultClient";
+import { ResultRoute } from "./ResultRoute";
 
-type ServerResult = {
-  chain: {
-    id: number;
-    name: string;
-    explorerUrl: string;
-  };
-  pool: {
-    slug: string;
-    poolAddress: string;
-    ticketAddress: string;
-    asset: string;
-    direction: "HIGH" | "LOW";
-    cadence: "DAILY" | "WEEKLY" | "QUARTERLY";
-    source: string;
-    sourceSymbol: string;
-  };
-  round: {
-    roundId: number;
-    contractStatus: "ENTRY_OPEN" | "LOCKED" | "SETTLED" | "CANCELLED";
-    entryOpenAt: string;
-    entryCloseAt: string;
-    observationStartAt: string;
-    observationEndAt: string;
-    marketPeriodStartAt: string | null;
-    marketPeriodEndAt: string | null;
-    marketResultCents: string | null;
-    marketResult: string | null;
-    marketResultExact: string | null;
-    marketEvidenceSha256: string | null;
-    entryCount: number;
-    totalStakeRaw: string;
-    totalStakeUsdc: string;
-    escrowRemainingRaw: string;
-    escrowRemainingUsdc: string;
-    resolvedPriceCents: string;
-    resolvedPrice: string | null;
-    winnerTicketIds: string[];
-  };
-  winners: Array<{
-    rank: number;
-    tokenId: string;
-    currentOwner: string;
-    originalEntrant: string;
-    predictionPriceCents: string;
-    predictionPrice: string;
-    distanceCents: string;
-    distance: string;
-    entrySequence: number;
-    placement: number;
-    isClaimed: boolean;
-    claimableRaw: string;
-    claimableUsdc: string;
-  }>;
-};
-
-function backendBaseUrl() {
-  return process.env.BACKEND_API_URL || "http://127.0.0.1:3001/api";
-}
-
-async function loadResult(slug: string, roundId: number): Promise<ServerResult | null> {
-  const response = await fetch(
-    `${backendBaseUrl()}/rounds/${encodeURIComponent(slug)}/${roundId}/result`,
-    { cache: "no-store" },
-  );
-
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`round_result_http_${response.status}`);
-  }
-
-  return response.json() as Promise<ServerResult>;
-}
-
+// The page never waits for Arc on the server. It renders at once, a result the
+// tab already knows (Archive snapshot or earlier full result) appears
+// immediately, and the authoritative result is read on the client.
 export default async function LiveResultPage({
   params,
 }: {
@@ -85,11 +16,5 @@ export default async function LiveResultPage({
     return <ResultClient result={null} invalid />;
   }
 
-  const result = await loadResult(slug, roundId);
-
-  if (!result) {
-    return <ResultClient result={null} />;
-  }
-
-  return <ResultClient result={result as LiveResult} />;
+  return <ResultRoute key={`${slug}:${roundId}`} slug={slug} roundId={roundId} />;
 }

@@ -3,6 +3,7 @@
 const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const arcService = require('../services/arcService');
+const { createRoundResultCache } = require('../services/roundResultCache');
 
 const router = express.Router();
 
@@ -23,6 +24,34 @@ router.get('/', async (req, res, next) => {
 });
 
 
+// The archive is an expensive chain read that only changes when a round
+// closes or a claim lands, so it alone gets a short in memory cache keyed by
+// `days`. Concurrent identical requests share one in flight read, a failed
+// read is never cached, and the first request after the TTL refreshes it.
+// Live round endpoints are deliberately not cached here.
+const ARCHIVE_CACHE_TTL_MS = 45 * 1000;
+const archiveCache = new Map();
+const archiveInFlight = new Map();
+
+function readRoundArchiveCached(days) {
+  const cached = archiveCache.get(days);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.archive);
+
+  const pending = archiveInFlight.get(days);
+  if (pending) return pending;
+
+  const read = arcService.readRoundArchive({ days })
+    .then((archive) => {
+      archiveCache.set(days, { archive, expiresAt: Date.now() + ARCHIVE_CACHE_TTL_MS });
+      return archive;
+    })
+    .finally(() => {
+      archiveInFlight.delete(days);
+    });
+  archiveInFlight.set(days, read);
+  return read;
+}
+
 router.get('/archive', async (req, res, next) => {
   try {
     const days = req.query.days === undefined ? 90 : Number(req.query.days);
@@ -30,13 +59,19 @@ router.get('/archive', async (req, res, next) => {
       return res.status(400).json({ error: 'archive_days_invalid' });
     }
 
-    const archive = await arcService.readRoundArchive({ days });
+    const archive = await readRoundArchiveCached(days);
     res.json(archive);
   } catch (error) {
     next(error);
   }
 });
 
+
+// Result pages are revisited and opened from the archive; a 15 second cache
+// with shared in flight reads keeps that fast while claim state stays fresh.
+const roundResultCache = createRoundResultCache({
+  readRoundResult: (params) => arcService.readRoundResult(params),
+});
 
 router.get('/:slug/:roundId/result', async (req, res, next) => {
   try {
@@ -45,7 +80,7 @@ router.get('/:slug/:roundId/result', async (req, res, next) => {
       return res.status(400).json({ error: 'round_result_request_invalid' });
     }
 
-    const result = await arcService.readRoundResult({
+    const result = await roundResultCache.read({
       slug: req.params.slug,
       roundId,
     });
