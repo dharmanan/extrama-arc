@@ -20,11 +20,16 @@ import {
   readCircleGatewayDepositRecovery,
   readExternalGatewayDepositRecovery,
   readCircleTabAuth,
+  readCircleBaseWalletRecovery,
+  storeCircleBaseWalletRecovery,
+  clearCircleBaseWalletRecovery,
   type CircleGatewayFundingRecovery,
   type CircleGatewayDepositRecovery,
   type ExternalGatewayDepositRecovery,
+  type CircleBaseWalletRecovery,
 } from "../lib/circle-auth";
 import { confirmGatewayBaseDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
+import { executeHostedChallenge } from "../lib/circle-actions";
 import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
@@ -53,6 +58,16 @@ const ERC20_BALANCE_OF_ABI = [
     inputs: [{ name: "account", type: "address" }], outputs: [{ type: "uint256" }],
   },
 ] as const;
+
+const BASE_WALLET_RECOVERY_TTL_MS = 30 * 60 * 1000;
+// Circle's own eventual consistency after a completed challenge, not a
+// network retry budget: bounded, read-only, no createWallet call in here.
+const BASE_WALLET_RECONCILE_ATTEMPTS = 5;
+const BASE_WALLET_RECONCILE_INTERVAL_MS = 3000;
+
+function isCircleBaseWalletRecoveryExpired(recovery: CircleBaseWalletRecovery) {
+  return recovery.expiresAtMs <= Date.now();
+}
 
 type BaseWalletStatus = "idle" | "checking" | "ready" | "missing" | "preparing" | "mismatch" | "error";
 type DepositPhaseLabel =
@@ -242,6 +257,7 @@ export default function WalletPage() {
   const [baseWalletStatus, setBaseWalletStatus] = useState<BaseWalletStatus>("idle");
   const [baseUsdcRaw, setBaseUsdcRaw] = useState<string | null>(null);
   const [baseReadError, setBaseReadError] = useState("");
+  const [baseWalletNotice, setBaseWalletNotice] = useState("");
   const [depositAmount, setDepositAmount] = useState("");
   const [depositBusy, setDepositBusy] = useState(false);
   const [depositPhase, setDepositPhase] = useState<DepositPhaseLabel>("");
@@ -433,22 +449,58 @@ export default function WalletPage() {
     }
   }
 
-  async function refreshCircleBaseWalletStatus(userToken: string) {
+  // Single read-only check. Safe to call on page load: it never touches
+  // recovery storage and never calls createWallet.
+  async function refreshCircleBaseWalletStatus(userToken: string): Promise<BaseWalletStatus> {
     setBaseWalletStatus("checking");
     try {
       const result = await backendApi.circle.baseSepoliaWallet(userToken);
       if (!result.wallet) {
         setBaseWalletStatus("missing");
-        return;
+        return "missing";
       }
       if (result.wallet.address.toLowerCase() !== result.arcAddress.toLowerCase()) {
         setBaseWalletStatus("mismatch");
-        return;
+        return "mismatch";
       }
+      // The Base EOA already exists and matches the Arc session: any earlier
+      // recovery attempt is stale.
+      clearCircleBaseWalletRecovery();
       setBaseWalletStatus("ready");
+      return "ready";
     } catch {
       setBaseWalletStatus("error");
+      return "error";
     }
+  }
+
+  // Circle can briefly lag between a challenge completing and the wallet
+  // showing up in a listing. Bounded, read-only retries only: no createWallet
+  // call is ever made from here. Returns "missing" only once a read
+  // definitively reported no wallet; "error" if every read attempt failed
+  // transiently, so a genuinely uncertain outcome is never treated as a
+  // confirmed non-landing.
+  async function reconcileBaseWalletReadOnly(
+    userToken: string,
+  ): Promise<"ready" | "mismatch" | "missing" | "error"> {
+    let sawDefinitiveMissing = false;
+    for (let attempt = 0; attempt < BASE_WALLET_RECONCILE_ATTEMPTS; attempt += 1) {
+      try {
+        const result = await backendApi.circle.baseSepoliaWallet(userToken);
+        if (result.wallet) {
+          return result.wallet.address.toLowerCase() === result.arcAddress.toLowerCase()
+            ? "ready"
+            : "mismatch";
+        }
+        sawDefinitiveMissing = true;
+      } catch {
+        // Transient read failure; keep retrying within the bounded window.
+      }
+      if (attempt < BASE_WALLET_RECONCILE_ATTEMPTS - 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, BASE_WALLET_RECONCILE_INTERVAL_MS));
+      }
+    }
+    return sawDefinitiveMissing ? "missing" : "error";
   }
 
   useEffect(() => {
@@ -465,29 +517,165 @@ export default function WalletPage() {
     void refreshCircleBaseWalletStatus(auth.userToken);
   }, [executionMode, baseWalletStatus]);
 
+  // Durable, idempotent Base Sepolia wallet preparation. Never mints a new
+  // Circle idempotency key while a non-expired recovery already has one, and
+  // never re-executes a hosted challenge once it exists: only an explicit
+  // user click ever reaches executeHostedChallenge.
+  // Shared tail for both the ERROR-with-live-recovery path and the MISSING
+  // path: resolve (or reuse) a challenge id for the GIVEN recovery, execute
+  // it, and reconcile. Never mints an idempotency key itself, so a caller
+  // that hands it an existing recovery can never trigger a new one here.
+  async function runBaseWalletChallenge(userToken: string, initialRecovery: CircleBaseWalletRecovery) {
+    let recovery = initialRecovery;
+    let challengeId = recovery.challengeId;
+    if (!challengeId) {
+      // The same idempotencyKey survives a lost HTTP response: a retry
+      // reaches the SAME Circle challenge instead of creating another one.
+      const prepared = await backendApi.circle.prepareBaseSepoliaWallet(
+        userToken,
+        recovery.idempotencyKey,
+      );
+      if (prepared.status === "EXISTING") {
+        clearCircleBaseWalletRecovery();
+        setBaseWalletStatus("ready");
+        return;
+      }
+      if (typeof prepared.challengeId !== "string" || !prepared.challengeId) {
+        throw new Error("circle_base_sepolia_challenge_missing");
+      }
+      challengeId = prepared.challengeId;
+      // D: persist the challenge id BEFORE executing it, so a page reload
+      // between this write and hosted-challenge completion resumes the
+      // SAME challenge rather than creating a second one.
+      recovery = { ...recovery, challengeId };
+      storeCircleBaseWalletRecovery(recovery);
+    }
+
+    // D: exactly the shared hosted challenge executor; never a second
+    // implementation.
+    try {
+      await executeHostedChallenge(challengeId);
+    } catch (challengeError) {
+      // H: a reported failure/expiry might still have landed just before
+      // it; check read-only before ever deciding it definitely did not.
+      const reconciled = await reconcileBaseWalletReadOnly(userToken);
+      if (reconciled === "ready") {
+        clearCircleBaseWalletRecovery();
+        setBaseWalletStatus("ready");
+        return;
+      }
+      if (reconciled === "mismatch") {
+        clearCircleBaseWalletRecovery();
+        setBaseWalletStatus("mismatch");
+        return;
+      }
+      const message = challengeError instanceof Error ? challengeError.message : "";
+      if (message === "circle_transaction_failed" && reconciled === "missing") {
+        // Definitely did not land: safe to let the user explicitly restart.
+        clearCircleBaseWalletRecovery();
+        setBaseWalletStatus("missing");
+        setBaseWalletNotice(t.wallet.gatewayBasePrepareFailed);
+        return;
+      }
+      // Uncertain outcome (transient reads, or a non-terminal SDK error):
+      // keep the SAME recovery so the next explicit click resumes it.
+      setBaseWalletStatus("missing");
+      setBaseWalletNotice(t.wallet.gatewayBasePrepareUncertain);
+      return;
+    }
+
+    // E: hosted challenge reported success; reconcile read-only, bounded,
+    // no additional createWallet call.
+    const reconciled = await reconcileBaseWalletReadOnly(userToken);
+    if (reconciled === "ready") {
+      // F
+      clearCircleBaseWalletRecovery();
+      setBaseWalletStatus("ready");
+      return;
+    }
+    if (reconciled === "mismatch") {
+      // G: fail closed, never allow Gateway deposit from here.
+      clearCircleBaseWalletRecovery();
+      setBaseWalletStatus("mismatch");
+      return;
+    }
+    // Circle eventual consistency: keep the recovery, let the user retry.
+    setBaseWalletStatus("missing");
+    setBaseWalletNotice(t.wallet.gatewayBasePrepareUncertain);
+  }
+
   async function handlePrepareBaseWallet() {
     const auth = readCircleTabAuth();
     if (!auth) {
       setCircleReauthRequired(true);
       return;
     }
-    setBaseWalletStatus("preparing");
     setDepositError("");
+    setBaseWalletNotice("");
+    setBaseWalletStatus("preparing");
+
     try {
-      const result = await backendApi.circle.prepareBaseSepoliaWallet(auth.userToken, crypto.randomUUID());
-      if (result.status === "EXISTING" && result.wallet) {
-        if (walletAddress && result.wallet.address.toLowerCase() !== walletAddress.toLowerCase()) {
-          setBaseWalletStatus("mismatch");
+      // Step 1: read current status. refreshCircleBaseWalletStatus already
+      // sets the UI state and, on "ready", clears any stale recovery itself.
+      const initial = await refreshCircleBaseWalletStatus(auth.userToken);
+
+      // READY is terminal: nothing left to prepare.
+      if (initial === "ready") return;
+
+      // MISMATCH is terminal and fail-closed: never proceed toward a wallet
+      // creation attempt.
+      if (initial === "mismatch") return;
+
+      // Step 2: read recovery WITHOUT discarding it yet. Whether an expired
+      // recovery may ever be cleared depends on what `initial` is, decided
+      // in the branches below, never here.
+      const storedRecovery = readCircleBaseWalletRecovery();
+      const recoveryExpired = Boolean(storedRecovery && isCircleBaseWalletRecoveryExpired(storedRecovery));
+
+      // Step 5: ERROR. The prerequisite status read itself failed, so this
+      // branch has NO evidence about whether a Base wallet exists. It must
+      // never mint a new idempotency key, never discard an expired recovery,
+      // and never start a brand-new prepare call.
+      if (initial === "error") {
+        if (storedRecovery && !recoveryExpired) {
+          // A live recovery survives an unrelated read failure: resume it
+          // exactly (same challenge if one exists, same idempotencyKey
+          // otherwise), never a new one.
+          await runBaseWalletChallenge(auth.userToken, storedRecovery);
           return;
         }
-        setBaseWalletStatus("ready");
+        // No recovery, or the one that exists is expired: an errored read
+        // proves nothing either way, so neither may be treated as safe to
+        // start fresh. Surface a retry notice; no mutation of any kind.
+        setBaseWalletStatus("error");
+        setBaseWalletNotice(t.wallet.gatewayBasePrepareUncertain);
         return;
       }
-      // A CHALLENGE_REQUIRED response needs the same hosted Circle challenge
-      // executor used everywhere else in this product; re-check readiness
-      // once it completes rather than trusting the browser's own say-so.
-      await refreshCircleBaseWalletStatus(auth.userToken);
+
+      // Step 6: MISSING. Only a definitive, successful "no Base wallet
+      // exists" read may ever start a brand-new attempt or discard an
+      // expired recovery.
+      let recovery: CircleBaseWalletRecovery;
+      if (storedRecovery && !recoveryExpired) {
+        recovery = storedRecovery;
+      } else {
+        if (storedRecovery && recoveryExpired) {
+          // Safe only because `initial === "missing"` just proved, via a
+          // successful read, that no Base wallet exists: the expired
+          // recovery cannot correspond to a wallet that actually landed.
+          clearCircleBaseWalletRecovery();
+        }
+        recovery = {
+          idempotencyKey: crypto.randomUUID(),
+          challengeId: null,
+          expiresAtMs: Date.now() + BASE_WALLET_RECOVERY_TTL_MS,
+        };
+        storeCircleBaseWalletRecovery(recovery);
+      }
+      await runBaseWalletChallenge(auth.userToken, recovery);
     } catch {
+      // A genuine transport/API error before or during preparation: the
+      // recovery (if any) is preserved so a retry resumes the same attempt.
       setBaseWalletStatus("error");
     }
   }
@@ -874,8 +1062,9 @@ export default function WalletPage() {
                   {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "missing" && (
                     <div>
                       <p>{t.wallet.gatewayPrepareBaseWalletBody}</p>
+                      {baseWalletNotice && <p className="ex-entry__msg" aria-live="polite">{baseWalletNotice}</p>}
                       <button className="ex-btn ex-btn--ink" type="button" onClick={handlePrepareBaseWallet}>
-                        {t.wallet.gatewayPrepareBaseWallet}
+                        {baseWalletNotice ? t.wallet.gatewayResumeBaseWallet : t.wallet.gatewayPrepareBaseWallet}
                       </button>
                     </div>
                   )}
@@ -884,6 +1073,14 @@ export default function WalletPage() {
                   )}
                   {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "mismatch" && (
                     <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewayBaseWalletMismatch}</p>
+                  )}
+                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "error" && (
+                    <div>
+                      <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewayBaseUnavailable}</p>
+                      <button className="ex-btn ex-btn--ghost" type="button" onClick={handlePrepareBaseWallet}>
+                        {t.wallet.gatewayRetry}
+                      </button>
+                    </div>
                   )}
 
                   {baseWalletStatus === "ready" && (

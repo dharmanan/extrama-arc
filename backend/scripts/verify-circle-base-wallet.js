@@ -8,6 +8,8 @@
 // id or address in any of these paths.
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL ||= 'postgresql://verify:verify@127.0.0.1:1/verify';
@@ -171,7 +173,212 @@ async function main() {
   console.log('CIRCLE_BASE_WALLET=PASS');
 }
 
-main().catch((error) => {
-  console.error('CIRCLE_BASE_WALLET=FAIL', error.message);
-  process.exitCode = 1;
-});
+// Static wiring proof for the wallet page's Base Sepolia preparation flow.
+// This is a pure source-text check: it opens no connection, contacts no
+// service, and never mounts the component, so it makes zero live network
+// calls by construction. It closes two gaps production hit in this exact
+// order: first the hosted challenge was never executed at all, then, once
+// fixed, an "error" status read (the prerequisite read itself failing) could
+// still fall through into minting a fresh idempotency key or discarding a
+// live/expired recovery. Every assertion below anchors on exact source
+// slices and their relative order, not on a symbol merely existing
+// somewhere in the file, so a regression in branch ordering fails this test.
+function verifyWalletPageWiring() {
+  const walletPage = fs.readFileSync(
+    path.join(__dirname, '../../app/wallet/page.tsx'),
+    'utf8',
+  );
+
+  assert.match(
+    walletPage,
+    /import \{ executeHostedChallenge \} from "\.\.\/lib\/circle-actions";/,
+    'must reuse the existing hosted challenge executor, not a second implementation',
+  );
+  assert.match(
+    walletPage,
+    /readCircleBaseWalletRecovery,\s*\n\s*storeCircleBaseWalletRecovery,\s*\n\s*clearCircleBaseWalletRecovery,/,
+    'must import the existing CircleBaseWalletRecovery helpers',
+  );
+
+  // --- runBaseWalletChallenge: the shared prepare/execute/reconcile tail ---
+  const runnerStart = walletPage.indexOf('async function runBaseWalletChallenge(');
+  assert.ok(runnerStart > -1, 'runBaseWalletChallenge must exist as the single shared challenge executor');
+  const runnerEnd = walletPage.indexOf('\n  async function handlePrepareBaseWallet', runnerStart);
+  assert.ok(runnerEnd > runnerStart);
+  const runner = walletPage.slice(runnerStart, runnerEnd);
+
+  assert.match(runner, /storeCircleBaseWalletRecovery\(/);
+  assert.match(runner, /clearCircleBaseWalletRecovery\(\)/);
+  assert.match(runner, /executeHostedChallenge\(challengeId\)/);
+  // The runner itself never mints an idempotency key: whatever recovery it
+  // is handed is the only one it will ever use.
+  assert.ok(
+    !runner.includes('crypto.randomUUID()'),
+    'runBaseWalletChallenge must never mint its own idempotency key; callers decide that',
+  );
+  // An existing challengeId is resumed; prepareBaseSepoliaWallet only runs
+  // when there is none.
+  assert.match(
+    runner,
+    /let challengeId = recovery\.challengeId;\s*\n\s*if \(!challengeId\) \{/,
+    'an existing challengeId must be resumed without another prepare/createWallet request',
+  );
+  // Recovery is durably stored WITH the challenge id strictly before the
+  // hosted challenge is ever executed.
+  const storeWithChallengeIndex = runner.indexOf('recovery = { ...recovery, challengeId };');
+  const executeIndex = runner.indexOf('executeHostedChallenge(challengeId)');
+  assert.ok(storeWithChallengeIndex > -1 && executeIndex > -1 && storeWithChallengeIndex < executeIndex,
+    'recovery must be persisted with the challenge id before executeHostedChallenge runs');
+  const storeAfterChallengeIndex = runner.indexOf(
+    'storeCircleBaseWalletRecovery(recovery);', storeWithChallengeIndex,
+  );
+  assert.ok(storeAfterChallengeIndex > -1 && storeAfterChallengeIndex < executeIndex);
+
+  // Every path that marks the wallet ready also clears the recovery record.
+  const readyMatches = [...runner.matchAll(/setBaseWalletStatus\("ready"\)/g)];
+  assert.ok(readyMatches.length >= 2, 'expected ready transitions for EXISTING and post-challenge reconciliation');
+  for (const match of readyMatches) {
+    const precedingText = runner.slice(0, match.index);
+    const lastClear = precedingText.lastIndexOf('clearCircleBaseWalletRecovery();');
+    const gap = precedingText.length - lastClear;
+    assert.ok(lastClear > -1 && gap < 80, 'each "ready" transition must be preceded by clearing the recovery record');
+  }
+
+  // Mismatch still fails closed and is never converted to "ready".
+  assert.match(runner, /setBaseWalletStatus\("mismatch"\)/);
+  assert.ok(
+    !/reconciled === "mismatch"[\s\S]{0,40}setBaseWalletStatus\("ready"\)/.test(runner),
+    'a mismatch must never be reported as ready',
+  );
+
+  // --- handlePrepareBaseWallet: the "initial" status dispatcher ----------
+  const start = walletPage.indexOf('async function handlePrepareBaseWallet');
+  assert.ok(start > -1, 'handlePrepareBaseWallet must exist');
+  const end = walletPage.indexOf('\n  useEffect(', start);
+  const handler = walletPage.slice(start, end);
+
+  assert.match(handler, /const initial = await refreshCircleBaseWalletStatus\(auth\.userToken\);/);
+
+  // READY and MISMATCH must both return before the recovery is even read,
+  // proving neither can fall through into any mutation branch below.
+  const readyReturnIndex = handler.indexOf('if (initial === "ready") return;');
+  const mismatchReturnIndex = handler.indexOf('if (initial === "mismatch") return;');
+  const recoveryReadIndex = handler.indexOf('const storedRecovery = readCircleBaseWalletRecovery();');
+  assert.ok(readyReturnIndex > -1 && readyReturnIndex < recoveryReadIndex, 'initial "ready" must be a terminal return before recovery is read');
+  assert.ok(mismatchReturnIndex > -1 && mismatchReturnIndex < recoveryReadIndex, 'initial "mismatch" must be a terminal fail-closed return before recovery is read');
+  // The single recovery read is shared by every remaining branch: there is
+  // no second, possibly-inconsistent read anywhere else in the handler.
+  assert.equal(
+    (handler.match(/readCircleBaseWalletRecovery\(\)/g) || []).length, 1,
+    'recovery must be read exactly once and reused by every branch below',
+  );
+
+  // --- initial === "error": split into its two sub-branches --------------
+  const errorBlockStart = handler.indexOf('if (initial === "error") {');
+  const errorWithRecoveryCall = 'await runBaseWalletChallenge(auth.userToken, storedRecovery);';
+  const errorWithRecoveryCallIndex = handler.indexOf(errorWithRecoveryCall);
+  const missingBlockStart = handler.indexOf('// Step 6: MISSING.');
+  assert.ok(errorBlockStart > -1 && errorWithRecoveryCallIndex > errorBlockStart && missingBlockStart > errorWithRecoveryCallIndex);
+
+  // error + live (non-expired) recovery: resumes that EXACT recovery via the
+  // shared runner and nothing else; never touches crypto.randomUUID or
+  // prepareBaseSepoliaWallet directly, and never clears anything itself.
+  const errorWithRecoverySlice = handler.slice(errorBlockStart, errorWithRecoveryCallIndex + errorWithRecoveryCall.length);
+  assert.match(errorWithRecoverySlice, /if \(storedRecovery && !recoveryExpired\) \{/,
+    'error must only resume when a stored recovery exists and is not expired');
+  assert.ok(!errorWithRecoverySlice.includes('crypto.randomUUID()'),
+    'error + live recovery must never mint a new idempotency key');
+  assert.ok(!errorWithRecoverySlice.includes('backendApi.circle.prepareBaseSepoliaWallet'),
+    'error + live recovery must never call prepare directly (only via the shared runner, which reuses the exact recovery)');
+  assert.ok(!errorWithRecoverySlice.includes('clearCircleBaseWalletRecovery()'),
+    'error + live recovery must never clear recovery itself (only success inside the shared runner may)');
+
+  // error + no usable recovery (none at all, or expired): no mutation of any
+  // kind, specifically no UUID, no prepare call, and no clearing of the
+  // expired recovery (an errored read is not evidence the wallet is absent).
+  const errorNoRecoverySlice = handler.slice(errorWithRecoveryCallIndex + errorWithRecoveryCall.length, missingBlockStart);
+  assert.match(errorNoRecoverySlice, /setBaseWalletStatus\("error"\)/);
+  assert.ok(!errorNoRecoverySlice.includes('crypto.randomUUID()'),
+    'error + no usable recovery must never mint a new idempotency key');
+  assert.ok(!errorNoRecoverySlice.includes('backendApi.circle.prepareBaseSepoliaWallet') && !errorNoRecoverySlice.includes('runBaseWalletChallenge'),
+    'error + no usable recovery must never start any prepare attempt');
+  assert.ok(!errorNoRecoverySlice.includes('clearCircleBaseWalletRecovery()'),
+    'error + no usable recovery must never clear an expired recovery: the failed read proves nothing');
+
+  // --- initial === "missing": the only branch allowed to mint a UUID -----
+  const missingRunnerCall = 'await runBaseWalletChallenge(auth.userToken, recovery);';
+  const missingRunnerCallIndex = handler.indexOf(missingRunnerCall, missingBlockStart);
+  assert.ok(missingRunnerCallIndex > missingBlockStart);
+  const missingSlice = handler.slice(missingBlockStart, missingRunnerCallIndex + missingRunnerCall.length);
+
+  // Exactly one UUID is minted in the whole handler, and only here.
+  assert.equal((handler.match(/crypto\.randomUUID\(\)/g) || []).length, 1,
+    'exactly one new idempotency key may ever be minted per call, and only in the "missing" branch');
+  assert.ok(missingSlice.includes('crypto.randomUUID()'));
+
+  // A live (non-expired) recovery is reused as-is, with no UUID in that arm.
+  const reuseStart = missingSlice.indexOf('if (storedRecovery && !recoveryExpired) {');
+  const reuseElseStart = missingSlice.indexOf('} else {', reuseStart);
+  assert.ok(reuseStart > -1 && reuseElseStart > reuseStart);
+  const reuseArm = missingSlice.slice(reuseStart, reuseElseStart);
+  assert.match(reuseArm, /recovery = storedRecovery;/);
+  assert.ok(!reuseArm.includes('crypto.randomUUID()'), 'reusing a live recovery in "missing" must not also mint a new one');
+
+  // The expired-or-absent arm may clear an expired recovery, but ONLY there,
+  // and strictly before minting the new one.
+  const freshArm = missingSlice.slice(reuseElseStart);
+  const expiredClearIndex = freshArm.indexOf('clearCircleBaseWalletRecovery();');
+  const mintIndex = freshArm.indexOf('crypto.randomUUID()');
+  assert.ok(mintIndex > -1);
+  if (expiredClearIndex > -1) {
+    assert.ok(expiredClearIndex < mintIndex, 'clearing an expired recovery must happen before minting the replacement');
+    assert.match(
+      freshArm.slice(0, mintIndex),
+      /if \(storedRecovery && recoveryExpired\) \{\s*\n[\s\S]*?clearCircleBaseWalletRecovery\(\);/,
+      'the expired recovery may be cleared only when initial === "missing" already proved it, guarded explicitly',
+    );
+  }
+
+  // --- Unaffected surfaces -------------------------------------------------
+  // No hosted challenge runs without the explicit user click that invokes
+  // this handler; the page-load effect only ever calls the read-only status
+  // check, never the handler or the challenge executor.
+  const mountEffectStart = walletPage.indexOf('if (executionMode !== "CIRCLE_USER_WALLET" || baseWalletStatus !== "idle")');
+  const mountEffectEnd = walletPage.indexOf('}, [executionMode, baseWalletStatus]);');
+  assert.ok(mountEffectStart > -1 && mountEffectEnd > mountEffectStart);
+  const mountEffect = walletPage.slice(mountEffectStart, mountEffectEnd);
+  assert.ok(!mountEffect.includes('executeHostedChallenge'));
+  assert.ok(!mountEffect.includes('handlePrepareBaseWallet'));
+  assert.ok(!mountEffect.includes('prepareBaseSepoliaWallet'));
+  assert.ok(!mountEffect.includes('crypto.randomUUID()'));
+
+  // External wallet Gateway behavior is unaffected: it still short-circuits
+  // straight to ready with no Circle wallet check, and the shared Gateway
+  // deposit/funding entry points are still present and unmodified in shape.
+  // Neither of them calls into this Circle-only Base wallet flow.
+  assert.match(walletPage, /if \(executionMode === "EXTERNAL_WALLET"\) setBaseWalletStatus\("ready"\);/);
+  assert.match(walletPage, /confirmGatewayBaseDeposit/);
+  assert.match(walletPage, /confirmGatewayBurnSignature/);
+  const externalDepositStart = walletPage.indexOf('async function handleGatewayBaseDeposit');
+  const externalDepositEnd = walletPage.indexOf('\n  async function ensureArcTestnet', externalDepositStart);
+  assert.ok(externalDepositStart > -1 && externalDepositEnd > externalDepositStart);
+  const externalDeposit = walletPage.slice(externalDepositStart, externalDepositEnd);
+  assert.ok(
+    !externalDeposit.includes('handlePrepareBaseWallet') && !externalDeposit.includes('runBaseWalletChallenge'),
+    'Gateway deposit must not call into the Circle Base wallet preparation flow',
+  );
+
+  // This script never imports or calls anything network-capable, never
+  // touches Gateway deposit/broadcast logic, and never mounts the
+  // component or a real Circle SDK: the assertions above are pure
+  // string/regex checks against local source only.
+  console.log('CIRCLE_BASE_WALLET_UI_LIVE_NETWORK_CALLS=0');
+  console.log('CIRCLE_BASE_WALLET_UI=PASS');
+}
+
+main()
+  .then(verifyWalletPageWiring)
+  .catch((error) => {
+    console.error('CIRCLE_BASE_WALLET=FAIL', error.message);
+    process.exitCode = 1;
+  });
