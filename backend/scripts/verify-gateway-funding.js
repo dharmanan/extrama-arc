@@ -44,11 +44,15 @@ const fakeDb = {
   async query(sql, params) {
     const text = sql.replace(/\s+/g, ' ').trim();
     if (text.startsWith('INSERT INTO gateway_funding_actions')) {
-      const [id, userId, circleWalletId, walletAddress, requestId, sourceDomain, valueRaw, signRequestId, expiresAt] = params;
+      const [
+        id, userId, executionMode, circleWalletId, walletAddress,
+        requestId, sourceDomain, valueRaw, signRequestId, expiresAt,
+      ] = params;
       const existing = [...rows.values()].find((row) => row.user_id === userId && row.request_id === requestId);
       if (existing) return out(null);
       rows.set(id, {
-        id, user_id: userId, circle_wallet_id: circleWalletId, wallet_address: walletAddress,
+        id, user_id: userId, execution_mode: executionMode,
+        circle_wallet_id: circleWalletId, wallet_address: walletAddress,
         request_id: requestId, source_domain: sourceDomain, value_raw: valueRaw,
         circle_sign_request_id: signRequestId, state: 'PREPARING', expires_at: expiresAt,
         payload_hash: null, burn_intent_json: null, burn_intent_json_text: null, typed_data_json: null,
@@ -61,7 +65,7 @@ const fakeDb = {
       const row = [...rows.values()].find((candidate) => {
         if (params.length === 2) return candidate.user_id === params[0] && candidate.request_id === params[1];
         return candidate.id === params[0] && candidate.user_id === params[1] &&
-          candidate.circle_wallet_id === params[2] &&
+          candidate.execution_mode === params[2] &&
           candidate.wallet_address.toLowerCase() === params[3].toLowerCase();
       });
       return out(row || null);
@@ -76,7 +80,7 @@ const fakeDb = {
       if (row.state === 'PREPARING') {
         row.payload_hash = params[1]; row.burn_intent_json = params[2]; row.burn_intent_json_text = params[3]; row.typed_data_json = params[4];
         row.max_fee_raw = params[5]; row.max_block_height = params[6]; row.estimate_fees_json = params[7];
-        row.state = 'SIGN_CHALLENGE_CREATING'; row.last_error = null;
+        row.state = params[8]; row.last_error = null;
         return out(row);
       }
       return out(null);
@@ -366,9 +370,85 @@ async function rejectsCode(fn, code) {
     'gateway_broadcast_disabled',
   );
 
+  // -------------------------------------------------------------------
+  // EXTERNAL_WALLET: one canonical state machine, no Circle challenge at
+  // all. The server returns typedData directly; the connected wallet signs
+  // it locally, and the backend recovers/compares the signer exactly the
+  // same way it does for Circle.
+  // -------------------------------------------------------------------
+  const externalWallet = new ethers.Wallet(`0x${'33'.repeat(32)}`);
+  const externalAuth = {
+    userId: '77777777-7777-4777-8777-777777777777',
+    walletAddress: externalWallet.address,
+    executionMode: 'EXTERNAL_WALLET',
+  };
+  const externalGateway = {
+    ...fakeGateway,
+    async readUnifiedUsdcBalance(address) {
+      assert.equal(address.toLowerCase(), externalWallet.address.toLowerCase());
+      return { balances: [{ domain: 6, balanceRaw: '2500000', transferable: true }] };
+    },
+  };
+  const externalService = createGatewayFundingService({
+    database: fakeDb, gateway: externalGateway, circle: fakeCircle,
+  });
+  const challengeCreatesBeforeExternal = challengeCreates;
+
+  const externalStarted = await externalService.start({
+    auth: externalAuth, requestId: '88888888-8888-4888-8888-888888888888', sourceDomain: 6, valueRaw: '1000000',
+  });
+  assert.equal(externalStarted.state, 'SIGNATURE_PENDING');
+  assert.equal(externalStarted.challengeId, null, 'external mode never creates a Circle challenge');
+  assert.equal(externalStarted.executionMode, 'EXTERNAL_WALLET');
+  assert.ok(externalStarted.typedData, 'external mode must receive the exact typed data to sign');
+  assert.equal(externalStarted.typedData.primaryType, 'BurnIntent');
+  assert.equal(challengeCreates, challengeCreatesBeforeExternal, 'external mode must never call Circle at all');
+
+  // A signature from the wrong signer is rejected.
+  const wrongSigner = new ethers.Wallet(`0x${'44'.repeat(32)}`);
+  const wrongSignature = await wrongSigner.signTypedData(
+    externalStarted.typedData.domain, externalStarted.typedData.types, externalStarted.typedData.message,
+  );
+  await rejectsCode(
+    () => externalService.verifySignature({
+      auth: externalAuth, actionId: externalStarted.actionId, signature: wrongSignature,
+    }),
+    'gateway_signature_wallet_mismatch',
+  );
+
+  // A signature over a modified intent (correct signer, different message)
+  // recovers to a different address for the STORED intent and is rejected
+  // the same way: the browser can never redirect what actually gets signed.
+  const tamperedMessage = {
+    ...externalStarted.typedData.message,
+    spec: { ...externalStarted.typedData.message.spec, value: '2000000' },
+  };
+  const tamperedSignature = await externalWallet.signTypedData(
+    externalStarted.typedData.domain, externalStarted.typedData.types, tamperedMessage,
+  );
+  await rejectsCode(
+    () => externalService.verifySignature({
+      auth: externalAuth, actionId: externalStarted.actionId, signature: tamperedSignature,
+    }),
+    'gateway_signature_wallet_mismatch',
+  );
+
+  // The correct signer, over the exact stored intent, reaches READY_TO_BROADCAST.
+  const externalSignature = await externalWallet.signTypedData(
+    externalStarted.typedData.domain, externalStarted.typedData.types, externalStarted.typedData.message,
+  );
+  const externalReady = await externalService.verifySignature({
+    auth: externalAuth, actionId: externalStarted.actionId, signature: externalSignature,
+  });
+  assert.equal(externalReady.state, 'READY_TO_BROADCAST');
+  assert.equal(externalReady.readyToBroadcast, true);
+  assert.equal(externalReady.broadcast, 'NOT_SUBMITTED');
+  assert.equal(challengeCreates, challengeCreatesBeforeExternal, 'reaching READY_TO_BROADCAST must still never call Circle');
+
   console.log('GATEWAY_FUNDING=PASS');
   console.log('GATEWAY_FUNDING_SUBMIT_MOCK=PASS');
   console.log('GATEWAY_FUNDING_RECONCILIATION=PASS');
+  console.log('GATEWAY_FUNDING_EXTERNAL_WALLET=PASS');
   assert.equal(liveNetworkCalls, 0);
   console.log('GATEWAY_LIVE_NETWORK_CALLS=0');
   console.log('LIVE_GATEWAY_BROADCAST=NOT_EXECUTED');

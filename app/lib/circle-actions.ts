@@ -123,7 +123,9 @@ async function verifyCircleEntryOnce(
   );
 }
 
-async function executeHostedChallenge(challengeId: string) {
+// Exported for gateway-actions.ts's Circle deposit flow, which executes the
+// same hosted challenges through the same SDK entry point.
+export async function executeHostedChallenge(challengeId: string) {
   const auth = readCircleTabAuth();
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
   if (!auth || !appId) throw new Error("circle_reauthentication_required");

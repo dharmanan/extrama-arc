@@ -15,6 +15,10 @@ const schema = z.object({
   CIRCLE_API_KEY: z.string().min(1).optional(),
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
   ARC_TESTNET_RPC_FALLBACK_URL: z.string().url().default("https://rpc.solidrpc.io/public/evm/5042002"),
+  // Gateway source-chain reads (deposit approve/allowance/balance) never share
+  // the Arc provider above: Base Sepolia is a distinct chain with its own RPC.
+  BASE_SEPOLIA_RPC_URL: z.string().url().default("https://sepolia.base.org"),
+  BASE_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://base-sepolia-rpc.publicnode.com"),
   // Maximum simultaneous HTTP reads PER Arc RPC endpoint.
   // Financial transaction broadcasts use a separate primary-only provider
   // and are deliberately not routed through this queue.

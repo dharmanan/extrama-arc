@@ -7,6 +7,7 @@ const { requireAuth } = require('../middleware/auth');
 const arcService = require('../services/arcService');
 const gatewayService = require('../services/gatewayService');
 const gatewayFundingService = require('../services/gatewayFundingService');
+const gatewayDepositService = require('../services/gatewayDepositService');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
 const router = express.Router();
@@ -24,15 +25,29 @@ const gatewayFundingVerifyLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// circleUserToken is required only for a CIRCLE_USER_WALLET session; an
+// EXTERNAL_WALLET session signs locally and never sends one. The service
+// enforces that requirement per session, not this schema.
 const gatewayFundingStartSchema = z.object({
   requestId: z.string().uuid(),
   sourceDomain: z.number().int().nonnegative(),
   valueRaw: z.string().regex(/^[1-9][0-9]*$/),
-  circleUserToken: z.string().min(16).max(8192),
+  circleUserToken: z.string().min(16).max(8192).optional(),
 });
 const gatewayFundingVerifySchema = z.object({
-  circleUserToken: z.string().min(16).max(8192),
+  circleUserToken: z.string().min(16).max(8192).optional(),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/).optional(),
+});
+
+const gatewayDepositStartSchema = z.object({
+  requestId: z.string().uuid(),
+  sourceDomain: z.number().int().nonnegative(),
+  amountRaw: z.string().regex(/^[1-9][0-9]*$/),
+  circleUserToken: z.string().min(16).max(8192).optional(),
+});
+const gatewayDepositVerifySchema = z.object({
+  circleUserToken: z.string().min(16).max(8192).optional(),
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
 });
 
 router.use(requireAuth);
@@ -78,12 +93,10 @@ router.get('/chain-state', async (req, res, next) => {
   }
 });
 
+// Gateway is available to both human execution modes. The depositor is
+// always the authenticated session wallet, never a browser-supplied address.
 router.get('/gateway-balance', async (req, res, next) => {
   try {
-    if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
-      return res.status(409).json({ error: 'gateway_circle_wallet_required' });
-    }
-
     const wallet = await resolveSessionWallet(req);
     if (!wallet?.address) {
       return res.status(404).json({ error: 'wallet_not_found' });
@@ -93,7 +106,7 @@ router.get('/gateway-balance', async (req, res, next) => {
 
     res.json({
       ...gateway,
-      executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+      executionMode: req.auth.executionMode,
     });
   } catch (error) {
     next(error);
@@ -102,8 +115,8 @@ router.get('/gateway-balance', async (req, res, next) => {
 
 router.post('/gateway-funding/start', gatewayFundingStartLimiter, async (req, res, next) => {
   try {
-    const input = gatewayFundingStartSchema.parse(req.body);
-    res.json(await gatewayFundingService.start({ auth: req.auth, ...input }));
+    const { circleUserToken, ...input } = gatewayFundingStartSchema.parse(req.body);
+    res.json(await gatewayFundingService.start({ auth: req.auth, userToken: circleUserToken, ...input }));
   } catch (error) { next(error); }
 });
 
@@ -124,11 +137,46 @@ router.post('/gateway-funding/:actionId/submit', gatewayFundingStartLimiter, asy
 
 router.post('/gateway-funding/:actionId/verify', gatewayFundingVerifyLimiter, async (req, res, next) => {
   try {
-    const input = gatewayFundingVerifySchema.parse(req.body);
+    const { circleUserToken, ...input } = gatewayFundingVerifySchema.parse(req.body);
     res.json(await gatewayFundingService.verifySignature({
       auth: req.auth,
       actionId: req.params.actionId,
+      userToken: circleUserToken,
       ...input,
+    }));
+  } catch (error) { next(error); }
+});
+
+// Gateway SOURCE deposit (Base Sepolia approve + deposit into GatewayWallet),
+// available to both human execution modes. Distinct from gateway-funding
+// above: this is what gets USDC into the unified balance in the first place.
+router.post('/gateway-deposit/start', gatewayFundingStartLimiter, async (req, res, next) => {
+  try {
+    const { circleUserToken, ...input } = gatewayDepositStartSchema.parse(req.body);
+    res.json(await gatewayDepositService.start({ auth: req.auth, userToken: circleUserToken, ...input }));
+  } catch (error) { next(error); }
+});
+
+router.get('/gateway-deposit/:actionId', async (req, res, next) => {
+  try {
+    res.json(await gatewayDepositService.status({ auth: req.auth, actionId: req.params.actionId }));
+  } catch (error) { next(error); }
+});
+
+router.post('/gateway-deposit/:actionId/verify-approval', gatewayFundingVerifyLimiter, async (req, res, next) => {
+  try {
+    const { circleUserToken, ...input } = gatewayDepositVerifySchema.parse(req.body);
+    res.json(await gatewayDepositService.verifyApproval({
+      auth: req.auth, actionId: req.params.actionId, userToken: circleUserToken, ...input,
+    }));
+  } catch (error) { next(error); }
+});
+
+router.post('/gateway-deposit/:actionId/verify', gatewayFundingVerifyLimiter, async (req, res, next) => {
+  try {
+    const { circleUserToken, ...input } = gatewayDepositVerifySchema.parse(req.body);
+    res.json(await gatewayDepositService.verifyDeposit({
+      auth: req.auth, actionId: req.params.actionId, userToken: circleUserToken, ...input,
     }));
   } catch (error) { next(error); }
 });

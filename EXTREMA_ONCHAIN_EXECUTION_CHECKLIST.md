@@ -215,36 +215,46 @@ Circle live proof and Circle Gateway live proof are separate gates.
 
 Circle Gateway is its own roadmap item and is not part of the Circle wallet or wallet notes.
 
+Gateway now supports both human execution modes, `CIRCLE_USER_WALLET` and `EXTERNAL_WALLET`, on one canonical set of state machines. The earlier Circle only scope is superseded; it is kept below only as historical proof record for what was already validated before the dual mode generalization.
+
 IMPLEMENTED:
 
+- Base Sepolia source configuration (Gateway domain 6, official USDC and GatewayWallet addresses, source config driven so ETH Sepolia / Arbitrum Sepolia / OP Sepolia can be enabled later without a state machine redesign)
 - Circle Gateway testnet service integration
-- Gateway balance read
-- Durable `gateway_funding_actions` database state
+- Gateway balance read, shared by both execution modes, depositor always the authenticated session wallet
+- Circle user controlled same address Base Sepolia wallet preparation, verified against the session's own Arc address, fail closed on mismatch or ambiguity
+- Circle Base Sepolia Gateway deposit path (`USDC.approve` then `GatewayWallet.deposit`, hosted Circle challenges)
+- External Base Sepolia Gateway deposit path (server pinned transaction requests, receipt verified server side, plain ERC-20 `transfer` never used)
+- External wallet EIP-712 Gateway burn intent signing (server returns the exact typed data, the connected wallet signs locally, the backend recovers and compares the signer before trusting it)
+- Durable `gateway_funding_actions` database state, generalized with an `execution_mode` column; historical Circle rows remain valid
+- Durable `gateway_deposit_actions` database state (new), baseline plus delta Gateway balance reconciliation for completion, never the source chain receipt alone
 - Burn intent and signature preparation
-- Recovery state
+- Recovery state for both the funding (burn intent) and deposit (approve/deposit) flows
 - Reconciliation state
-- An uncertain outcome is handled by read only reconciliation, never a blind retry
+- An uncertain outcome is handled by read only reconciliation, never a blind retry, for both deposit and funding
 - Server side broadcast safety gate
-- Deterministic Gateway funding verification
+- Deterministic verification: `GATEWAY_FUNDING_EXTERNAL_WALLET=PASS`, `CIRCLE_BASE_WALLET=PASS`, `GATEWAY_DEPOSIT_EXTERNAL=PASS`, `GATEWAY_DEPOSIT_CIRCLE=PASS`, zero live network calls in every case
 
 CURRENT PRODUCTION SAFETY: `EXTREMA_ENABLE_GATEWAY_BROADCAST=false`
 
-UI VISIBILITY STATUS: **IMPLEMENTED / VALIDATED.**
+UI VISIBILITY STATUS: **IMPLEMENTED / VALIDATED, DUAL MODE.**
 
-- Circle Gateway remains visible for loading, known zero, positive balance, no transferable source, and read failure states.
+- The Gateway section now renders for both Circle and external wallet sessions, not Circle only.
+- Gateway remains visible for loading, known zero, positive balance, no transferable source, and read failure states.
 - A known zero shows `0 USDC`.
 - A read failure shows an unavailable state with retry.
-- Existing recovery remains visible.
-- An external wallet session still has no Gateway funding action.
-- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
+- Existing recovery remains visible, extended with a distinct deposit recovery record per mode.
+- A Base Sepolia source sub-section shows source balance, source readiness, and the approve/deposit action; Circle sessions additionally see a same address Base wallet preparation action when needed.
+- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
 
-LIVE PROOF STATUS: **NOT LIVE PROVEN.**
+LIVE PROOF STATUS: **NOT LIVE PROVEN, EITHER MODE.**
 
 Still required:
 
 - [ ] Read only production prerequisites
+- [ ] Circle Base Sepolia to Gateway to Arc: one controlled real deposit, then one controlled real burn intent transfer
+- [ ] External Base Sepolia to Gateway to Arc: one controlled real deposit, then one controlled real burn intent transfer
 - [ ] Explicit Koray approval before enabling broadcast
-- [ ] One controlled real Gateway transfer
 - [ ] Transaction, transfer ID and destination reconciliation proof
 - [ ] Post transfer balance and status verification
 - [ ] Return the broadcast gate to its intended safe state if appropriate
@@ -1964,6 +1974,8 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
 - [x] Verify Result user facing proof UX
 - [x] Circle Gateway UI visibility correction
   - Proof: Circle loading, known-zero, positive, no-transferable-source, read-failure, recovery, and external-wallet visibility states are covered by deterministic UI validation: `GATEWAY_WALLET_UI=PASS`.
+- [x] Gateway generalized to both human execution modes (funding and source deposit)
+  - Proof: `GATEWAY_FUNDING_EXTERNAL_WALLET=PASS`, `CIRCLE_BASE_WALLET=PASS`, `GATEWAY_DEPOSIT_EXTERNAL=PASS`, `GATEWAY_DEPOSIT_CIRCLE=PASS`; the Gateway section and Base Sepolia source sub-section now render for both `CIRCLE_USER_WALLET` and `EXTERNAL_WALLET` sessions.
 
 ### Remaining open work
 
@@ -1973,9 +1985,10 @@ P0 / production proof:
 
 - [ ] Round 8 seed production reconciliation: 72 plans target, or an explicit reason for every missing plan
 - [ ] Archive durable PostgreSQL snapshot plus Leaderboard shared cache: deployment and production proof
-- [ ] Circle Gateway UI visibility correction
-- [ ] Circle Gateway controlled live transfer proof
+- [ ] Circle Base Sepolia to Gateway to Arc: controlled live deposit and burn intent transfer proof
+- [ ] External Base Sepolia to Gateway to Arc: controlled live deposit and burn intent transfer proof
 - [ ] Wrong network detection and Switch to Arc proof
+- [ ] Switch to Base Sepolia proof for an external wallet Gateway deposit
 - [ ] Final security acceptance gate
 - [ ] Circle post entry lifecycle live proof, if required for final acceptance
 - [ ] HYPE Round 7 cancelled ticket refunds, if still unexecuted

@@ -35,6 +35,35 @@ export const arcTestnet = {
   testnet: true,
 } as const satisfies Chain;
 
+// The Gateway source chain for deposits. Only Base Sepolia is enabled today;
+// the connected wallet must be switched here (never signed on Arc) for a
+// USDC approve/deposit transaction, then switched back to Arc for everything
+// else the product already does.
+export const baseSepolia = {
+  id: 84532,
+  name: "Base Sepolia",
+  nativeCurrency: {
+    name: "Sepolia Ether",
+    symbol: "ETH",
+    decimals: 18,
+  },
+  rpcUrls: {
+    default: {
+      http: ["https://sepolia.base.org"],
+    },
+    public: {
+      http: ["https://sepolia.base.org"],
+    },
+  },
+  blockExplorers: {
+    default: {
+      name: "BaseScan",
+      url: "https://sepolia.basescan.org",
+    },
+  },
+  testnet: true,
+} as const satisfies Chain;
+
 const walletConnectProjectId =
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() || "";
 
@@ -62,10 +91,11 @@ const connectors = connectorsForWallets(
 );
 
 export const wagmiConfig = createConfig({
-  chains: [arcTestnet],
+  chains: [arcTestnet, baseSepolia],
   connectors,
   transports: {
     [arcTestnet.id]: http("https://rpc.testnet.arc.network"),
+    [baseSepolia.id]: http("https://sepolia.base.org"),
   },
   ssr: true,
 });

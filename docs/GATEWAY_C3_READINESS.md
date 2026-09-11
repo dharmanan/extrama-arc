@@ -72,16 +72,44 @@ No new dependency is required to sign a burn intent.
 
 ## What is implemented
 
+Gateway now generalizes to both human execution modes, `CIRCLE_USER_WALLET`
+and `EXTERNAL_WALLET`, on one canonical state machine per concern. The
+sections below describe the current dual mode behavior; where earlier text in
+this document says "Circle only", that scope is superseded, not deleted.
+
 - `gatewayService.readUnifiedUsdcBalance()` — unified balance read, normalised
-  to canonical 6 decimal raw units.
-- `GET /api/wallet/gateway-balance` — authenticated, `CIRCLE_USER_WALLET` only,
-  depositor derived from the session. It never reads a wallet address from
-  `req.body` or `req.query`.
-- Wallet page shows the Gateway figure as a third compact column, for Circle
-  sessions only, and only when the unified balance is above zero. The read is
+  to canonical 6 decimal raw units. Already domain agnostic; unchanged by the
+  dual mode generalization.
+- `GET /api/wallet/gateway-balance` — authenticated, available to **both**
+  `CIRCLE_USER_WALLET` and `EXTERNAL_WALLET` sessions, depositor always
+  derived from the session. It never reads a wallet address from `req.body`
+  or `req.query`.
+- Wallet page shows the Gateway figure as a compact column for both execution
+  modes, and only when the unified balance is above zero. The read is
   separate from the Arc chain state read, so a Gateway outage cannot surface as
   a wallet error, an Arc balance failure or a broken session; it just hides the
   figure.
+- `baseSepoliaService.js` (new) — a dedicated Base Sepolia provider, USDC
+  balance/allowance reads, and exact `approve`/`deposit` calldata builders.
+  Deliberately never shares the Arc provider.
+- `gatewayDepositService.js` (new) — the durable source deposit state machine
+  (`USDC.approve(GatewayWallet, amount)` then `GatewayWallet.deposit(token,
+  amount)`) backing a new `gateway_deposit_actions` table, for both execution
+  modes. Completion always requires a fresh `readUnifiedUsdcBalance` baseline
+  plus delta check, never the source chain receipt alone, since Base Sepolia
+  finality into the unified balance is not instant.
+- `circleUserWalletService.listBaseSepoliaEoa` / `prepareBaseSepoliaEoa` (new)
+  — lists or prepares a Circle user controlled Base Sepolia EOA for an already
+  onboarded Arc user, and fails closed unless its address exactly matches the
+  session's canonical Arc EOA. Ambiguous or multiple wallet matches also fail
+  closed. The Arc Circle wallet id in the session is never replaced; the Base
+  wallet id is source chain execution metadata only.
+- `circleExecutionEngine.js` — additively generalized (`walletId` and
+  `expectedChainId` now optional parameters, defaulting to today's Arc
+  behavior) so the same idempotent Circle challenge issuance/resolution logic
+  used by entry and the post entry lifecycle actions also drives the Circle
+  Base Sepolia deposit phases, signing with the Base wallet id rather than the
+  session's Arc wallet id.
 - `gatewayService.buildArcFundingBurnIntent()` — builds the burn intent and its
   EIP-712 typed data. Every destination field is pinned by the server rather
   than accepted from the caller: destination domain is always Arc, destination
@@ -90,14 +118,20 @@ No new dependency is required to sign a burn intent.
   another chain, token or recipient.
 - `gatewayService.recoverBurnIntentSigner()` — recovers the signer locally so a
   malformed or swapped signature is never submitted to Circle.
-- `gatewayFundingService` and `/api/wallet/gateway-funding/*` — a durable,
-  Circle-EOA-only preparation state machine. It derives the wallet from the
-  authenticated session, spends against exactly one transferable source domain
-  (never an aggregated cross-domain value), obtains `maxFee` and
-  `maxBlockHeight` from `POST /v1/estimate?enableForwarder=true`, then creates
-  a `SIGN_TYPEDDATA` challenge for that exact, pinned burn intent.
-- The signed result is verified locally against the session wallet and retained
-  as `READY_TO_BROADCAST`. The wallet UI has a source-domain selector, canonical
+- `gatewayFundingService` and `/api/wallet/gateway-funding/*` — one durable
+  preparation state machine, now generalized to both `CIRCLE_USER_WALLET` and
+  `EXTERNAL_WALLET` sessions rather than duplicated per mode. It derives the
+  wallet from the authenticated session, spends against exactly one
+  transferable source domain (never an aggregated cross-domain value),
+  obtains `maxFee` and `maxBlockHeight` from
+  `POST /v1/estimate?enableForwarder=true`, then either creates a
+  `SIGN_TYPEDDATA` Circle challenge (Circle mode) or returns the exact typed
+  data directly for the connected wallet to sign locally with no challenge at
+  all (external mode) for that exact, pinned burn intent.
+- The signed result is verified locally against the session wallet (Circle's
+  hosted challenge signature or the external wallet's local signature, through
+  the same `recoverBurnIntentSigner` check) and retained as
+  `READY_TO_BROADCAST`. The wallet UI has a source-domain selector, canonical
   six-decimal amount input, clear status/error display, and an in-tab recovery
   record that resumes the same action/challenge after refresh.
 - The durable state machine implements the complete forwarding path after
@@ -143,16 +177,22 @@ requires separate approval plus an approved testnet proof.
    Gateway balance, so the signed payload and Gateway response are proven here
    only through deterministic local fakes, not an approved real testnet
    transaction.
-3. **The precondition is external to EXTREMA.** A unified balance only exists if
-   the user has already deposited USDC into GatewayWallet on another supported
-   chain, which needs USDC *and* native gas on that chain. A freshly onboarded
-   Circle user has neither. For those users the Arc faucet already linked on the
-   wallet page is the real funding path, not Gateway.
+3. **The deposit precondition is now implemented, not only external.**
+   Previously a unified balance only existed if the user had separately
+   deposited USDC into GatewayWallet on another chain, with no EXTREMA path to
+   do that. `gatewayDepositService.js` now implements exactly that source
+   deposit (`USDC.approve` then `GatewayWallet.deposit`) for Base Sepolia, for
+   both execution modes. The user still needs Base Sepolia USDC and native gas
+   to fund the deposit itself; the Arc faucet already linked on the wallet
+   page remains the separate, simpler path to directly fund Arc without
+   touching Gateway at all.
 
-Point 3 is the important product finding: today Gateway funding helps only a
-user who separately parked USDC in Gateway elsewhere. That is why the wallet
-page surfaces the balance when it exists and stays silent when it does not,
-rather than advertising a funding capability that would almost always be empty.
+Point 3 used to be the key limitation: Gateway funding only helped a user who
+had separately parked USDC in Gateway elsewhere. The wallet page's Base
+Sepolia source deposit section closes that gap in code; it is not yet closed
+in live proof, which is why the balance display and deposit action still fail
+closed and stay silent rather than advertising a capability that has not been
+exercised against real Base Sepolia and Gateway state.
 
 ## Supported source domains
 

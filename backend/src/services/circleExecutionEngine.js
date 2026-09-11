@@ -80,14 +80,16 @@ function existingChallenge(action, phaseName) {
   };
 }
 
-function assertChallengeRequest(transactionRequest, auth, invalidError) {
+function assertChallengeRequest(
+  transactionRequest, auth, invalidError, expectedChainId = ARC_TESTNET_CHAIN_ID,
+) {
   if (
     !transactionRequest ||
     !ethers.isAddress(transactionRequest.to) ||
     typeof transactionRequest.data !== 'string' ||
     // Circle contract execution never carries native value here.
     (transactionRequest.value !== undefined && transactionRequest.value !== '0x0') ||
-    (transactionRequest.chainId !== undefined && transactionRequest.chainId !== ARC_TESTNET_CHAIN_ID) ||
+    (transactionRequest.chainId !== undefined && transactionRequest.chainId !== expectedChainId) ||
     (transactionRequest.from !== undefined &&
       (!ethers.isAddress(transactionRequest.from) ||
         transactionRequest.from.toLowerCase() !== auth.walletAddress.toLowerCase()))
@@ -96,13 +98,19 @@ function assertChallengeRequest(transactionRequest, auth, invalidError) {
   }
 }
 
+// walletId defaults to the session's own Circle wallet id (Arc, for every
+// existing caller). A Gateway source deposit on another chain passes the
+// wallet id resolved for THAT chain explicitly: the durable action still
+// belongs to auth.userId/auth.walletAddress, but the Circle wallet that signs
+// is a different, chain-specific wallet id, never the session's Arc one.
 async function issuePhaseChallenge({
   action, auth, userToken, phaseName, transactionRequest, port, circle,
+  walletId = auth.circleWalletId, expectedChainId = ARC_TESTNET_CHAIN_ID,
 }) {
   if (!PHASE_READY_STEP[phaseName]) throw new Error(port.invalidError);
   const existing = existingChallenge(action, phaseName);
   if (existing) return existing;
-  assertChallengeRequest(transactionRequest, auth, port.invalidError);
+  assertChallengeRequest(transactionRequest, auth, port.invalidError, expectedChainId);
   const reserved = await port.reserveChallenge(
     auth.userId, action.id, auth.walletAddress, auth.circleWalletId, phaseName,
   );
@@ -111,7 +119,7 @@ async function issuePhaseChallenge({
   const record = phaseRecord(reserved, phaseName);
   const result = await circle.createContractExecutionChallenge({
     userToken,
-    walletId: auth.circleWalletId,
+    walletId,
     contractAddress: transactionRequest.to,
     callData: transactionRequest.data,
     idempotencyKey: record.idempotencyKey,
@@ -131,6 +139,7 @@ async function issuePhaseChallenge({
 
 async function resolvePhaseTransaction({
   auth, actionId, userToken, phaseName, contractAddressFor, port, circle, dependencies = {},
+  walletId = auth.circleWalletId,
 }) {
   await assertCircleTokenSession({ auth, userToken }, dependencies);
   let action = await port.getAction(auth.userId, actionId, auth.walletAddress, auth.circleWalletId);
@@ -162,14 +171,14 @@ async function resolvePhaseTransaction({
     transaction = await circle.getContractExecutionTransaction({
       userToken,
       id: transactionId,
-      walletId: auth.circleWalletId,
+      walletId,
       refId: record.refId,
       contractAddress,
     });
   } else {
     transaction = await circle.findContractExecutionTransaction({
       userToken,
-      walletId: auth.circleWalletId,
+      walletId,
       refId: record.refId,
       contractAddress,
     });

@@ -4,6 +4,7 @@ const { ethers } = require('ethers');
 const config = require('../config');
 
 const ARC_TESTNET = 'ARC-TESTNET';
+const BASE_SEPOLIA = 'BASE-SEPOLIA';
 const EOA = 'EOA';
 const ALREADY_INITIALIZED_CODE = 155106;
 const PAGE_SIZE = 50;
@@ -37,21 +38,29 @@ function assertConfigured(apiKey) {
   if (!apiKey) throw new Error('circle_service_not_configured');
 }
 
-function pickArcEoa(wallets) {
+function pickEoaForBlockchain(wallets, blockchain, ambiguousError) {
   const matching = wallets.filter((wallet) => (
-    wallet && wallet.blockchain === ARC_TESTNET && wallet.accountType === EOA &&
+    wallet && wallet.blockchain === blockchain && wallet.accountType === EOA &&
     typeof wallet.id === 'string' && ethers.isAddress(wallet.address)
   ));
-  if (matching.length > 1) throw new Error('circle_arc_eoa_ambiguous');
+  if (matching.length > 1) throw new Error(ambiguousError);
   if (!matching.length) return null;
   const wallet = matching[0];
   return {
     id: wallet.id,
     address: ethers.getAddress(wallet.address),
-    blockchain: ARC_TESTNET,
+    blockchain,
     accountType: EOA,
     createdAt: typeof wallet.createDate === 'string' ? wallet.createDate : null,
   };
+}
+
+function pickArcEoa(wallets) {
+  return pickEoaForBlockchain(wallets, ARC_TESTNET, 'circle_arc_eoa_ambiguous');
+}
+
+function pickBaseSepoliaEoa(wallets) {
+  return pickEoaForBlockchain(wallets, BASE_SEPOLIA, 'circle_base_sepolia_eoa_ambiguous');
 }
 
 function nextCursor(response) {
@@ -64,7 +73,9 @@ function nextCursor(response) {
     : typeof bodyCursor === 'string' && bodyCursor ? bodyCursor : null;
 }
 
-function matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }) {
+function matchesContractExecutionTransaction(
+  transaction, { walletId, refId, contractAddress, blockchain = ARC_TESTNET },
+) {
   const contractMatches =
     transaction?.contractAddress == null ||
     (
@@ -75,14 +86,14 @@ function matchesContractExecutionTransaction(transaction, { walletId, refId, con
     );
 
   return transaction?.walletId === walletId &&
-    transaction?.blockchain === ARC_TESTNET &&
+    transaction?.blockchain === blockchain &&
     transaction?.refId === refId &&
     contractMatches;
 }
 
 function matchesFetchedContractExecutionTransaction(
   transaction,
-  { walletId, refId, contractAddress },
+  { walletId, refId, contractAddress, blockchain = ARC_TESTNET },
 ) {
   const refMatches =
     transaction?.refId == null ||
@@ -98,7 +109,7 @@ function matchesFetchedContractExecutionTransaction(
     );
 
   return transaction?.walletId === walletId &&
-    transaction?.blockchain === ARC_TESTNET &&
+    transaction?.blockchain === blockchain &&
     refMatches &&
     contractMatches;
 }
@@ -159,14 +170,14 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
-  async function listArcEoa(userToken) {
+  async function listWalletsForBlockchain(userToken, blockchain) {
     assertConfigured(apiKey);
     let pageAfter;
     const wallets = [];
     try {
       for (let page = 0; page < MAX_PAGES; page += 1) {
         const response = await getClient().listWallets({
-          userToken, blockchain: ARC_TESTNET, pageAfter, pageSize: PAGE_SIZE,
+          userToken, blockchain, pageAfter, pageSize: PAGE_SIZE,
         });
         wallets.push(...(Array.isArray(response?.data?.wallets) ? response.data.wallets : []));
         const cursor = nextCursor(response);
@@ -176,11 +187,22 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
         }
         pageAfter = cursor;
       }
-      return pickArcEoa(wallets);
+      return wallets;
     } catch (error) {
       if (error?.message?.startsWith('circle_')) throw error;
       throw safeCircleError(error);
     }
+  }
+
+  async function listArcEoa(userToken) {
+    return pickArcEoa(await listWalletsForBlockchain(userToken, ARC_TESTNET));
+  }
+
+  // The Base Sepolia wallet is source-chain execution metadata only: it never
+  // replaces the Arc Circle wallet id held in the EXTREMA session. Callers
+  // compare its address against the session's own canonical Arc address.
+  async function listBaseSepoliaEoa(userToken) {
+    return pickBaseSepoliaEoa(await listWalletsForBlockchain(userToken, BASE_SEPOLIA));
   }
 
   async function createSocialDeviceToken({ deviceId, idempotencyKey }) {
@@ -227,6 +249,48 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       if (circleErrorCode(error) === ALREADY_INITIALIZED_CODE) {
         const wallet = await listArcEoa(userToken);
         if (!wallet) throw new Error('circle_arc_eoa_not_found');
+        return { status: 'EXISTING', wallet, challengeId: null };
+      }
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
+  }
+
+  // Adds Base Sepolia to an ALREADY onboarded Circle user (one who already
+  // has a PIN and an Arc EOA), so this uses createWallet, not
+  // createUserPinWithWallets (which sets up a brand new user's first PIN).
+  // Circle's unified EVM addressing means the resulting EOA should be the
+  // same address as the existing Arc EOA; this function is the sole
+  // authority on that comparison and fails closed on any mismatch or
+  // ambiguity. The browser is never trusted to assert the match itself.
+  async function prepareBaseSepoliaEoa({ userToken, idempotencyKey, arcAddress }) {
+    if (!ethers.isAddress(arcAddress)) {
+      throw new Error('circle_base_sepolia_arc_address_invalid');
+    }
+    const canonicalArc = ethers.getAddress(arcAddress).toLowerCase();
+
+    const existing = await listBaseSepoliaEoa(userToken);
+    if (existing) {
+      if (existing.address.toLowerCase() !== canonicalArc) {
+        throw new Error('circle_base_sepolia_address_mismatch');
+      }
+      return { status: 'EXISTING', wallet: existing, challengeId: null };
+    }
+
+    try {
+      const response = await getClient().createWallet({
+        userToken, blockchains: [BASE_SEPOLIA], accountType: EOA, idempotencyKey,
+      });
+      const challengeId = response?.data?.challengeId;
+      if (typeof challengeId !== 'string' || !challengeId) throw new Error('circle_response_invalid');
+      return { status: 'CHALLENGE_REQUIRED', wallet: null, challengeId };
+    } catch (error) {
+      if (circleErrorCode(error) === ALREADY_INITIALIZED_CODE) {
+        const wallet = await listBaseSepoliaEoa(userToken);
+        if (!wallet) throw new Error('circle_base_sepolia_eoa_not_found');
+        if (wallet.address.toLowerCase() !== canonicalArc) {
+          throw new Error('circle_base_sepolia_address_mismatch');
+        }
         return { status: 'EXISTING', wallet, challengeId: null };
       }
       if (error?.message?.startsWith('circle_')) throw error;
@@ -394,7 +458,9 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
-  async function findContractExecutionTransaction({ userToken, walletId, refId, contractAddress }) {
+  async function findContractExecutionTransaction({
+    userToken, walletId, refId, contractAddress, blockchain = ARC_TESTNET,
+  }) {
     try {
       // The transaction was just created for this wallet. Query only the
       // newest contract executions instead of walking the user's full history.
@@ -406,7 +472,7 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       });
 
       const matching = (response?.data?.transactions || []).filter((transaction) =>
-        matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress }));
+        matchesContractExecutionTransaction(transaction, { walletId, refId, contractAddress, blockchain }));
 
       if (matching.length > 1) throw new Error('circle_transaction_ambiguous');
       return matching[0] || null;
@@ -433,7 +499,9 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
-  async function getContractExecutionTransaction({ userToken, id, walletId, refId, contractAddress }) {
+  async function getContractExecutionTransaction({
+    userToken, id, walletId, refId, contractAddress, blockchain = ARC_TESTNET,
+  }) {
     try {
       const response = await getClient().getTransaction({ userToken, id });
       const transaction = response?.data?.transaction;
@@ -442,7 +510,7 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
         transaction.id !== id ||
         !matchesFetchedContractExecutionTransaction(
           transaction,
-          { walletId, refId, contractAddress },
+          { walletId, refId, contractAddress, blockchain },
         )
       ) {
         throw new Error('circle_transaction_mismatch');
@@ -463,6 +531,8 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     createEmailDeviceToken,
     initializeArcEoa,
     listArcEoa,
+    listBaseSepoliaEoa,
+    prepareBaseSepoliaEoa,
     createContractExecutionChallenge,
     getContractExecutionChallenge,
     createTypedDataChallenge,
@@ -476,11 +546,14 @@ const circleUserWalletService = createCircleUserWalletService();
 
 module.exports = {
   ARC_TESTNET,
+  BASE_SEPOLIA,
   EOA,
   ALREADY_INITIALIZED_CODE,
   circleErrorCode,
   safeCircleError,
   pickArcEoa,
+  pickBaseSepoliaEoa,
+  pickEoaForBlockchain,
   matchesContractExecutionTransaction,
   matchesFetchedContractExecutionTransaction,
   createCircleUserWalletService,

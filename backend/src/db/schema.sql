@@ -151,7 +151,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS action_authorizations_circle_entry_request_idx
 CREATE TABLE IF NOT EXISTS gateway_funding_actions (
   id UUID PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  circle_wallet_id UUID NOT NULL,
+  circle_wallet_id UUID,
   wallet_address VARCHAR(42) NOT NULL,
   request_id UUID NOT NULL,
   source_domain INTEGER NOT NULL,
@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS gateway_funding_actions (
   max_block_height TEXT,
   estimate_fees_json JSONB,
   circle_sign_challenge_id TEXT,
-  circle_sign_request_id UUID NOT NULL,
+  circle_sign_request_id UUID,
   signature TEXT,
   gateway_transfer_id UUID,
   gateway_transaction_hash VARCHAR(66),
@@ -206,6 +206,89 @@ ALTER TABLE gateway_funding_actions
 
 CREATE INDEX IF NOT EXISTS gateway_funding_actions_user_created_idx
   ON gateway_funding_actions(user_id, created_at DESC);
+
+-- Gateway funding was Circle-only when created: circle_wallet_id and
+-- circle_sign_request_id were NOT NULL and execution_mode did not exist. The
+-- final product generalizes this one state machine to EXTERNAL_WALLET too, so
+-- both columns are relaxed and every historical row is backfilled as
+-- CIRCLE_USER_WALLET by the column default below, a single metadata operation
+-- that rewrites no row data.
+ALTER TABLE gateway_funding_actions
+  ALTER COLUMN circle_wallet_id DROP NOT NULL;
+ALTER TABLE gateway_funding_actions
+  ALTER COLUMN circle_sign_request_id DROP NOT NULL;
+ALTER TABLE gateway_funding_actions
+  ADD COLUMN IF NOT EXISTS execution_mode VARCHAR(32) NOT NULL DEFAULT 'CIRCLE_USER_WALLET';
+
+DO $$
+BEGIN
+  ALTER TABLE gateway_funding_actions
+    ADD CONSTRAINT gateway_funding_actions_execution_mode_check CHECK (
+      execution_mode IN ('EXTERNAL_WALLET', 'CIRCLE_USER_WALLET')
+    );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER TABLE gateway_funding_actions
+    ADD CONSTRAINT gateway_funding_actions_circle_fields_check CHECK (
+      execution_mode <> 'CIRCLE_USER_WALLET' OR circle_wallet_id IS NOT NULL
+    );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Durable source-side deposit into GatewayWallet on a source chain (currently
+-- only Base Sepolia, domain 6), for both human execution modes. This is
+-- deliberately a separate table from gateway_funding_actions: that table is
+-- the burn-intent-to-Arc state machine over an already-existing unified
+-- balance, this one is the approve+deposit state machine that gets USDC into
+-- that unified balance in the first place. Neither Circle user tokens nor
+-- browser encryption keys are ever stored here.
+CREATE TABLE IF NOT EXISTS gateway_deposit_actions (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  request_id UUID NOT NULL,
+  execution_mode VARCHAR(32) NOT NULL,
+  wallet_address VARCHAR(42) NOT NULL,
+  source_domain INTEGER NOT NULL,
+  source_chain_id INTEGER NOT NULL,
+  amount_raw TEXT NOT NULL,
+  source_circle_wallet_id UUID,
+  baseline_domain_balance_raw TEXT,
+  approval_tx_hash VARCHAR(66),
+  approval_circle_challenge_id TEXT,
+  approval_circle_idempotency_key UUID,
+  approval_circle_ref_id TEXT,
+  approval_circle_transaction_id UUID,
+  deposit_tx_hash VARCHAR(66),
+  deposit_circle_challenge_id TEXT,
+  deposit_circle_idempotency_key UUID,
+  deposit_circle_ref_id TEXT,
+  deposit_circle_transaction_id UUID,
+  state VARCHAR(40) NOT NULL,
+  last_error VARCHAR(80),
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT gateway_deposit_actions_amount_raw_check
+    CHECK (amount_raw ~ '^[1-9][0-9]*$'),
+  CONSTRAINT gateway_deposit_actions_execution_mode_check
+    CHECK (execution_mode IN ('EXTERNAL_WALLET', 'CIRCLE_USER_WALLET')),
+  CONSTRAINT gateway_deposit_actions_state_check
+    CHECK (state IN (
+      'STARTED', 'BASELINE_READ', 'APPROVAL_REQUIRED', 'APPROVAL_CHALLENGE',
+      'APPROVAL_PENDING', 'APPROVAL_VERIFIED', 'DEPOSIT_REQUIRED',
+      'DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING', 'DEPOSIT_VERIFIED',
+      'RECONCILING', 'COMPLETED', 'FAILED', 'RECONCILIATION_REQUIRED', 'EXPIRED'
+    )),
+  UNIQUE (user_id, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS gateway_deposit_actions_user_created_idx
+  ON gateway_deposit_actions(user_id, created_at DESC);
 
 -- Durable settlement evidence, written before settleRound is broadcast.
 -- canonical_evidence_json is TEXT, not JSONB, deliberately: PostgreSQL JSONB

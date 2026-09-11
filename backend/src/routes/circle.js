@@ -8,6 +8,7 @@ const { z } = require('zod');
 const db = require('../db');
 const sessionService = require('../services/sessionService');
 const circleUserWalletService = require('../services/circleUserWalletService');
+const { requireAuth } = require('../middleware/auth');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
 const router = express.Router();
@@ -126,6 +127,38 @@ router.post('/wallet', walletLimiter, async (req, res, next) => {
     const wallet = await circleUserWalletService.listArcEoa(userTokenSchema.parse(req.body).userToken);
     if (!wallet) return res.status(404).json({ error: 'circle_arc_eoa_not_found' });
     res.json({ wallet });
+  } catch (error) { next(error); }
+});
+
+const baseSepoliaPrepareSchema = userTokenSchema.extend({ idempotencyKey });
+
+// Both routes require an already-authenticated EXTREMA session: the
+// comparison target is always the session's own canonical Arc address, never
+// a browser-supplied one, and the Base Circle wallet id never replaces the
+// session's Arc Circle wallet id.
+router.post('/wallet/base-sepolia', walletLimiter, requireAuth, async (req, res, next) => {
+  try {
+    if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      return res.status(409).json({ error: 'circle_wallet_session_required' });
+    }
+    const token = userTokenSchema.parse(req.body).userToken;
+    const wallet = await circleUserWalletService.listBaseSepoliaEoa(token);
+    res.json({ wallet, arcAddress: req.auth.walletAddress });
+  } catch (error) { next(error); }
+});
+
+router.post('/wallet/base-sepolia/prepare', walletLimiter, requireAuth, async (req, res, next) => {
+  try {
+    if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      return res.status(409).json({ error: 'circle_wallet_session_required' });
+    }
+    const input = baseSepoliaPrepareSchema.parse(req.body);
+    const result = await circleUserWalletService.prepareBaseSepoliaEoa({
+      userToken: input.userToken,
+      idempotencyKey: input.idempotencyKey,
+      arcAddress: req.auth.walletAddress,
+    });
+    res.json(result);
   } catch (error) { next(error); }
 });
 

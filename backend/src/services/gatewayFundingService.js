@@ -12,7 +12,7 @@ const db = require('../db');
 const config = require('../config');
 const gatewayService = require('./gatewayService');
 const circleUserWalletService = require('./circleUserWalletService');
-const { EXECUTION_MODES } = require('./executionIdentityService');
+const { EXECUTION_MODES, isHumanExecutionMode } = require('./executionIdentityService');
 
 const FUNDING_TTL_MS = 30 * 60 * 1000;
 
@@ -21,14 +21,18 @@ function hashPayload(value) {
   return crypto.createHash('sha256').update(serialized).digest('hex');
 }
 
-function assertCircleSession(auth) {
+// Both human execution modes can hold a Gateway funding action. Circle mode
+// additionally requires the session's Circle wallet id, since that is the
+// wallet a Circle hosted challenge signs with; external mode signs locally
+// with the connected wallet and never carries a Circle wallet id at all.
+function assertHumanGatewaySession(auth) {
   if (
-    !auth || auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET ||
+    !auth || !isHumanExecutionMode(auth.executionMode) ||
     typeof auth.userId !== 'string' ||
-    typeof auth.circleWalletId !== 'string' ||
-    !ethers.isAddress(auth.walletAddress)
+    !ethers.isAddress(auth.walletAddress) ||
+    (auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET && typeof auth.circleWalletId !== 'string')
   ) {
-    throw new Error('gateway_circle_wallet_required');
+    throw new Error('gateway_wallet_session_required');
   }
 }
 
@@ -52,10 +56,15 @@ function publicAction(row, options = {}) {
   return {
     actionId: row.id,
     requestId: row.request_id,
+    executionMode: row.execution_mode,
     sourceDomain: Number(row.source_domain),
     valueRaw: row.value_raw,
     payloadHash: row.payload_hash || null,
     challengeId: row.circle_sign_challenge_id || null,
+    // Not secret: it is the exact message a wallet needs to sign. An external
+    // wallet session signs this directly with signTypedData; Circle sessions
+    // ignore it and sign through the hosted challenge instead.
+    typedData: row.typed_data_json || null,
     state: row.state,
     pending: options.pending === true,
     readyToBroadcast: row.state === 'READY_TO_BROADCAST',
@@ -88,10 +97,10 @@ function createGatewayFundingService({
   async function findById(auth, actionId) {
     const result = await database.query(
       `SELECT * FROM gateway_funding_actions
-        WHERE id = $1 AND user_id = $2 AND circle_wallet_id = $3
+        WHERE id = $1 AND user_id = $2 AND execution_mode = $3
           AND lower(wallet_address) = lower($4)
         LIMIT 1`,
-      [actionId, auth.userId, auth.circleWalletId, auth.walletAddress],
+      [actionId, auth.userId, auth.executionMode, auth.walletAddress],
     );
     const row = result.rows[0] || null;
     if (!row) throw new Error('gateway_funding_not_found');
@@ -116,15 +125,18 @@ function createGatewayFundingService({
   async function createOrGet(auth, input) {
     const actionId = crypto.randomUUID();
     const expiresAt = new Date(now() + FUNDING_TTL_MS);
+    const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
     await database.query(
       `INSERT INTO gateway_funding_actions
-        (id, user_id, circle_wallet_id, wallet_address, request_id, source_domain,
+        (id, user_id, execution_mode, circle_wallet_id, wallet_address, request_id, source_domain,
          value_raw, circle_sign_request_id, state, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PREPARING', $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PREPARING', $10)
        ON CONFLICT (user_id, request_id) DO NOTHING`,
       [
-        actionId, auth.userId, auth.circleWalletId, ethers.getAddress(auth.walletAddress),
-        input.requestId, input.sourceDomain, input.valueRaw, crypto.randomUUID(), expiresAt,
+        actionId, auth.userId, auth.executionMode,
+        isCircle ? auth.circleWalletId : null, ethers.getAddress(auth.walletAddress),
+        input.requestId, input.sourceDomain, input.valueRaw,
+        isCircle ? crypto.randomUUID() : null, expiresAt,
       ],
     );
     return findByRequest(auth, input.requestId);
@@ -155,16 +167,23 @@ function createGatewayFundingService({
       salt: spec.salt,
     });
     const payloadHash = hashPayload(built.burnIntent);
+    // Circle signs through a hosted challenge, so preparation pauses at
+    // SIGN_CHALLENGE_CREATING for that mode. An external wallet signs the
+    // already-returned typedData directly with no server-side challenge, so
+    // it goes straight to SIGNATURE_PENDING.
+    const nextState = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET
+      ? 'SIGN_CHALLENGE_CREATING'
+      : 'SIGNATURE_PENDING';
     const result = await database.query(
       `UPDATE gateway_funding_actions
               SET payload_hash = $2, burn_intent_json = $3, burn_intent_json_text = $4,
               typed_data_json = $5, max_fee_raw = $6, max_block_height = $7, estimate_fees_json = $8,
-              state = 'SIGN_CHALLENGE_CREATING', last_error = NULL, updated_at = NOW()
+              state = $9, last_error = NULL, updated_at = NOW()
         WHERE id = $1 AND state = 'PREPARING'
         RETURNING *`,
       [
         row.id, payloadHash, built.burnIntent, JSON.stringify(built.burnIntent), built.typedData,
-        estimate.maxFeeRaw, estimate.maxBlockHeight, estimate.fees,
+        estimate.maxFeeRaw, estimate.maxBlockHeight, estimate.fees, nextState,
       ],
     );
     return result.rows[0] || findById(auth, row.id);
@@ -236,7 +255,7 @@ function createGatewayFundingService({
       userId: row.user_id,
       circleWalletId: row.circle_wallet_id,
       walletAddress: row.wallet_address,
-      executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+      executionMode: row.execution_mode,
     }, row.id);
   }
 
@@ -274,7 +293,7 @@ function createGatewayFundingService({
   }
 
   async function submit({ auth, actionId }) {
-    assertCircleSession(auth);
+    assertHumanGatewaySession(auth);
     if (!runtimeConfig.EXTREMA_ENABLE_GATEWAY_BROADCAST) {
       throw new Error('gateway_broadcast_disabled');
     }
@@ -321,7 +340,7 @@ function createGatewayFundingService({
   }
 
   async function status({ auth, actionId }) {
-    assertCircleSession(auth);
+    assertHumanGatewaySession(auth);
     let row = await markExpired(await findById(auth, actionId));
     if (['SUBMITTED', 'SUBMITTING', 'RECONCILIATION_REQUIRED'].includes(row.state)) {
       row = await reconcileRemote(auth, row);
@@ -331,10 +350,11 @@ function createGatewayFundingService({
     });
   }
 
-  async function start({ auth, userToken, requestId, sourceDomain, valueRaw }) {
-    assertCircleSession(auth);
+  async function start({ auth, userToken = null, requestId, sourceDomain, valueRaw }) {
+    assertHumanGatewaySession(auth);
     assertInput({ requestId, sourceDomain, valueRaw });
-    if (typeof userToken !== 'string' || userToken.length < 16) {
+    const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
+    if (isCircle && (typeof userToken !== 'string' || userToken.length < 16)) {
       throw new Error('circle_request_invalid');
     }
 
@@ -345,47 +365,27 @@ function createGatewayFundingService({
     row = await markExpired(row);
     if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
     if (row.state === 'PREPARING') row = await prepareIntent(auth, row);
-    if (row.state === 'SIGN_CHALLENGE_CREATING' && row.last_error) {
-      throw new Error('gateway_signature_challenge_uncertain');
+    if (isCircle) {
+      if (row.state === 'SIGN_CHALLENGE_CREATING' && row.last_error) {
+        throw new Error('gateway_signature_challenge_uncertain');
+      }
+      if (row.state === 'SIGN_CHALLENGE_CREATING') row = await createSignatureChallenge(auth, row, userToken);
     }
-    if (row.state === 'SIGN_CHALLENGE_CREATING') row = await createSignatureChallenge(auth, row, userToken);
     return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
   async function get({ auth, actionId }) {
-    assertCircleSession(auth);
+    assertHumanGatewaySession(auth);
     const row = await markExpired(await findById(auth, actionId));
     return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
-  async function verifySignature({ auth, actionId, userToken, signature = null }) {
-    assertCircleSession(auth);
-    if (typeof userToken !== 'string' || userToken.length < 16) {
-      throw new Error('circle_request_invalid');
-    }
-    let row = await markExpired(await findById(auth, actionId));
-    if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
-    if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
-    if (row.state !== 'SIGNATURE_PENDING' || !row.circle_sign_challenge_id) {
-      throw new Error('gateway_signature_challenge_unavailable');
-    }
-
-    const challenge = await circle.getTypedDataChallenge({
-      userToken,
-      challengeId: row.circle_sign_challenge_id,
-    });
-    if (!challenge || challenge.status === 'PENDING' || challenge.status === 'IN_PROGRESS') {
-      return publicAction(row, { pending: true });
-    }
-    if (challenge.status !== 'COMPLETE') {
-      await database.query(
-        `UPDATE gateway_funding_actions
-            SET state = 'SIGNATURE_FAILED', last_error = 'gateway_signature_challenge_failed', updated_at = NOW()
-          WHERE id = $1`,
-        [row.id],
-      );
-      throw new Error('gateway_signature_challenge_failed');
-    }
+  // One canonical tail for both modes: recover the EIP-712 signer locally,
+  // require it to equal the authenticated session wallet, and only then
+  // persist the signature and move to READY_TO_BROADCAST. Neither branch ever
+  // trusts a browser-provided intent, source, or destination — both sign
+  // exactly the server-pinned typedData already stored on the row.
+  async function finalizeSignature(auth, row, signature) {
     if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) {
       throw new Error('gateway_signature_required');
     }
@@ -400,7 +400,46 @@ function createGatewayFundingService({
         RETURNING *`,
       [row.id, signature],
     );
-    row = result.rows[0] || await findById(auth, actionId);
+    return result.rows[0] || findById(auth, row.id);
+  }
+
+  async function verifySignature({ auth, actionId, userToken = null, signature = null }) {
+    assertHumanGatewaySession(auth);
+    let row = await markExpired(await findById(auth, actionId));
+    if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
+    if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
+
+    if (auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      if (typeof userToken !== 'string' || userToken.length < 16) {
+        throw new Error('circle_request_invalid');
+      }
+      if (row.state !== 'SIGNATURE_PENDING' || !row.circle_sign_challenge_id) {
+        throw new Error('gateway_signature_challenge_unavailable');
+      }
+
+      const challenge = await circle.getTypedDataChallenge({
+        userToken,
+        challengeId: row.circle_sign_challenge_id,
+      });
+      if (!challenge || challenge.status === 'PENDING' || challenge.status === 'IN_PROGRESS') {
+        return publicAction(row, { pending: true });
+      }
+      if (challenge.status !== 'COMPLETE') {
+        await database.query(
+          `UPDATE gateway_funding_actions
+              SET state = 'SIGNATURE_FAILED', last_error = 'gateway_signature_challenge_failed', updated_at = NOW()
+            WHERE id = $1`,
+          [row.id],
+        );
+        throw new Error('gateway_signature_challenge_failed');
+      }
+    } else if (row.state !== 'SIGNATURE_PENDING') {
+      // External wallets sign locally with no hosted challenge: the only
+      // valid state to accept a signature in is SIGNATURE_PENDING.
+      throw new Error('gateway_signature_challenge_unavailable');
+    }
+
+    row = await finalizeSignature(auth, row, signature);
     return publicAction(row);
   }
 

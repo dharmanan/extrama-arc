@@ -3,18 +3,28 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
-import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from "wagmi";
-import { arcTestnet } from "../lib/web3";
+import {
+  useAccount,
+  useDisconnect,
+  usePublicClient,
+  useSendTransaction,
+  useSignMessage,
+  useSignTypedData,
+  useSwitchChain,
+} from "wagmi";
+import { arcTestnet, baseSepolia } from "../lib/web3";
 import { shortAddress, useWalletSession } from "../wallet-session";
-import { backendApi, isAuthSessionError, type GatewayFundingResponse } from "../lib/backend-api";
+import { backendApi, isAuthSessionError, type GatewayFundingResponse, type TransactionRequest } from "../lib/backend-api";
 import {
   readCircleGatewayFundingRecovery,
+  readCircleGatewayDepositRecovery,
+  readExternalGatewayDepositRecovery,
   readCircleTabAuth,
   type CircleGatewayFundingRecovery,
+  type CircleGatewayDepositRecovery,
+  type ExternalGatewayDepositRecovery,
 } from "../lib/circle-auth";
-import {
-  confirmCircleGatewayFunding,
-} from "../lib/circle-actions";
+import { confirmGatewayBaseDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
 import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
@@ -25,6 +35,36 @@ import { readBinanceLiveMarket } from "../lib/live-market";
 // wallet. "choice" is the connected wallet's single login signature.
 type Step = "owner" | "choice" | "ready";
 type GatewayReadState = "idle" | "loading" | "ready" | "error";
+
+// The single configured Gateway deposit source. Config driven so ETH
+// Sepolia / Arbitrum Sepolia / OP Sepolia can be added later as more map
+// entries instead of scattering chain magic numbers through this page.
+const BASE_SEPOLIA_SOURCE = {
+  domain: 6,
+  chainId: baseSepolia.id,
+  label: "Base Sepolia",
+  usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  gatewayWallet: "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+} as const;
+
+const ERC20_BALANCE_OF_ABI = [
+  {
+    type: "function", name: "balanceOf", stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }], outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+type BaseWalletStatus = "idle" | "checking" | "ready" | "missing" | "preparing" | "mismatch" | "error";
+type DepositPhaseLabel =
+  | ""
+  | "reading"
+  | "preparingApproval"
+  | "confirmApproval"
+  | "approvalConfirmed"
+  | "confirmDeposit"
+  | "depositSubmitted"
+  | "waitingFinality"
+  | "recovering";
 
 
 const WALLET_MARKET_ASSETS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -164,11 +204,14 @@ export default function WalletPage() {
     lockWallet,
   } = useWalletSession();
 
-  const { address: connectedAddress, isConnected, chain } = useAccount();
+  const { address: connectedAddress, connector: connectedConnector, isConnected, chain } = useAccount();
   const { disconnect } = useDisconnect();
 
   const { signMessageAsync } = useSignMessage();
+  const { signTypedDataAsync } = useSignTypedData();
   const { switchChainAsync } = useSwitchChain();
+  const { sendTransactionAsync } = useSendTransaction();
+  const baseSepoliaPublicClient = usePublicClient({ chainId: baseSepolia.id });
 
   const [ownerAddress, setOwnerAddress] = useState<string | null>(null);
   const [step, setStep] = useState<Step>(walletStatus === "ready" ? "ready" : "owner");
@@ -192,6 +235,21 @@ export default function WalletPage() {
   // A Circle session whose stored Circle login can no longer refresh it
   // falls back to the Circle Google or email sign in, never to another method.
   const [circleReauthRequired, setCircleReauthRequired] = useState(false);
+
+  // Base Sepolia source deposit (Circle wallet readiness, source balance, and
+  // the approve/deposit action itself). Distinct from the Gateway funding
+  // signature above: this is what gets USDC into the unified balance.
+  const [baseWalletStatus, setBaseWalletStatus] = useState<BaseWalletStatus>("idle");
+  const [baseUsdcRaw, setBaseUsdcRaw] = useState<string | null>(null);
+  const [baseReadError, setBaseReadError] = useState("");
+  const [depositAmount, setDepositAmount] = useState("");
+  const [depositBusy, setDepositBusy] = useState(false);
+  const [depositPhase, setDepositPhase] = useState<DepositPhaseLabel>("");
+  const [depositError, setDepositError] = useState("");
+  const [depositNotice, setDepositNotice] = useState("");
+  const [depositRecovery, setDepositRecovery] = useState<
+    CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery | null
+  >(null);
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -283,10 +341,11 @@ export default function WalletPage() {
     }
   }, [step, walletStatus, walletAddress]);
 
-  // Gateway is supplemental and Circle only. It is read separately from the Arc
-  // chain state so that a Gateway outage can never surface as a wallet error,
-  // an Arc balance failure or a broken session. The explicit read state keeps a
-  // failed read distinct from a successful zero balance.
+  // Gateway is supplemental and now available to both human execution modes.
+  // It is read separately from the Arc chain state so that a Gateway outage
+  // can never surface as a wallet error, an Arc balance failure or a broken
+  // session. The explicit read state keeps a failed read distinct from a
+  // successful zero balance.
   async function refreshGatewayBalance() {
     setGatewayReadState("loading");
     try {
@@ -304,7 +363,7 @@ export default function WalletPage() {
       step === "ready" &&
       walletStatus === "ready" &&
       walletAddress &&
-      executionMode === "CIRCLE_USER_WALLET"
+      (executionMode === "CIRCLE_USER_WALLET" || executionMode === "EXTERNAL_WALLET")
     ) {
       void refreshGatewayBalance();
       return;
@@ -352,6 +411,184 @@ export default function WalletPage() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [executionMode, gatewayFundingRecovery?.actionId]);
+
+  // Base Sepolia source balance is a public read for the session's own
+  // address, so it works identically for both execution modes and needs no
+  // wallet connection: it uses the read-only Base Sepolia transport wagmi
+  // already carries for this chain.
+  async function refreshBaseSourceState() {
+    if (!walletAddress || !baseSepoliaPublicClient) return;
+    setBaseReadError("");
+    try {
+      const balanceRaw = await baseSepoliaPublicClient.readContract({
+        address: BASE_SEPOLIA_SOURCE.usdc as `0x${string}`,
+        abi: ERC20_BALANCE_OF_ABI,
+        functionName: "balanceOf",
+        args: [walletAddress as `0x${string}`],
+      });
+      setBaseUsdcRaw(balanceRaw.toString());
+    } catch {
+      setBaseUsdcRaw(null);
+      setBaseReadError(t.wallet.gatewayBaseUnavailable);
+    }
+  }
+
+  async function refreshCircleBaseWalletStatus(userToken: string) {
+    setBaseWalletStatus("checking");
+    try {
+      const result = await backendApi.circle.baseSepoliaWallet(userToken);
+      if (!result.wallet) {
+        setBaseWalletStatus("missing");
+        return;
+      }
+      if (result.wallet.address.toLowerCase() !== result.arcAddress.toLowerCase()) {
+        setBaseWalletStatus("mismatch");
+        return;
+      }
+      setBaseWalletStatus("ready");
+    } catch {
+      setBaseWalletStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    if (step !== "ready" || walletStatus !== "ready" || !walletAddress) return;
+    if (executionMode !== "CIRCLE_USER_WALLET" && executionMode !== "EXTERNAL_WALLET") return;
+    void refreshBaseSourceState();
+    if (executionMode === "EXTERNAL_WALLET") setBaseWalletStatus("ready");
+  }, [step, walletStatus, walletAddress, executionMode]);
+
+  useEffect(() => {
+    if (executionMode !== "CIRCLE_USER_WALLET" || baseWalletStatus !== "idle") return;
+    const auth = readCircleTabAuth();
+    if (!auth) return;
+    void refreshCircleBaseWalletStatus(auth.userToken);
+  }, [executionMode, baseWalletStatus]);
+
+  async function handlePrepareBaseWallet() {
+    const auth = readCircleTabAuth();
+    if (!auth) {
+      setCircleReauthRequired(true);
+      return;
+    }
+    setBaseWalletStatus("preparing");
+    setDepositError("");
+    try {
+      const result = await backendApi.circle.prepareBaseSepoliaWallet(auth.userToken, crypto.randomUUID());
+      if (result.status === "EXISTING" && result.wallet) {
+        if (walletAddress && result.wallet.address.toLowerCase() !== walletAddress.toLowerCase()) {
+          setBaseWalletStatus("mismatch");
+          return;
+        }
+        setBaseWalletStatus("ready");
+        return;
+      }
+      // A CHALLENGE_REQUIRED response needs the same hosted Circle challenge
+      // executor used everywhere else in this product; re-check readiness
+      // once it completes rather than trusting the browser's own say-so.
+      await refreshCircleBaseWalletStatus(auth.userToken);
+    } catch {
+      setBaseWalletStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    if (executionMode !== "CIRCLE_USER_WALLET") {
+      setDepositRecovery(null);
+      return;
+    }
+    const recovery = readCircleGatewayDepositRecovery();
+    if (recovery) setDepositRecovery(recovery);
+  }, [executionMode]);
+
+  useEffect(() => {
+    if (executionMode !== "EXTERNAL_WALLET") return;
+    const recovery = readExternalGatewayDepositRecovery();
+    if (recovery) setDepositRecovery(recovery);
+  }, [executionMode]);
+
+  async function ensureBaseSepolia() {
+    if (chain?.id === baseSepolia.id) return;
+    await switchChainAsync({ chainId: baseSepolia.id });
+  }
+
+  async function sendBaseSepoliaTransaction(request: TransactionRequest): Promise<string> {
+    if (!connectedAddress || connectedAddress.toLowerCase() !== request.from.toLowerCase()) {
+      throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+    }
+    if (!connectedConnector) {
+      throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+    }
+    await ensureBaseSepolia();
+    const activeChainId = await connectedConnector.getChainId();
+    if (activeChainId !== request.chainId) {
+      throw new Error(t.wallet.gatewaySwitchToBaseSepolia);
+    }
+    if (!baseSepoliaPublicClient) throw new Error(t.wallet.gatewayBaseUnavailable);
+    const hash = await sendTransactionAsync({
+      account: connectedAddress,
+      chainId: request.chainId,
+      to: request.to as `0x${string}`,
+      data: request.data as `0x${string}`,
+      value: BigInt(request.value),
+    });
+    const receipt = await baseSepoliaPublicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") throw new Error("Wallet transaction failed.");
+    return hash;
+  }
+
+  async function handleGatewayBaseDeposit() {
+    const valueRaw = parseGatewayUsdcRaw(depositAmount);
+    if (!valueRaw) {
+      setDepositError(locale === "tr" ? "6 ondalığa kadar geçerli bir USDC tutarı gir." : "Enter a valid USDC amount with up to 6 decimals.");
+      return;
+    }
+    setDepositBusy(true);
+    setDepositError("");
+    setDepositNotice("");
+    try {
+      const result = await confirmGatewayBaseDeposit(
+        { sourceDomain: BASE_SEPOLIA_SOURCE.domain, amountRaw: valueRaw },
+        {
+          executionMode,
+          sendExternalTransaction: sendBaseSepoliaTransaction,
+        },
+        (phase) => {
+          if (phase === "APPROVAL_REQUIRED" || phase === "APPROVAL_CHALLENGE") setDepositPhase("preparingApproval");
+          else if (phase === "APPROVAL_PENDING") setDepositPhase("confirmApproval");
+          else if (phase === "DEPOSIT_REQUIRED" || phase === "DEPOSIT_CHALLENGE") setDepositPhase("confirmDeposit");
+          else if (phase === "DEPOSIT_PENDING") setDepositPhase("depositSubmitted");
+          else if (phase === "RECONCILING") setDepositPhase("waitingFinality");
+        },
+      );
+      if (result.state === "COMPLETED") {
+        setDepositNotice(
+          locale === "tr"
+            ? "Yatırma tamamlandı. Gateway bakiyeni yenile."
+            : "Deposit complete. Refresh your Gateway balance.",
+        );
+        setDepositRecovery(null);
+        setDepositAmount("");
+        void refreshGatewayBalance();
+        void refreshBaseSourceState();
+      } else {
+        setDepositNotice(
+          locale === "tr"
+            ? `Durum: ${result.state}`
+            : `Status: ${result.state}`,
+        );
+      }
+    } catch (cause) {
+      setDepositError(
+        cause instanceof Error
+          ? cause.message
+          : (locale === "tr" ? "Gateway yatırması tamamlanamadı." : "Gateway deposit could not be completed."),
+      );
+    } finally {
+      setDepositBusy(false);
+      setDepositPhase("");
+    }
+  }
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -428,11 +665,10 @@ export default function WalletPage() {
     setGatewayFundingError("");
     setGatewayFundingNotice("");
     try {
-      const result = await confirmCircleGatewayFunding({
-        requestId: gatewayFundingRecovery?.requestId || crypto.randomUUID(),
-        sourceDomain,
-        valueRaw,
-      });
+      const result = await confirmGatewayBurnSignature(
+        { sourceDomain, valueRaw },
+        { executionMode, signTypedData: (typedData) => signTypedDataAsync(typedData) },
+      );
       setGatewayFundingStatus(result);
       if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
         throw new Error("gateway_signature_challenge_unavailable");
@@ -509,7 +745,7 @@ export default function WalletPage() {
               ) : chainState ? (
                 <div
                   className="ex-wallet-summary"
-                  data-columns={executionMode === "CIRCLE_USER_WALLET" ? "3" : "2"}
+                  data-columns="3"
                 >
                   <div className="ex-wallet-summary__item">
                     <span>Network</span>
@@ -527,18 +763,16 @@ export default function WalletPage() {
                     </strong>
                   </div>
 
-                  {executionMode === "CIRCLE_USER_WALLET" && (
-                    <div className="ex-wallet-summary__item">
-                      <span>{t.wallet.gatewayBalance}</span>
-                      <strong className="ex-num">
-                        {gatewayReadState === "ready" && gateway
-                          ? `${gateway.totalUsdc} ${gateway.token}`
-                          : gatewayReadState === "loading" || gatewayReadState === "idle"
-                            ? t.wallet.gatewayReading
-                            : t.wallet.gatewayBalanceUnavailable}
-                      </strong>
-                    </div>
-                  )}
+                  <div className="ex-wallet-summary__item">
+                    <span>{t.wallet.gatewayBalance}</span>
+                    <strong className="ex-num">
+                      {gatewayReadState === "ready" && gateway
+                        ? `${gateway.totalUsdc} ${gateway.token}`
+                        : gatewayReadState === "loading" || gatewayReadState === "idle"
+                          ? t.wallet.gatewayReading
+                          : t.wallet.gatewayBalanceUnavailable}
+                    </strong>
+                  </div>
                 </div>
               ) : (
                 <p className="ex-wallet-ledger__pending">{chainBusy || t.wallet.balanceNotLoaded}</p>
@@ -546,8 +780,7 @@ export default function WalletPage() {
 
               {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
 
-              {executionMode === "CIRCLE_USER_WALLET" && (
-                <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>
+              <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>
                   <div>
                     <p className="ex-eyebrow">{t.wallet.gateway}</p>
                     <h3>{t.wallet.gatewayPrepareTitle}</h3>
@@ -623,7 +856,70 @@ export default function WalletPage() {
                     </p>
                   )}
                 </section>
-              )}
+
+                <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayDepositAriaLabel}>
+                  <div>
+                    <p className="ex-eyebrow">{BASE_SEPOLIA_SOURCE.label}</p>
+                    <h3>{t.wallet.gatewayBaseSourceTitle}</h3>
+                    <p>
+                      {t.wallet.gatewayBaseUsdcBalance}
+                      {": "}
+                      <strong className="ex-num">
+                        {baseUsdcRaw !== null ? formatGatewayUsdcRaw(baseUsdcRaw) : baseReadError ? "—" : t.wallet.gatewayBaseReading}
+                      </strong>
+                    </p>
+                    {baseReadError && <p className="ex-entry__msg" data-tone="error">{baseReadError}</p>}
+                  </div>
+
+                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "missing" && (
+                    <div>
+                      <p>{t.wallet.gatewayPrepareBaseWalletBody}</p>
+                      <button className="ex-btn ex-btn--ink" type="button" onClick={handlePrepareBaseWallet}>
+                        {t.wallet.gatewayPrepareBaseWallet}
+                      </button>
+                    </div>
+                  )}
+                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "preparing" && (
+                    <p>{t.wallet.gatewayPreparingBaseWallet}</p>
+                  )}
+                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "mismatch" && (
+                    <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewayBaseWalletMismatch}</p>
+                  )}
+
+                  {baseWalletStatus === "ready" && (
+                    <div className="ex-wallet-gateway__controls">
+                      <label>
+                        <span>{t.wallet.gatewayDepositAmount}</span>
+                        <input
+                          inputMode="decimal"
+                          placeholder="0.000000"
+                          value={depositAmount}
+                          onChange={(event) => setDepositAmount(event.target.value)}
+                          disabled={depositBusy || Boolean(depositRecovery)}
+                        />
+                      </label>
+                      <button
+                        className="ex-btn ex-btn--ink"
+                        type="button"
+                        onClick={handleGatewayBaseDeposit}
+                        disabled={depositBusy}
+                      >
+                        {depositBusy
+                          ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval
+                            : depositPhase === "confirmApproval" ? (executionMode === "CIRCLE_USER_WALLET" ? t.wallet.gatewayConfirmApprovalCircle : t.wallet.gatewayConfirmApprovalWallet)
+                            : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
+                            : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
+                            : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality
+                            : t.wallet.gatewayReading)
+                          : depositRecovery
+                            ? t.wallet.gatewayRecoveringOperation
+                            : t.wallet.gatewayConfirmDeposit}
+                      </button>
+                    </div>
+                  )}
+                  {depositNotice && <p className="ex-entry__msg" data-tone="ok">{depositNotice}</p>}
+                  {depositError && <p className="ex-entry__msg" data-tone="error">{depositError}</p>}
+                </section>
 
               <div className="ex-wallet-actions">
                 {executionMode === "EXTERNAL_WALLET" && chain?.id !== arcTestnet.id && (
@@ -640,7 +936,8 @@ export default function WalletPage() {
                   type="button"
                   onClick={() => {
                     void refreshChainState();
-                    if (executionMode === "CIRCLE_USER_WALLET") void refreshGatewayBalance();
+                    void refreshGatewayBalance();
+                    void refreshBaseSourceState();
                   }}
                   disabled={Boolean(chainBusy)}
                 >

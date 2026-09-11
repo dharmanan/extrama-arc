@@ -24,7 +24,7 @@ assert.match(routes, /circleUserWalletService\.listArcEoa\(token\)/);
 assert.match(routes, /executionMode: EXECUTION_MODES\.CIRCLE_USER_WALLET/);
 assert.ok(!routes.includes('walletAddress: req.body'), 'Circle address must not come from browser input');
 assert.match(service, /blockchains: \[ARC_TESTNET\], accountType: EOA/);
-assert.match(service, /blockchain: ARC_TESTNET/);
+assert.match(service, /pickEoaForBlockchain\(wallets, ARC_TESTNET,/);
 assert.match(service, /circle_arc_eoa_ambiguous/);
 assert.match(service, /MAX_PAGES/);
 assert.match(identity, /circle_wallet_session_mismatch/);

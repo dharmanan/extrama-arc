@@ -394,10 +394,15 @@ async function verifyForwardingClient() {
   );
 
   assert.match(walletRoutes, /router\.get\('\/gateway-balance'/);
-  assert.match(
-    walletRoutes,
-    /req\.auth\.executionMode !== EXECUTION_MODES\.CIRCLE_USER_WALLET/,
+  // Gateway balance is now shared by both human execution modes: the old
+  // Circle-only 409 gate is gone, and the response reports whichever mode the
+  // authenticated session actually is.
+  assert.equal(
+    walletRoutes.includes('EXECUTION_MODES.CIRCLE_USER_WALLET) {\n      return res.status(409)'),
+    false,
+    'gateway-balance must no longer reject EXTERNAL_WALLET sessions',
   );
+  assert.match(walletRoutes, /executionMode: req\.auth\.executionMode/);
   assert.match(
     walletRoutes,
     /readUnifiedUsdcBalance\(wallet\.address\)/,
@@ -419,6 +424,36 @@ async function verifyForwardingClient() {
   assert.match(walletRoutes, /gatewayFundingService\.status/);
   assert.match(walletRoutes, /gatewayFundingService\.verifySignature/);
 
+  // Gateway SOURCE deposit routes (Base Sepolia approve + deposit), also
+  // shared by both human execution modes.
+  assert.match(walletRoutes, /router\.post\('\/gateway-deposit\/start'/);
+  assert.match(walletRoutes, /router\.get\('\/gateway-deposit\/:actionId'/);
+  assert.match(walletRoutes, /router\.post\('\/gateway-deposit\/:actionId\/verify-approval'/);
+  assert.match(walletRoutes, /router\.post\('\/gateway-deposit\/:actionId\/verify'/);
+  assert.match(walletRoutes, /gatewayDepositService\.start/);
+  assert.match(walletRoutes, /gatewayDepositService\.verifyApproval/);
+  assert.match(walletRoutes, /gatewayDepositService\.verifyDeposit/);
+  assert.match(walletRoutes, /gatewayDepositService\.status/);
+
+  const circleRoutes = fs.readFileSync(
+    path.join(__dirname, '../src/routes/circle.js'),
+    'utf8',
+  );
+  assert.match(circleRoutes, /router\.post\('\/wallet\/base-sepolia'/);
+  assert.match(circleRoutes, /router\.post\('\/wallet\/base-sepolia\/prepare'/);
+  // Both Base Sepolia routes require an authenticated EXTREMA session and
+  // compare against that session's own address, never one from the request.
+  const baseSepoliaSection = circleRoutes.slice(
+    circleRoutes.indexOf("router.post('/wallet/base-sepolia'"),
+    circleRoutes.indexOf("router.post('/session'"),
+  );
+  assert.match(baseSepoliaSection, /requireAuth/);
+  assert.match(baseSepoliaSection, /req\.auth\.walletAddress/);
+  assert.ok(
+    !/arcAddress:\s*req\.body/.test(baseSepoliaSection),
+    'the Arc comparison address must come from the session, never the request body',
+  );
+
   const walletPage = fs.readFileSync(
     path.join(__dirname, '../../app/wallet/page.tsx'),
     'utf8',
@@ -439,11 +474,13 @@ async function verifyForwardingClient() {
   assert.ok(!gatewayReader.includes('setSessionNeedsAuth'));
   assert.ok(!gatewayReader.includes('setError'));
 
-  // The Gateway read is Circle only. Its explicit state distinguishes loading,
-  // successful zero, and failure, while the UI remains visible in every state.
+  // The Gateway read now covers BOTH human execution modes, superseding the
+  // old Circle-only visibility rule. Its explicit state still distinguishes
+  // loading, successful zero, and failure, and the UI stays visible in every
+  // state, for either mode.
   assert.match(
     walletPage,
-    /executionMode === "CIRCLE_USER_WALLET"\s*\)\s*\{\s*void refreshGatewayBalance\(\);/,
+    /\(executionMode === "CIRCLE_USER_WALLET" \|\| executionMode === "EXTERNAL_WALLET"\)\s*\)\s*\{\s*void refreshGatewayBalance\(\);/,
   );
   assert.match(
     walletPage,
@@ -452,13 +489,29 @@ async function verifyForwardingClient() {
   assert.match(walletPage, /setGatewayReadState\("loading"\)/);
   assert.match(walletPage, /setGatewayReadState\("ready"\)/);
   assert.match(walletPage, /setGatewayReadState\("error"\)/);
-  assert.match(walletPage, /\{executionMode === "CIRCLE_USER_WALLET" && \(\s*<section className="ex-wallet-gateway"/);
+  // The Gateway section itself is no longer behind any execution-mode gate.
+  assert.equal(
+    /\{executionMode === "CIRCLE_USER_WALLET" && \(\s*<section className="ex-wallet-gateway"/.test(walletPage),
+    false,
+    'the Gateway section must render unconditionally for both human modes',
+  );
+  assert.match(walletPage, /<section className="ex-wallet-gateway" aria-label=\{t\.wallet\.gatewayFundingAriaLabel\}>/);
+  assert.match(walletPage, /<section className="ex-wallet-gateway" aria-label=\{t\.wallet\.gatewayDepositAriaLabel\}>/);
   assert.match(walletPage, /gatewayReadState === "ready" && gateway/);
   assert.match(walletPage, /gatewayBalanceUnavailable/);
   assert.match(walletPage, /gatewayRetry/);
   assert.match(walletPage, /gatewayFundingRecovery\) \|\| \(\s*gatewayReadState === "ready" && gatewaySources\.length > 0/);
   assert.match(walletPage, /t\.wallet\.gatewayNoTransferableBalance/);
   assert.equal(walletPage.includes('submitGatewayFunding'), false, 'wallet UI must not expose live broadcast control');
+
+  // Base Sepolia source deposit surfaces, for both modes, using config
+  // rather than scattered chain magic numbers.
+  assert.match(walletPage, /const BASE_SEPOLIA_SOURCE = \{/);
+  assert.match(walletPage, /confirmGatewayBaseDeposit/);
+  assert.match(walletPage, /confirmGatewayBurnSignature/);
+  assert.match(walletPage, /gatewayPrepareBaseWallet/);
+  assert.match(walletPage, /gatewaySwitchToBaseSepolia/);
+  assert.equal(walletPage.includes('AVAX') || walletPage.includes('Avalanche'), false, 'no other source domain may be exposed yet');
 
   await verifyBurnIntent();
   await verifyEstimate();

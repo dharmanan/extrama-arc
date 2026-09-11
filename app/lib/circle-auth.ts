@@ -132,6 +132,142 @@ export function clearCircleGatewayFundingRecovery() {
   window.sessionStorage.removeItem(CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY);
 }
 
+// Prepare Base Sepolia (Part C) is a one-shot wallet creation challenge, not a
+// financial action, but Circle still dedupes by idempotency key: a reload
+// before the challenge completes must reuse the SAME key and challenge id
+// rather than asking Circle to create a second, unrelated wallet challenge.
+export const CIRCLE_BASE_WALLET_RECOVERY_KEY = "extrema-circle-base-wallet-recovery-v1";
+
+export type CircleBaseWalletRecovery = {
+  idempotencyKey: string;
+  challengeId: string | null;
+  expiresAtMs: number;
+};
+
+export function readCircleBaseWalletRecovery(): CircleBaseWalletRecovery | null {
+  try {
+    const value = window.sessionStorage.getItem(CIRCLE_BASE_WALLET_RECOVERY_KEY);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as Partial<CircleBaseWalletRecovery>;
+    if (
+      typeof parsed.idempotencyKey !== "string" || !parsed.idempotencyKey ||
+      !(typeof parsed.challengeId === "string" || parsed.challengeId === null) ||
+      typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
+    ) return null;
+    return parsed as CircleBaseWalletRecovery;
+  } catch {
+    return null;
+  }
+}
+
+export function storeCircleBaseWalletRecovery(recovery: CircleBaseWalletRecovery) {
+  window.sessionStorage.setItem(CIRCLE_BASE_WALLET_RECOVERY_KEY, JSON.stringify(recovery));
+}
+
+export function clearCircleBaseWalletRecovery() {
+  window.sessionStorage.removeItem(CIRCLE_BASE_WALLET_RECOVERY_KEY);
+}
+
+// Gateway SOURCE deposit (Part D/E/F) recovery. Distinct from the funding
+// recovery above: this covers the approve-then-deposit phases that get USDC
+// into the unified balance, not the burn-intent signature that spends it.
+export const CIRCLE_GATEWAY_DEPOSIT_RECOVERY_KEY = "extrema-circle-gateway-deposit-recovery-v1";
+
+export type CircleGatewayDepositPhase =
+  | "APPROVAL_CHALLENGE"
+  | "APPROVAL_PENDING"
+  | "DEPOSIT_CHALLENGE"
+  | "DEPOSIT_PENDING";
+
+export type CircleGatewayDepositRecovery = {
+  requestId: string;
+  actionId: string;
+  sourceDomain: number;
+  amountRaw: string;
+  phase: CircleGatewayDepositPhase;
+  challengeId: string | null;
+  expiresAtMs: number;
+};
+
+export function readCircleGatewayDepositRecovery(): CircleGatewayDepositRecovery | null {
+  try {
+    const value = window.sessionStorage.getItem(CIRCLE_GATEWAY_DEPOSIT_RECOVERY_KEY);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as Partial<CircleGatewayDepositRecovery>;
+    const validPhase = parsed.phase === "APPROVAL_CHALLENGE" || parsed.phase === "APPROVAL_PENDING" ||
+      parsed.phase === "DEPOSIT_CHALLENGE" || parsed.phase === "DEPOSIT_PENDING";
+    if (
+      typeof parsed.requestId !== "string" || !parsed.requestId ||
+      typeof parsed.actionId !== "string" || !parsed.actionId ||
+      typeof parsed.sourceDomain !== "number" || !Number.isInteger(parsed.sourceDomain) || parsed.sourceDomain < 0 ||
+      typeof parsed.amountRaw !== "string" || !/^[1-9][0-9]*$/.test(parsed.amountRaw) ||
+      !validPhase ||
+      !(typeof parsed.challengeId === "string" || parsed.challengeId === null) ||
+      typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
+    ) return null;
+    return parsed as CircleGatewayDepositRecovery;
+  } catch {
+    return null;
+  }
+}
+
+export function storeCircleGatewayDepositRecovery(recovery: CircleGatewayDepositRecovery) {
+  window.sessionStorage.setItem(CIRCLE_GATEWAY_DEPOSIT_RECOVERY_KEY, JSON.stringify(recovery));
+}
+
+export function clearCircleGatewayDepositRecovery() {
+  window.sessionStorage.removeItem(CIRCLE_GATEWAY_DEPOSIT_RECOVERY_KEY);
+}
+
+// External wallet Gateway deposit/burn recovery holds only public recovery
+// identity: request/action ids, phase, source domain, value, and a tx hash or
+// expiry when known. The connected wallet itself is never stored here.
+export const EXTERNAL_GATEWAY_DEPOSIT_RECOVERY_KEY = "extrema-external-gateway-deposit-recovery-v1";
+
+export type ExternalGatewayDepositPhase = "APPROVAL_REQUIRED" | "DEPOSIT_REQUIRED" | "RECONCILING";
+
+export type ExternalGatewayDepositRecovery = {
+  requestId: string;
+  actionId: string;
+  sourceDomain: number;
+  amountRaw: string;
+  phase: ExternalGatewayDepositPhase;
+  approvalTxHash: string | null;
+  depositTxHash: string | null;
+  expiresAtMs: number;
+};
+
+export function readExternalGatewayDepositRecovery(): ExternalGatewayDepositRecovery | null {
+  try {
+    const value = window.sessionStorage.getItem(EXTERNAL_GATEWAY_DEPOSIT_RECOVERY_KEY);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as Partial<ExternalGatewayDepositRecovery>;
+    const validPhase = parsed.phase === "APPROVAL_REQUIRED" || parsed.phase === "DEPOSIT_REQUIRED" ||
+      parsed.phase === "RECONCILING";
+    if (
+      typeof parsed.requestId !== "string" || !parsed.requestId ||
+      typeof parsed.actionId !== "string" || !parsed.actionId ||
+      typeof parsed.sourceDomain !== "number" || !Number.isInteger(parsed.sourceDomain) || parsed.sourceDomain < 0 ||
+      typeof parsed.amountRaw !== "string" || !/^[1-9][0-9]*$/.test(parsed.amountRaw) ||
+      !validPhase ||
+      !(typeof parsed.approvalTxHash === "string" || parsed.approvalTxHash === null) ||
+      !(typeof parsed.depositTxHash === "string" || parsed.depositTxHash === null) ||
+      typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
+    ) return null;
+    return parsed as ExternalGatewayDepositRecovery;
+  } catch {
+    return null;
+  }
+}
+
+export function storeExternalGatewayDepositRecovery(recovery: ExternalGatewayDepositRecovery) {
+  window.sessionStorage.setItem(EXTERNAL_GATEWAY_DEPOSIT_RECOVERY_KEY, JSON.stringify(recovery));
+}
+
+export function clearExternalGatewayDepositRecovery() {
+  window.sessionStorage.removeItem(EXTERNAL_GATEWAY_DEPOSIT_RECOVERY_KEY);
+}
+
 // ---------------------------------------------------------------------------
 // Durable recovery for every other Circle financial action (transfer, refund,
 // claim, and the four marketplace actions). One record per tab, one intent at

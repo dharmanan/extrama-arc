@@ -412,12 +412,18 @@ assert.match(actions, /circleActionExecutionService\.verifyCircleAction\(/);
 assert.match(actions, /circleActionExecutionService\.verifyCircleActionApproval/);
 assert.ok(!walletPage.includes('createCircleWallet'));
 
-// Gateway preparation belongs only to a Circle EOA session. It may create a
-// typed-data challenge, but the wallet UI must never hold a burn/transfer/mint
-// implementation or a direct Gateway broadcast path.
+// Gateway is available to both human execution modes. The wallet page may
+// read balances, prepare a burn-intent signature, and drive a Base Sepolia
+// source deposit, but it must never hold a burn/transfer/mint calldata
+// implementation itself or a direct Gateway broadcast path: all of that
+// stays server-side (gatewayService/baseSepoliaService) or in the shared
+// gateway-actions helper, which the page only calls into.
+const gatewayActions = read('../../app/lib/gateway-actions.ts');
 assert.ok(walletPage.includes('backendApi.wallet.gatewayBalance()'));
-assert.ok(walletPage.includes('confirmCircleGatewayFunding'));
-assert.ok(!/gatewayTransfer|gatewayDeposit|gatewayMint|burnIntent|\/v1\/transfer/i.test(walletPage));
+assert.ok(walletPage.includes('confirmGatewayBurnSignature'));
+assert.ok(walletPage.includes('confirmGatewayBaseDeposit'));
+assert.ok(gatewayActions.includes('confirmCircleGatewayFunding'), 'Circle Gateway funding support must be preserved');
+assert.ok(!/gatewayTransfer|gatewayMint|burnIntent|\/v1\/transfer|encodeFunctionData/i.test(walletPage));
 
 console.log('multi wallet execution: PASS');
 }

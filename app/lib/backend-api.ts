@@ -630,22 +630,58 @@ export type GatewayBalanceResponse = {
     balanceRaw: string;
     transferable: boolean;
   }>;
-  executionMode: "CIRCLE_USER_WALLET";
+  executionMode: HumanExecutionMode;
+};
+
+export type GatewayTypedData = {
+  domain: Record<string, unknown>;
+  types: Record<string, unknown>;
+  primaryType: string;
+  message: Record<string, unknown>;
 };
 
 export type GatewayFundingResponse = {
   actionId: string;
   requestId: string;
+  executionMode: HumanExecutionMode;
   sourceDomain: number;
   valueRaw: string;
   payloadHash: string | null;
   challengeId: string | null;
+  // Only meaningful for an EXTERNAL_WALLET session: the exact EIP-712 message
+  // to sign locally. A CIRCLE_USER_WALLET session signs through the hosted
+  // challenge above instead and ignores this field.
+  typedData: GatewayTypedData | null;
   state: "PREPARING" | "SIGN_CHALLENGE_CREATING" | "SIGNATURE_PENDING" | "READY_TO_BROADCAST" | "SUBMITTING" | "SUBMITTED" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "SIGNATURE_FAILED" | "EXPIRED";
   pending: boolean;
   readyToBroadcast: boolean;
   broadcast: "NOT_SUBMITTED" | "SUBMITTED" | "COMPLETED";
   transferId: string | null;
   transactionHash: string | null;
+  expiresAt: string;
+};
+
+export type GatewayDepositResponse = {
+  actionId: string;
+  requestId: string;
+  executionMode: HumanExecutionMode;
+  sourceDomain: number;
+  sourceChainId: number;
+  amountRaw: string;
+  state: "STARTED" | "BASELINE_READ" | "APPROVAL_REQUIRED" | "APPROVAL_CHALLENGE" | "APPROVAL_PENDING" | "APPROVAL_VERIFIED" | "DEPOSIT_REQUIRED" | "DEPOSIT_CHALLENGE" | "DEPOSIT_PENDING" | "DEPOSIT_VERIFIED" | "RECONCILING" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "EXPIRED";
+  approvalTxHash: string | null;
+  approvalChallengeId: string | null;
+  depositTxHash: string | null;
+  depositChallengeId: string | null;
+  pending: boolean;
+  // Circle only: true once Circle has observed a transaction for the current
+  // challenge (even before it has a hash), so the caller never re-executes an
+  // already-approved hosted widget while still polling.
+  transactionObserved: boolean;
+  // Only present for an EXTERNAL_WALLET session: the exact next transaction
+  // (approve or deposit) for the connected wallet to sign.
+  transactionRequest: TransactionRequest | null;
+  lastError: string | null;
   expiresAt: string;
 };
 
@@ -663,8 +699,10 @@ export type EntryActionPayload = {
   expiresAt: string;
 };
 
+// 5042002 (Arc Testnet) for every existing action; 84532 (Base Sepolia) for
+// Gateway source approve/deposit transactions.
 export type TransactionRequest = {
-  chainId: 5042002;
+  chainId: number;
   to: string;
   data: string;
   value: string;
@@ -1135,6 +1173,22 @@ export const backendApi = {
         executionMode: "CIRCLE_USER_WALLET";
       }>("/circle/session", { userToken });
     },
+    // Both require an authenticated EXTREMA session (the proxy attaches it
+    // from the session cookie); the comparison target is always that
+    // session's own Arc address, never anything the browser supplies here.
+    baseSepoliaWallet(userToken: string) {
+      return post<{
+        wallet: { id: string; address: string; blockchain: "BASE-SEPOLIA"; accountType: "EOA" } | null;
+        arcAddress: string;
+      }>("/circle/wallet/base-sepolia", { userToken });
+    },
+    prepareBaseSepoliaWallet(userToken: string, idempotencyKey: string) {
+      return post<{
+        status: "EXISTING" | "CHALLENGE_REQUIRED";
+        wallet: { id: string; address: string; blockchain: "BASE-SEPOLIA"; accountType: "EOA" } | null;
+        challengeId: string | null;
+      }>("/circle/wallet/base-sepolia/prepare", { userToken, idempotencyKey });
+    },
   },
   rounds: {
     list() {
@@ -1346,7 +1400,7 @@ export const backendApi = {
       requestId: string;
       sourceDomain: number;
       valueRaw: string;
-      circleUserToken: string;
+      circleUserToken?: string;
     }) {
       return post<GatewayFundingResponse>("/wallet/gateway-funding/start", input);
     },
@@ -1357,10 +1411,33 @@ export const backendApi = {
       return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/submit`, {});
     },
     verifyGatewayFunding(actionId: string, input: {
-      circleUserToken: string;
+      circleUserToken?: string;
       signature?: string;
     }) {
       return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/verify`, input);
+    },
+    startGatewayDeposit(input: {
+      requestId: string;
+      sourceDomain: number;
+      amountRaw: string;
+      circleUserToken?: string;
+    }) {
+      return post<GatewayDepositResponse>("/wallet/gateway-deposit/start", input);
+    },
+    gatewayDeposit(actionId: string) {
+      return request<GatewayDepositResponse>(`/wallet/gateway-deposit/${actionId}`);
+    },
+    verifyGatewayDepositApproval(actionId: string, input: {
+      circleUserToken?: string;
+      txHash?: string;
+    }) {
+      return post<GatewayDepositResponse>(`/wallet/gateway-deposit/${actionId}/verify-approval`, input);
+    },
+    verifyGatewayDeposit(actionId: string, input: {
+      circleUserToken?: string;
+      txHash?: string;
+    }) {
+      return post<GatewayDepositResponse>(`/wallet/gateway-deposit/${actionId}/verify`, input);
     },
     chainState() {
       return request<{
