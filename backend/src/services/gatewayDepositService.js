@@ -53,10 +53,6 @@ function assertHumanSession(auth) {
   }
 }
 
-function isExpired(row) {
-  return new Date(row.expires_at).getTime() <= Date.now();
-}
-
 function publicAction(row, options = {}) {
   return {
     actionId: row.id,
@@ -108,6 +104,14 @@ function createGatewayDepositService({
   sourceChains = SOURCE_CHAINS,
   now = () => Date.now(),
 } = {}) {
+  function isExpired(row) {
+    return new Date(row.expires_at).getTime() <= now();
+  }
+
+  function hasBoundDepositTransaction(row) {
+    return typeof row.deposit_tx_hash === 'string' && ethers.isHexString(row.deposit_tx_hash, 32);
+  }
+
   function sourceConfigFor(sourceDomain) {
     const entry = sourceChains.get(sourceDomain);
     if (!entry) throw new Error('gateway_deposit_source_unsupported');
@@ -209,11 +213,23 @@ function createGatewayDepositService({
   }
 
   async function markExpired(row) {
-    if (isExpired(row) && !['COMPLETED', 'FAILED'].includes(row.state)) {
+    // The TTL protects unsubmitted approvals/challenges. A RECONCILING row is
+    // exempt only once a canonical source-chain deposit transaction hash has
+    // been durably bound; an accidental or malformed state transition must
+    // still fail closed instead of becoming immortal.
+    const submittedReconciliation =
+      row.state === 'RECONCILING' && hasBoundDepositTransaction(row);
+    if (isExpired(row) && !['COMPLETED', 'FAILED'].includes(row.state) && !submittedReconciliation) {
       const result = await database.query(
         `UPDATE gateway_deposit_actions
             SET state = 'EXPIRED', updated_at = NOW()
-          WHERE id = $1 AND state NOT IN ('COMPLETED', 'FAILED')
+          WHERE id = $1
+            AND state NOT IN ('COMPLETED', 'FAILED')
+            AND (
+              state <> 'RECONCILING'
+              OR deposit_tx_hash IS NULL
+              OR deposit_tx_hash !~ '^0x[0-9a-fA-F]{64}$'
+            )
           RETURNING *`,
         [row.id],
       );

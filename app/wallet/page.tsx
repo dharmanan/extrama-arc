@@ -14,15 +14,20 @@ import {
 } from "wagmi";
 import { arcTestnet, baseSepolia } from "../lib/web3";
 import { shortAddress, useWalletSession } from "../wallet-session";
-import { backendApi, isAuthSessionError, type GatewayFundingResponse, type TransactionRequest } from "../lib/backend-api";
+import { backendApi, isAuthSessionError, type GatewayDepositResponse, type GatewayFundingResponse, type TransactionRequest } from "../lib/backend-api";
 import {
   readCircleGatewayFundingRecovery,
   readCircleGatewayDepositRecovery,
   readExternalGatewayDepositRecovery,
   readCircleTabAuth,
+  storeCircleTabAuth,
   readCircleBaseWalletRecovery,
   storeCircleBaseWalletRecovery,
   clearCircleBaseWalletRecovery,
+  storeCircleGatewayDepositRecovery,
+  storeExternalGatewayDepositRecovery,
+  clearCircleGatewayDepositRecovery,
+  clearExternalGatewayDepositRecovery,
   type CircleGatewayFundingRecovery,
   type CircleGatewayDepositRecovery,
   type ExternalGatewayDepositRecovery,
@@ -30,6 +35,7 @@ import {
 } from "../lib/circle-auth";
 import { confirmGatewayBaseDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
 import { executeHostedChallenge } from "../lib/circle-actions";
+import { getCircleDeviceId } from "../lib/circle-actions";
 import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
 import { useConnectModal } from "@rainbow-me/rainbowkit";
@@ -81,6 +87,15 @@ type DepositPhaseLabel =
   | "waitingFinality"
   | "recovering";
 
+function isSubmittedGatewayDepositRecovery(
+  recovery: CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery | null,
+) {
+  if (!recovery) return false;
+  if ("challengeId" in recovery) {
+    return recovery.phase === "DEPOSIT_PENDING" || recovery.phase === "RECONCILING";
+  }
+  return recovery.phase === "RECONCILING";
+}
 
 const WALLET_MARKET_ASSETS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 
@@ -263,6 +278,8 @@ export default function WalletPage() {
   const [depositPhase, setDepositPhase] = useState<DepositPhaseLabel>("");
   const [depositError, setDepositError] = useState("");
   const [depositNotice, setDepositNotice] = useState("");
+  const [depositStatus, setDepositStatus] = useState<GatewayDepositResponse | null>(null);
+  const [depositStatusWarning, setDepositStatusWarning] = useState("");
   const [depositRecovery, setDepositRecovery] = useState<
     CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery | null
   >(null);
@@ -695,6 +712,93 @@ export default function WalletPage() {
     setDepositAmount(formatGatewayUsdcRaw(recovery.amountRaw));
   }, [executionMode]);
 
+  // A submitted Gateway deposit is reconciled with the same durable action.
+  // This effect is status-only: it never creates an intent, requests a wallet
+  // transaction, verifies a challenge, or opens Circle's hosted UI.
+  useEffect(() => {
+    if (!depositRecovery) return;
+    const recovery: CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery = depositRecovery;
+
+    let cancelled = false;
+    let timer: number | undefined;
+    let reading = false;
+
+    function persistReconcilingRecovery() {
+      if (recovery.phase === "RECONCILING") return;
+      if ("challengeId" in recovery) {
+        const next = { ...recovery, phase: "RECONCILING" as const };
+        storeCircleGatewayDepositRecovery(next);
+        setDepositRecovery(next);
+      } else {
+        const next = { ...recovery, phase: "RECONCILING" as const };
+        storeExternalGatewayDepositRecovery(next);
+        setDepositRecovery(next);
+      }
+    }
+
+    function clearCompletedRecovery() {
+      if ("challengeId" in recovery) clearCircleGatewayDepositRecovery();
+      else clearExternalGatewayDepositRecovery();
+      setDepositRecovery(null);
+      setDepositAmount("");
+    }
+
+    async function readStatus() {
+      if (reading || cancelled) return;
+      reading = true;
+      try {
+        const current = await backendApi.wallet.gatewayDeposit(recovery.actionId);
+        if (cancelled) return;
+        setDepositStatus(current);
+        setDepositStatusWarning("");
+
+        if (current.state === "RECONCILING") {
+          setDepositPhase("waitingFinality");
+          persistReconcilingRecovery();
+          timer = window.setTimeout(readStatus, 10_000);
+          return;
+        }
+
+        if (current.state === "COMPLETED") {
+          clearCompletedRecovery();
+          setDepositPhase("");
+          setDepositNotice(t.wallet.gatewayDepositComplete);
+          void refreshGatewayBalance();
+          void refreshBaseSourceState();
+          return;
+        }
+
+        if (current.state === "EXPIRED") {
+          setDepositPhase("");
+          setDepositError(t.wallet.gatewayDepositExpired);
+          return;
+        }
+
+        if (current.state === "FAILED" || current.state === "RECONCILIATION_REQUIRED") {
+          setDepositPhase("");
+          setDepositError(t.wallet.gatewayDepositStatusNeedsReview);
+        }
+      } catch {
+        if (!cancelled) {
+          // A status-read fault says nothing about a submitted deposit. Keep
+          // the recovery and the finality rail intact, then try the same read.
+          setDepositStatusWarning(t.wallet.gatewayFinalityStatusDelayed);
+          if (isSubmittedGatewayDepositRecovery(recovery)) {
+            timer = window.setTimeout(readStatus, 10_000);
+          }
+        }
+      } finally {
+        reading = false;
+      }
+    }
+
+    void readStatus();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [depositRecovery?.actionId, depositRecovery?.phase, t.wallet]);
+
   useEffect(() => {
     if (executionMode !== "EXTERNAL_WALLET") return;
     const recovery = readExternalGatewayDepositRecovery();
@@ -766,6 +870,8 @@ export default function WalletPage() {
     setDepositBusy(true);
     setDepositError("");
     setDepositNotice("");
+    setDepositStatus(null);
+    setDepositStatusWarning("");
     try {
       const result = await confirmGatewayBaseDeposit(
         { sourceDomain, amountRaw },
@@ -791,6 +897,12 @@ export default function WalletPage() {
         setDepositAmount("");
         void refreshGatewayBalance();
         void refreshBaseSourceState();
+      } else if (result.state === "RECONCILING") {
+        const recovery = executionMode === "CIRCLE_USER_WALLET"
+          ? readCircleGatewayDepositRecovery()
+          : readExternalGatewayDepositRecovery();
+        if (recovery) setDepositRecovery(recovery);
+        setDepositPhase("waitingFinality");
       } else {
         setDepositNotice(
           locale === "tr"
@@ -806,9 +918,11 @@ export default function WalletPage() {
         // recovery record is left exactly as it is for read-only
         // investigation and an explicit, deliberate decision.
         setDepositError(t.wallet.gatewayDepositExpired);
+      } else if (message === "gateway_deposit_pending_timeout") {
+        setDepositError(t.wallet.gatewayDepositStatusNeedsReview);
       } else {
         setDepositError(
-          message || (locale === "tr" ? "Gateway yatırması tamamlanamadı." : "Gateway deposit could not be completed."),
+          t.wallet.gatewayDepositCouldNotComplete,
         );
       }
     } finally {
@@ -816,6 +930,16 @@ export default function WalletPage() {
       setDepositPhase("");
     }
   }
+
+  // A backend status is authoritative. A stale tab recovery must never keep
+  // the waiting rail active after the durable action has reached a terminal
+  // state, but a just-restored submitted recovery may show the rail before
+  // its first successful status read.
+  const depositAwaitingFinality = depositStatus
+    ? depositStatus.state === "RECONCILING"
+    : isSubmittedGatewayDepositRecovery(depositRecovery);
+  const depositFinalityCompleted = depositStatus?.state === "COMPLETED";
+  const depositFinalityVisible = depositAwaitingFinality || depositFinalityCompleted;
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -829,13 +953,32 @@ export default function WalletPage() {
     setError("");
     setChainError("");
     const auth = readCircleTabAuth();
-    if (!auth) {
-      setCircleReauthRequired(true);
-      return;
-    }
     setBusy(t.wallet.restoringCircleSession);
     try {
-      const session = await backendApi.circle.session(auth.userToken);
+      let session: Awaited<ReturnType<typeof backendApi.circle.session>>;
+      if (auth) {
+        try {
+          session = await backendApi.circle.session(auth.userToken);
+        } catch {
+          const refreshed = await backendApi.circle.refreshSession(
+            await getCircleDeviceId(),
+          );
+          storeCircleTabAuth({
+            userToken: refreshed.userToken,
+            encryptionKey: refreshed.encryptionKey,
+          });
+          session = refreshed;
+        }
+      } else {
+        const refreshed = await backendApi.circle.refreshSession(
+          await getCircleDeviceId(),
+        );
+        storeCircleTabAuth({
+          userToken: refreshed.userToken,
+          encryptionKey: refreshed.encryptionKey,
+        });
+        session = refreshed;
+      }
       setWalletReady(session.walletAddress, "CIRCLE_USER_WALLET");
       setOwnerAddress(session.ownerAddress);
       setSessionNeedsAuth(false);
@@ -1122,6 +1265,27 @@ export default function WalletPage() {
                     </div>
                   )}
 
+                  {depositFinalityVisible && (
+                    <div className="ex-gateway-finality" aria-live="polite">
+                      <ol className="ex-gateway-finality__rail">
+                        <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
+                        <li data-state={depositFinalityCompleted ? "complete" : "active"}>
+                          {!depositFinalityCompleted && (
+                            <span className="ex-gateway-finality__pulse" aria-hidden="true" />
+                          )}
+                          {depositFinalityCompleted
+                            ? t.wallet.gatewayFinalityConfirmed
+                            : t.wallet.gatewayWaitingFinality}
+                        </li>
+                        <li data-state={depositFinalityCompleted ? "complete" : "pending"}>
+                          {t.wallet.gatewayBalanceAvailable}
+                        </li>
+                      </ol>
+                      <p>{depositFinalityCompleted ? t.wallet.gatewayDepositComplete : t.wallet.gatewayFinalityAdvice}</p>
+                      {depositStatusWarning && <small>{depositStatusWarning}</small>}
+                    </div>
+                  )}
+
                   {baseWalletStatus === "ready" && (
                     <div className="ex-wallet-gateway__controls">
                       <label>
@@ -1131,14 +1295,14 @@ export default function WalletPage() {
                           placeholder="0.000000"
                           value={depositAmount}
                           onChange={(event) => setDepositAmount(event.target.value)}
-                          disabled={depositBusy || Boolean(depositRecovery)}
+                          disabled={depositBusy || depositAwaitingFinality || Boolean(depositRecovery)}
                         />
                       </label>
                       <button
                         className="ex-btn ex-btn--ink"
                         type="button"
                         onClick={handleGatewayBaseDeposit}
-                        disabled={depositBusy}
+                        disabled={depositBusy || depositAwaitingFinality}
                       >
                         {depositBusy
                           ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval

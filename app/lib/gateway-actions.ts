@@ -64,7 +64,10 @@ async function pollDeposit(
 ): Promise<GatewayDepositResponse> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await read();
-    if (!result.pending) return result;
+    // RECONCILING is not an unobserved financial action. The deposit has
+    // already been submitted, so hand it back to the wallet's persistent,
+    // read-only finality rail instead of applying the pre-submit retry budget.
+    if (!result.pending || result.state === "RECONCILING") return result;
     await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
   }
   throw new Error("gateway_deposit_pending_timeout");
@@ -107,7 +110,7 @@ export async function confirmGatewayBurnSignature(
 // ---------------------------------------------------------------------------
 
 function isDepositTerminal(state: GatewayDepositResponse["state"]) {
-  return state === "COMPLETED" || state === "FAILED" || state === "RECONCILIATION_REQUIRED";
+  return state === "COMPLETED" || state === "FAILED" || state === "RECONCILIATION_REQUIRED" || state === "EXPIRED";
 }
 
 async function runExternalDeposit(
@@ -149,6 +152,10 @@ async function runExternalDeposit(
   }
 
   while (!isDepositTerminal(current.state)) {
+    if (current.state === "RECONCILING") {
+      onStatus?.("RECONCILING");
+      return current;
+    }
     if (current.state === "APPROVAL_REQUIRED") {
       onStatus?.("APPROVAL_REQUIRED");
       let approvalTxHash: string | null = recovery.approvalTxHash;
@@ -223,6 +230,10 @@ async function runCircleDeposit(
   }
 
   while (!isDepositTerminal(current.state)) {
+    if (current.state === "RECONCILING") {
+      onStatus?.("RECONCILING");
+      return current;
+    }
     if (current.state === "APPROVAL_CHALLENGE") {
       onStatus?.("APPROVAL_CHALLENGE");
       if (!current.transactionObserved && current.approvalChallengeId) {

@@ -39,6 +39,7 @@ import {
   storeCircleActionRecovery,
   storeCircleEntryRecovery,
   storeCircleGatewayFundingRecovery,
+  storeCircleTabAuth,
   type CircleActionRecovery,
   type CircleEntryRecovery,
   type CircleGatewayFundingRecovery,
@@ -73,6 +74,37 @@ const EXTREMA_SESSION_ERRORS = new Set([
 
 let circleSessionRefreshPromise: Promise<unknown> | null = null;
 
+// This creates only the Circle SDK device context needed by the documented
+// refresh endpoint. It does not set authentication, create a challenge, or
+// execute a transaction.
+export async function getCircleDeviceId() {
+  const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
+  if (!appId) throw new Error("circle_reauthentication_required");
+  const module = await import("@circle-fin/w3s-pw-web-sdk");
+  const sdk = new module.W3SSdk({ appSettings: { appId } }) as unknown as CircleSdk;
+  return sdk.getDeviceId();
+}
+
+async function restoreExtremaCircleSession(userToken: string) {
+  try {
+    await backendApi.circle.session(userToken);
+    return;
+  } catch (sessionCause) {
+    // A persisted EXTREMA session can safely authorize a Circle token refresh.
+    // If it has expired too, this call fails closed and the caller shows the
+    // ordinary hosted Circle sign-in rather than attempting a challenge.
+    const tabAuth = readCircleTabAuth();
+    if (!tabAuth) throw sessionCause;
+    const refreshed = await backendApi.circle.refreshSession(
+      await getCircleDeviceId(),
+    );
+    storeCircleTabAuth({
+      userToken: refreshed.userToken,
+      encryptionKey: refreshed.encryptionKey,
+    });
+  }
+}
+
 async function withFreshExtremaCircleSession<T>(
   userToken: string,
   operation: () => Promise<T>,
@@ -88,8 +120,7 @@ async function withFreshExtremaCircleSession<T>(
     }
 
     if (!circleSessionRefreshPromise) {
-      circleSessionRefreshPromise = backendApi.circle
-        .session(userToken)
+      circleSessionRefreshPromise = restoreExtremaCircleSession(userToken)
         .finally(() => {
           circleSessionRefreshPromise = null;
         });

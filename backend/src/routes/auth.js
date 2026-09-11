@@ -159,6 +159,12 @@ router.get('/session', requireAuth, async (req, res) => {
 router.post('/logout', requireAuth, async (req, res, next) => {
   try {
     await sessionService.revokeSession(req.auth.jti);
+    if (req.auth.executionMode === 'CIRCLE_USER_WALLET' && req.auth.circleWalletId) {
+      await db.query(
+        'DELETE FROM circle_refresh_credentials WHERE user_id = $1 AND circle_wallet_id = $2',
+        [req.auth.userId, req.auth.circleWalletId],
+      );
+    }
     res.json({ ok: true });
   } catch (error) {
     next(error);

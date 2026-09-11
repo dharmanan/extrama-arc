@@ -380,6 +380,8 @@ export default function PoolDetailPage() {
   const [entryBusy, setEntryBusy] = useState("");
   const [entryError, setEntryError] = useState("");
   const entriesRequestId = useRef(0);
+  const entriesRefreshInFlight = useRef(false);
+  const queuedEntriesRefresh = useRef<LivePool | null>(null);
   const circleEntryRequestId = useRef<string | null>(null);
   const [authoritativeWalletAddress, setAuthoritativeWalletAddress] = useState<string | null>(null);
   const [entrySuccess, setEntrySuccess] = useState<{
@@ -395,7 +397,18 @@ export default function PoolDetailPage() {
   // The distribution is a separate read from a separate contract call, so a
   // failure there must never take the round view down with it.
   const refreshEntries = useCallback(async (pool: LivePool) => {
+    if (entriesRefreshInFlight.current) {
+      // Keep only the newest requested round and run it after the active
+      // read. This prevents overlapping RPC work without accepting stale
+      // distribution data when a round turns over.
+      queuedEntriesRefresh.current = pool;
+      return;
+    }
+    // Only an actual outbound request may invalidate an active result. A
+    // queued refresh waits its turn without making the current successful
+    // response stale before it has had a chance to render.
     const requestId = ++entriesRequestId.current;
+    entriesRefreshInFlight.current = true;
 
     try {
       const result =
@@ -508,17 +521,26 @@ export default function PoolDetailPage() {
         return;
       }
 
-      setEntriesState(null);
+      // A temporary distribution read failure is not evidence that the last
+      // valid public entries disappeared. Retain them and surface the error.
       setEntriesError(true);
+    } finally {
+      entriesRefreshInFlight.current = false;
+      const queued = queuedEntriesRefresh.current;
+      queuedEntriesRefresh.current = null;
+      if (queued) void refreshEntries(queued);
     }
   }, [address, executionMode]);
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setInterval> | null = null;
+    let refreshing = false;
     setLoading(true);
 
     async function refresh() {
+      if (refreshing) return;
+      refreshing = true;
       try {
         const result = await backendApi.rounds.get(params.slug);
         let nextPool = result.pool;
@@ -540,9 +562,11 @@ export default function PoolDetailPage() {
         void refreshEntries(result.pool);
       } catch (err: unknown) {
         if (cancelled) return;
-        setState(null);
+        // Retain the last confirmed round when a later read is temporarily
+        // unavailable. A transient network fault must not erase live data.
         setError(err instanceof Error ? err.message : "Unable to read pool.");
       } finally {
+        refreshing = false;
         if (!cancelled) setLoading(false);
       }
     }

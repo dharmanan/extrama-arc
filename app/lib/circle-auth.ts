@@ -177,7 +177,8 @@ export type CircleGatewayDepositPhase =
   | "APPROVAL_CHALLENGE"
   | "APPROVAL_PENDING"
   | "DEPOSIT_CHALLENGE"
-  | "DEPOSIT_PENDING";
+  | "DEPOSIT_PENDING"
+  | "RECONCILING";
 
 export type CircleGatewayDepositRecovery = {
   requestId: string;
@@ -195,7 +196,8 @@ export function readCircleGatewayDepositRecovery(): CircleGatewayDepositRecovery
     if (!value) return null;
     const parsed = JSON.parse(value) as Partial<CircleGatewayDepositRecovery>;
     const validPhase = parsed.phase === "APPROVAL_CHALLENGE" || parsed.phase === "APPROVAL_PENDING" ||
-      parsed.phase === "DEPOSIT_CHALLENGE" || parsed.phase === "DEPOSIT_PENDING";
+      parsed.phase === "DEPOSIT_CHALLENGE" || parsed.phase === "DEPOSIT_PENDING" ||
+      parsed.phase === "RECONCILING";
     if (
       typeof parsed.requestId !== "string" || !parsed.requestId ||
       typeof parsed.actionId !== "string" || !parsed.actionId ||

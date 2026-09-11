@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 export const preferredRegion = "hkg1";
 
 const COOKIE_NAME = "extrema_session";
-const SESSION_MAX_AGE = 30 * 60;
+// Must match backend/src/config.js's JWT_TTL_SECONDS default: seven days.
+const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
 
 const BINANCE_MARK_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "HYPEUSDT"] as const;
 type BinanceMarkSymbol = (typeof BINANCE_MARK_SYMBOLS)[number];

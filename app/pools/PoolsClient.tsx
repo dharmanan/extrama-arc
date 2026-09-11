@@ -329,8 +329,12 @@ export default function PoolsClient() {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setInterval> | null = null;
+    let refreshing = false;
 
     async function refresh() {
+      // A slow Arc read must not pile up another identical read every minute.
+      if (refreshing) return;
+      refreshing = true;
       try {
         const state = await backendApi.rounds.list();
         let nextPools = state.pools;
@@ -351,6 +355,7 @@ export default function PoolsClient() {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Unable to read Arc Testnet rounds.");
       } finally {
+        refreshing = false;
         if (!cancelled) setLoading(false);
       }
     }
@@ -448,7 +453,7 @@ export default function PoolsClient() {
 
         {loading && <p className="ex-pools__note">{t.readingRounds}</p>}
 
-        {!loading && error && (
+        {!loading && error && pools.length === 0 && (
           <div className="ex-pools__error">
             <h2 className="ex-display ex-display--md">{t.roundUnavailable}</h2>
             <p className="ex-lede">{error}</p>
@@ -456,7 +461,7 @@ export default function PoolsClient() {
           </div>
         )}
 
-        {!loading && !error && (
+        {!loading && (!error || pools.length > 0) && (
           <div className="ex-board">
             {groups.map((group) => (
               <AssetSection

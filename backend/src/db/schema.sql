@@ -56,6 +56,20 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 CREATE INDEX IF NOT EXISTS auth_sessions_user_idx
   ON auth_sessions(user_id);
 
+-- Social/email Circle refresh credentials are required to obtain a new
+-- short-lived userToken without another OTP. They remain server-only and
+-- encrypted with the existing application encryption service; no browser
+-- storage, EXTREMA JWT, or normal response contains the refresh token.
+CREATE TABLE IF NOT EXISTS circle_refresh_credentials (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  circle_wallet_id UUID NOT NULL,
+  user_token_encrypted TEXT NOT NULL,
+  refresh_token_encrypted TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, circle_wallet_id)
+);
+
 -- Migration-safe execution identity. Existing rows remain legacy backend
 -- wallet sessions; new external-wallet sessions persist their economic wallet
 -- address explicitly instead of overloading owner_address.

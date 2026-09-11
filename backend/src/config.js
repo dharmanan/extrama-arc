@@ -9,7 +9,9 @@ const schema = z.object({
   ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, 'ENCRYPTION_KEY must be 64 hex characters'),
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
-  JWT_TTL_SECONDS: z.coerce.number().int().positive().default(1800),
+  // Application authentication only. Financial actions retain their own
+  // short, explicit approval/recovery lifetimes.
+  JWT_TTL_SECONDS: z.coerce.number().int().positive().default(604800),
   // Optional during rollout. Circle routes fail closed until this server-only
   // credential is configured; the browser never receives it.
   CIRCLE_API_KEY: z.string().min(1).optional(),

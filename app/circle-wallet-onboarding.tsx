@@ -7,6 +7,7 @@ import { storeCircleTabAuth } from "./lib/circle-auth";
 type CircleLoginResult = {
   userToken: string;
   encryptionKey: string;
+  refreshToken?: string;
 };
 
 type CircleSdk = {
@@ -60,10 +61,13 @@ function clearCircleTransientState() {
 
 const CIRCLE_SESSION_RETRY_DELAYS_MS = [500, 1000, 1500, 2000] as const;
 
-async function createCircleSessionWhenIndexed(userToken: string) {
+async function createCircleSessionWhenIndexed(
+  userToken: string,
+  refresh?: { refreshToken: string; deviceId: string },
+) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await backendApi.circle.session(userToken);
+      return await backendApi.circle.session(userToken, refresh);
     } catch (cause) {
       const retryable =
         cause instanceof Error &&
@@ -129,12 +133,23 @@ export function CircleWalletOnboarding({
     setBusy("Securing your EXTREMA session...");
     // The backend re-lists the Arc EOA using this Circle-authenticated token;
     // no address or Circle wallet ID is accepted from the browser.
-    const session = await createCircleSessionWhenIndexed(auth.userToken);
+    // Circle returns a refresh token only from its hosted login. The browser
+    // forwards it once, over the authenticated application route, for
+    // encrypted server-side storage; it is never put in tab recovery,
+    // localStorage, or a URL.
+    const deviceId = await sdk.getDeviceId();
+    const session = await createCircleSessionWhenIndexed(
+      auth.userToken,
+      auth.refreshToken ? { refreshToken: auth.refreshToken, deviceId } : undefined,
+    );
     clearCircleTransientState();
     try {
       // Required only to authorize future Circle hosted challenges. It is scoped
       // to this browser tab and is never written to localStorage or a URL.
-      storeCircleTabAuth(auth);
+      storeCircleTabAuth({
+        userToken: auth.userToken,
+        encryptionKey: auth.encryptionKey,
+      });
     } catch {
       // A session is still valid; a later Circle transaction will request login again.
     }

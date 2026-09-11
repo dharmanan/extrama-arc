@@ -1165,13 +1165,26 @@ export const backendApi = {
         challengeId: string | null;
       }>("/circle/wallet/initialize", { userToken, idempotencyKey });
     },
-    session(userToken: string) {
+    session(
+      userToken: string,
+      refresh?: { refreshToken: string; deviceId: string },
+    ) {
       return post<{
         ownerAddress: string;
         walletAddress: string;
         circleWalletId: string;
         executionMode: "CIRCLE_USER_WALLET";
-      }>("/circle/session", { userToken });
+      }>("/circle/session", { userToken, ...refresh });
+    },
+    refreshSession(deviceId: string) {
+      return post<{
+        userToken: string;
+        encryptionKey: string;
+        ownerAddress: string;
+        walletAddress: string;
+        circleWalletId: string;
+        executionMode: "CIRCLE_USER_WALLET";
+      }>("/circle/session/refresh", { deviceId });
     },
     // Both require an authenticated EXTREMA session (the proxy attaches it
     // from the session cookie); the comparison target is always that

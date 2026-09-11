@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { ethers } = require('ethers');
 const config = require('../config');
 
@@ -203,6 +204,40 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
   // compare its address against the session's own canonical Arc address.
   async function listBaseSepoliaEoa(userToken) {
     return pickBaseSepoliaEoa(await listWalletsForBlockchain(userToken, BASE_SEPOLIA));
+  }
+
+  // Official Circle social/email refresh endpoint. This only rotates a
+  // short-lived user session token; it creates no wallet, transaction, or
+  // hosted challenge.
+  async function refreshUserToken({ userToken, refreshToken, deviceId }) {
+    if (typeof userToken !== 'string' || !userToken ||
+        typeof refreshToken !== 'string' || !refreshToken ||
+        typeof deviceId !== 'string' || !deviceId) {
+      throw new Error('circle_request_invalid');
+    }
+    try {
+      const response = await getClient().refreshUserToken({
+        userToken,
+        refreshToken,
+        deviceId,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      const data = response?.data;
+      if (typeof data?.userToken !== 'string' || !data.userToken ||
+          typeof data?.encryptionKey !== 'string' || !data.encryptionKey) {
+        throw new Error('circle_response_invalid');
+      }
+      return {
+        userToken: data.userToken,
+        encryptionKey: data.encryptionKey,
+        refreshToken: typeof data.refreshToken === 'string' && data.refreshToken
+          ? data.refreshToken
+          : refreshToken,
+      };
+    } catch (error) {
+      if (error?.message?.startsWith('circle_')) throw error;
+      throw safeCircleError(error);
+    }
   }
 
   async function createSocialDeviceToken({ deviceId, idempotencyKey }) {
@@ -532,6 +567,7 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     initializeArcEoa,
     listArcEoa,
     listBaseSepoliaEoa,
+    refreshUserToken,
     prepareBaseSepoliaEoa,
     createContractExecutionChallenge,
     getContractExecutionChallenge,

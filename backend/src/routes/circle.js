@@ -8,6 +8,7 @@ const { z } = require('zod');
 const db = require('../db');
 const sessionService = require('../services/sessionService');
 const circleUserWalletService = require('../services/circleUserWalletService');
+const { encrypt, decrypt } = require('../services/cryptoService');
 const { requireAuth } = require('../middleware/auth');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
 
@@ -39,6 +40,11 @@ const userToken = z.string().min(1).max(8192);
 const socialSchema = z.object({ deviceId, idempotencyKey });
 const emailSchema = z.object({ deviceId, email: z.string().email().max(254), idempotencyKey });
 const userTokenSchema = z.object({ userToken });
+const circleSessionSchema = userTokenSchema.extend({
+  refreshToken: z.string().min(16).max(8192).optional(),
+  deviceId: z.string().min(1).max(512).optional(),
+});
+const refreshSessionSchema = z.object({ deviceId: z.string().min(1).max(512) });
 const initializeSchema = userTokenSchema.extend({ idempotencyKey });
 
 async function findOrCreateCircleUser(walletAddress) {
@@ -164,7 +170,8 @@ router.post('/wallet/base-sepolia/prepare', walletLimiter, requireAuth, async (r
 
 router.post('/session', walletLimiter, async (req, res, next) => {
   try {
-    const token = userTokenSchema.parse(req.body).userToken;
+    const input = circleSessionSchema.parse(req.body);
+    const token = input.userToken;
     // The address and Circle wallet ID are both derived from Circle's
     // authenticated listing; a browser can never nominate either field.
     const wallet = await circleUserWalletService.listArcEoa(token);
@@ -175,9 +182,62 @@ router.post('/session', walletLimiter, async (req, res, next) => {
       walletAddress: wallet.address,
       circleWalletId: wallet.id,
     });
+    if (input.refreshToken && input.deviceId) {
+      await db.query(
+        `INSERT INTO circle_refresh_credentials
+          (user_id, circle_wallet_id, user_token_encrypted, refresh_token_encrypted)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, circle_wallet_id) DO UPDATE
+           SET user_token_encrypted = EXCLUDED.user_token_encrypted,
+               refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+               updated_at = NOW()`,
+        [user.id, wallet.id, encrypt(token), encrypt(input.refreshToken)],
+      );
+    }
     res.json({
       token: extremaToken,
       ownerAddress: wallet.address,
+      walletAddress: wallet.address,
+      circleWalletId: wallet.id,
+      executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
+    });
+  } catch (error) { next(error); }
+});
+
+router.post('/session/refresh', walletLimiter, requireAuth, async (req, res, next) => {
+  try {
+    if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET || !req.auth.circleWalletId) {
+      return res.status(409).json({ error: 'circle_wallet_session_required' });
+    }
+    const { deviceId } = refreshSessionSchema.parse(req.body);
+    const stored = await db.query(
+      `SELECT user_token_encrypted, refresh_token_encrypted
+         FROM circle_refresh_credentials
+        WHERE user_id = $1 AND circle_wallet_id = $2
+        LIMIT 1`,
+      [req.auth.userId, req.auth.circleWalletId],
+    );
+    if (!stored.rows.length) return res.status(401).json({ error: 'circle_reauthentication_required' });
+
+    const rotated = await circleUserWalletService.refreshUserToken({
+      userToken: decrypt(stored.rows[0].user_token_encrypted),
+      refreshToken: decrypt(stored.rows[0].refresh_token_encrypted),
+      deviceId,
+    });
+    const wallet = await circleUserWalletService.listArcEoa(rotated.userToken);
+    if (!wallet || wallet.id !== req.auth.circleWalletId || wallet.address.toLowerCase() !== req.auth.walletAddress.toLowerCase()) {
+      throw new Error('circle_session_identity_mismatch');
+    }
+    await db.query(
+      `UPDATE circle_refresh_credentials
+          SET user_token_encrypted = $3, refresh_token_encrypted = $4, updated_at = NOW()
+        WHERE user_id = $1 AND circle_wallet_id = $2`,
+      [req.auth.userId, req.auth.circleWalletId, encrypt(rotated.userToken), encrypt(rotated.refreshToken)],
+    );
+    res.json({
+      userToken: rotated.userToken,
+      encryptionKey: rotated.encryptionKey,
+      ownerAddress: req.auth.ownerAddress,
       walletAddress: wallet.address,
       circleWalletId: wallet.id,
       executionMode: EXECUTION_MODES.CIRCLE_USER_WALLET,
