@@ -2320,8 +2320,9 @@ img{max-width:100%}
   border-block:1px solid var(--line-strong);
 }
 
-/* Circle sessions with a funded Gateway balance add a third figure. It stays on
-   one row so the wallet ready state keeps its height and symmetry. */
+/* Circle sessions keep a third Gateway figure for loading, zero, and funded
+   balances alike. It stays on one row so the wallet ready state keeps its
+   height and symmetry. */
 .ex-wallet-summary[data-columns="3"]{
   grid-template-columns:repeat(3,minmax(0,1fr));
 }

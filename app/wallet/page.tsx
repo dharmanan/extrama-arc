@@ -24,6 +24,7 @@ import { readBinanceLiveMarket } from "../lib/live-market";
 // Two entry choices only: Circle (Google or email) or a connected EVM
 // wallet. "choice" is the connected wallet's single login signature.
 type Step = "owner" | "choice" | "ready";
+type GatewayReadState = "idle" | "loading" | "ready" | "error";
 
 
 const WALLET_MARKET_ASSETS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -47,9 +48,10 @@ function formatWalletMarketPrice(value: string, locale: "en" | "tr") {
 
 // Gateway balances arrive as canonical 6 decimal raw units. The backend already
 // validates them, but the wallet page must never crash on an unexpected value,
-// so anything that is not a positive integer string counts as no Gateway
-// balance. Digit inspection keeps this exact at any size without BigInt, which
-// this project's ES2017 target does not allow as a literal.
+// so anything that is not a positive integer string counts as no transferable
+// Gateway source balance. Digit inspection keeps this exact at any size
+// without BigInt, which this project's ES2017 target does not allow as a
+// literal.
 function hasPositiveRawAmount(value: string) {
   return /^\d+$/.test(value) && !/^0+$/.test(value);
 }
@@ -176,6 +178,7 @@ export default function WalletPage() {
   const [chainBusy, setChainBusy] = useState("");
   const [chainError, setChainError] = useState("");
   const [gateway, setGateway] = useState<Awaited<ReturnType<typeof backendApi.wallet.gatewayBalance>> | null>(null);
+  const [gatewayReadState, setGatewayReadState] = useState<GatewayReadState>("idle");
   const [gatewaySourceDomain, setGatewaySourceDomain] = useState("");
   const [gatewayAmount, setGatewayAmount] = useState("");
   const [gatewayFundingBusy, setGatewayFundingBusy] = useState(false);
@@ -282,13 +285,17 @@ export default function WalletPage() {
 
   // Gateway is supplemental and Circle only. It is read separately from the Arc
   // chain state so that a Gateway outage can never surface as a wallet error,
-  // an Arc balance failure or a broken session. Every failure resolves to null,
-  // which simply hides the Gateway figure.
+  // an Arc balance failure or a broken session. The explicit read state keeps a
+  // failed read distinct from a successful zero balance.
   async function refreshGatewayBalance() {
+    setGatewayReadState("loading");
     try {
-      setGateway(await backendApi.wallet.gatewayBalance());
+      const result = await backendApi.wallet.gatewayBalance();
+      setGateway(result);
+      setGatewayReadState("ready");
     } catch {
       setGateway(null);
+      setGatewayReadState("error");
     }
   }
 
@@ -304,6 +311,7 @@ export default function WalletPage() {
     }
 
     setGateway(null);
+    setGatewayReadState("idle");
   }, [step, walletStatus, walletAddress, executionMode]);
 
   useEffect(() => {
@@ -390,10 +398,12 @@ export default function WalletPage() {
     setStep("owner");
   }
 
-  const gatewayFunded = gateway !== null && hasPositiveRawAmount(gateway.totalRaw);
   const gatewaySources = gateway?.balances.filter(
     (item) => item.transferable && hasPositiveRawAmount(item.balanceRaw),
   ) || [];
+  const gatewayCanPrepare = Boolean(gatewayFundingRecovery) || (
+    gatewayReadState === "ready" && gatewaySources.length > 0
+  );
   const selectedGatewaySource = gatewaySources.find(
     (item) => String(item.domain) === gatewaySourceDomain,
   ) || gatewaySources[0] || null;
@@ -499,7 +509,7 @@ export default function WalletPage() {
               ) : chainState ? (
                 <div
                   className="ex-wallet-summary"
-                  data-columns={gatewayFunded ? "3" : "2"}
+                  data-columns={executionMode === "CIRCLE_USER_WALLET" ? "3" : "2"}
                 >
                   <div className="ex-wallet-summary__item">
                     <span>Network</span>
@@ -517,11 +527,15 @@ export default function WalletPage() {
                     </strong>
                   </div>
 
-                  {gateway && gatewayFunded && (
+                  {executionMode === "CIRCLE_USER_WALLET" && (
                     <div className="ex-wallet-summary__item">
                       <span>{t.wallet.gatewayBalance}</span>
                       <strong className="ex-num">
-                        {gateway.totalUsdc} {gateway.token}
+                        {gatewayReadState === "ready" && gateway
+                          ? `${gateway.totalUsdc} ${gateway.token}`
+                          : gatewayReadState === "loading" || gatewayReadState === "idle"
+                            ? t.wallet.gatewayReading
+                            : t.wallet.gatewayBalanceUnavailable}
                       </strong>
                     </div>
                   )}
@@ -532,62 +546,79 @@ export default function WalletPage() {
 
               {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
 
-              {executionMode === "CIRCLE_USER_WALLET" && (gatewaySources.length > 0 || gatewayFundingRecovery) && (
-                <section className="ex-wallet-gateway" aria-label="Gateway funding preparation">
+              {executionMode === "CIRCLE_USER_WALLET" && (
+                <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>
                   <div>
-                    <p className="ex-eyebrow">Gateway</p>
-                    <h3>{locale === "tr" ? "Arc için USDC hazırla." : "Prepare USDC for Arc."}</h3>
-                    <p>
-                      {locale === "tr"
-                        ? "Tek bir kaynak domain seç. Bu adım sadece EIP-712 imzasını hazırlar; USDC yakmaz veya transfer göndermez."
-                        : "Choose one source domain. This only prepares an EIP-712 signature; it does not burn USDC or submit a transfer."}
-                    </p>
+                    <p className="ex-eyebrow">{t.wallet.gateway}</p>
+                    <h3>{t.wallet.gatewayPrepareTitle}</h3>
+                    {gatewayReadState === "loading" || gatewayReadState === "idle" ? (
+                      <p>{t.wallet.gatewayReading}</p>
+                    ) : gatewayReadState === "error" ? (
+                      <>
+                        <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                          {t.wallet.gatewayBalanceUnavailable}
+                        </p>
+                        <button
+                          className="ex-btn ex-btn--ghost"
+                          type="button"
+                          onClick={() => void refreshGatewayBalance()}
+                        >
+                          {t.wallet.gatewayRetry}
+                        </button>
+                      </>
+                    ) : gatewayCanPrepare ? (
+                      <p>{t.wallet.gatewayPrepareBody}</p>
+                    ) : (
+                      <p>{t.wallet.gatewayNoTransferableBalance}</p>
+                    )}
                   </div>
-                  <div className="ex-wallet-gateway__controls">
-                    <label>
-                      <span>{locale === "tr" ? "Kaynak" : "Source"}</span>
-                      <select
-                        value={selectedGatewaySource ? String(selectedGatewaySource.domain) : ""}
-                        onChange={(event) => setGatewaySourceDomain(event.target.value)}
-                        disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
+                  {gatewayCanPrepare && (
+                    <div className="ex-wallet-gateway__controls">
+                      <label>
+                        <span>{t.wallet.gatewaySource}</span>
+                        <select
+                          value={selectedGatewaySource ? String(selectedGatewaySource.domain) : ""}
+                          onChange={(event) => setGatewaySourceDomain(event.target.value)}
+                          disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
+                        >
+                          {gatewaySources.map((item) => (
+                            <option key={item.domain} value={item.domain}>
+                              {`Domain ${item.domain} · ${item.balance} USDC`}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>{t.wallet.gatewayAmount}</span>
+                        <input
+                          inputMode="decimal"
+                          placeholder="0.000000"
+                          value={gatewayAmount}
+                          onChange={(event) => setGatewayAmount(event.target.value)}
+                          disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
+                        />
+                      </label>
+                      <button
+                        className="ex-btn ex-btn--ink"
+                        type="button"
+                        onClick={handleGatewayFunding}
+                        disabled={gatewayFundingBusy || Boolean(gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING")}
                       >
-                        {gatewaySources.map((item) => (
-                          <option key={item.domain} value={item.domain}>
-                            {`Domain ${item.domain} · ${item.balance} USDC`}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>{locale === "tr" ? "USDC tutarı" : "USDC amount"}</span>
-                      <input
-                        inputMode="decimal"
-                        placeholder="0.000000"
-                        value={gatewayAmount}
-                        onChange={(event) => setGatewayAmount(event.target.value)}
-                        disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
-                      />
-                    </label>
-                    <button
-                      className="ex-btn ex-btn--ink"
-                      type="button"
-                      onClick={handleGatewayFunding}
-                      disabled={gatewayFundingBusy || Boolean(gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING")}
-                    >
-                      {gatewayFundingBusy
-                        ? (locale === "tr" ? "İmza hazırlanıyor…" : "Preparing signature…")
-                        : gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING"
-                          ? (locale === "tr" ? `Gateway durumu: ${gatewayFundingStatus.state}` : `Gateway status: ${gatewayFundingStatus.state}`)
-                        : gatewayFundingRecovery
-                          ? (locale === "tr" ? "Gateway imzasına devam et" : "Resume Gateway signature")
-                          : (locale === "tr" ? "Gateway imzasını hazırla" : "Prepare Gateway signature")}
-                    </button>
-                  </div>
+                        {gatewayFundingBusy
+                          ? t.wallet.gatewayPreparingSignature
+                          : gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING"
+                            ? `${t.wallet.gatewayStatus}: ${gatewayFundingStatus.state}`
+                          : gatewayFundingRecovery
+                            ? t.wallet.gatewayResumeSignature
+                            : t.wallet.gatewayPrepareSignature}
+                      </button>
+                    </div>
+                  )}
                   {gatewayFundingNotice && <p className="ex-entry__msg" data-tone="ok">{gatewayFundingNotice}</p>}
                   {gatewayFundingError && <p className="ex-entry__msg" data-tone="error">{gatewayFundingError}</p>}
                   {gatewayFundingStatus && (
                     <p className="ex-entry__msg" aria-live="polite">
-                      {locale === "tr" ? `Gateway durumu: ${gatewayFundingStatus.state}` : `Gateway status: ${gatewayFundingStatus.state}`}
+                      {`${t.wallet.gatewayStatus}: ${gatewayFundingStatus.state}`}
                       {gatewayFundingStatus.transferId ? ` · ${gatewayFundingStatus.transferId}` : ""}
                     </p>
                   )}

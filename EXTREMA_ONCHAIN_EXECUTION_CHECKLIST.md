@@ -229,21 +229,19 @@ IMPLEMENTED:
 
 CURRENT PRODUCTION SAFETY: `EXTREMA_ENABLE_GATEWAY_BROADCAST=false`
 
-UI CURRENT ISSUE / ACTIVE WORK:
+UI VISIBILITY STATUS: **IMPLEMENTED / VALIDATED.**
 
-- The Gateway UI previously disappeared when the Gateway balance was zero, unavailable, or had no transferable source.
-- The Circle Gateway surface must stay visible and honest for Circle sessions:
-  - a known zero shows 0 USDC
-  - unavailable shows unavailable instead of disappearing
-  - a positive transferable source may show the existing preparation flow
-  - recovery stays visible
-- An external wallet session must not receive a Circle Gateway funding action.
+- Circle Gateway remains visible for loading, known zero, positive balance, no transferable source, and read failure states.
+- A known zero shows `0 USDC`.
+- A read failure shows an unavailable state with retry.
+- Existing recovery remains visible.
+- An external wallet session still has no Gateway funding action.
+- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
 
 LIVE PROOF STATUS: **NOT LIVE PROVEN.**
 
 Still required:
 
-- [ ] UI visibility correction
 - [ ] Read only production prerequisites
 - [ ] Explicit Koray approval before enabling broadcast
 - [ ] One controlled real Gateway transfer
@@ -1964,6 +1962,8 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
 - [x] RPC retry, failover and write safety
 - [x] Result immediate historical snapshot UX
 - [x] Verify Result user facing proof UX
+- [x] Circle Gateway UI visibility correction
+  - Proof: Circle loading, known-zero, positive, no-transferable-source, read-failure, recovery, and external-wallet visibility states are covered by deterministic UI validation: `GATEWAY_WALLET_UI=PASS`.
 
 ### Remaining open work
 

@@ -439,17 +439,25 @@ async function verifyForwardingClient() {
   assert.ok(!gatewayReader.includes('setSessionNeedsAuth'));
   assert.ok(!gatewayReader.includes('setError'));
 
-  // The Gateway read is Circle only, and the figure is shown only when the
-  // unified balance is actually funded.
+  // The Gateway read is Circle only. Its explicit state distinguishes loading,
+  // successful zero, and failure, while the UI remains visible in every state.
   assert.match(
     walletPage,
     /executionMode === "CIRCLE_USER_WALLET"\s*\)\s*\{\s*void refreshGatewayBalance\(\);/,
   );
   assert.match(
     walletPage,
-    /const gatewayFunded = gateway !== null && hasPositiveRawAmount\(gateway\.totalRaw\);/,
+    /const \[gatewayReadState, setGatewayReadState\] = useState<GatewayReadState>\("idle"\);/,
   );
-  assert.match(walletPage, /\{gateway && gatewayFunded && \(/);
+  assert.match(walletPage, /setGatewayReadState\("loading"\)/);
+  assert.match(walletPage, /setGatewayReadState\("ready"\)/);
+  assert.match(walletPage, /setGatewayReadState\("error"\)/);
+  assert.match(walletPage, /\{executionMode === "CIRCLE_USER_WALLET" && \(\s*<section className="ex-wallet-gateway"/);
+  assert.match(walletPage, /gatewayReadState === "ready" && gateway/);
+  assert.match(walletPage, /gatewayBalanceUnavailable/);
+  assert.match(walletPage, /gatewayRetry/);
+  assert.match(walletPage, /gatewayFundingRecovery\) \|\| \(\s*gatewayReadState === "ready" && gatewaySources\.length > 0/);
+  assert.match(walletPage, /t\.wallet\.gatewayNoTransferableBalance/);
   assert.equal(walletPage.includes('submitGatewayFunding'), false, 'wallet UI must not expose live broadcast control');
 
   await verifyBurnIntent();
