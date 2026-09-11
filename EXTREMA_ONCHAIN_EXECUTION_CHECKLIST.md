@@ -248,26 +248,29 @@ UI VISIBILITY STATUS: **IMPLEMENTED / VALIDATED, DUAL MODE.**
 - A read failure shows an unavailable state with retry.
 - Existing recovery remains visible, extended with a distinct deposit recovery record per mode.
 - A Base Sepolia source sub-section shows source balance, source readiness, and the approve/deposit action; Circle sessions additionally see a same address Base wallet preparation action when needed.
-- `RECONCILING` renders the compact status rail: Deposit submitted → Waiting for Gateway finality → Gateway balance available. Its polling is read-only against the same durable action, preserves recovery on transient read failure, and blocks another deposit.
-- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
+- Primary Gateway copy uses the configured source network name and normal two-decimal USDC presentation; it does not expose internal Gateway domain numbers or signing protocol terms.
+- A completed source deposit collapses to a compact Base Sepolia balance and success row. “Add more USDC” only reveals the empty form; it does not create an action or initiate a Circle flow.
+- `RECONCILING` renders the compact status rail: Deposit submitted → Waiting for Gateway finality → Gateway balance available. Its polling is read-only against the same durable action, preserves recovery on transient read failure, and blocks another deposit. The pulse is **IMPLEMENTED / VALIDATED** deterministically; production visual proof is deferred to the mandatory external-wallet Gateway flow.
+- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_WALLET_UI_CLEANUP=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
 
-LIVE PROOF STATUS: **OPEN / NOT LIVE PROVEN.** Circle mode now has live source-chain approval and deposit proof, but Gateway credit/finality and every Gateway → Arc transfer remain unproven. No external-wallet full Gateway flow is live-proven.
+LIVE PROOF STATUS: **OPEN / PARTIALLY LIVE PROVEN.** Circle mode has live source-chain approval, deposit, and Gateway credit/finality proof. Every Gateway → Arc transfer remains unproven, and no external-wallet full Gateway flow is live-proven.
 
 Live proven in production, Circle mode, for `0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876`:
 
 - Circle Base Sepolia companion EOA preparation succeeded, same address as the Arc EOA.
 - Base Sepolia source held 20 test USDC; Base native gas was funded.
 - The hosted Circle `USDC.approve(GatewayWallet, 2000000)` and `GatewayWallet.deposit(Base USDC, 2000000)` challenges were explicitly approved by the user.
-- Current durable deposit action: `103e32eb-143a-4eb5-aa18-d6532a6d98cf4` (request `af90bb45-89f0-4778-8da0-05109c7c9149`), amount `2000000` raw / `2 USDC`, state `RECONCILING`, baseline domain-6 balance `0`.
+- The durable `2 USDC` deposit action reconciled successfully to `COMPLETED`.
 - Base Sepolia deposit transaction: `0x42aed5ef50095267af069f9519c079239f5cb509e79db7b3c040a0848cedc095`; Circle deposit challenge `22c00fd0-d2d8-5a89-838d-3282722b44b9`, Circle transaction `bc1d3b5c-3822-5791-a2e2-1fd0c30d7bcb`.
-- Read-only production proof after the deposit: Base USDC `20 → 18`, Gateway allowance `2 → 0`, and Gateway domain-6 balance was still `0` at the observation. This proves source-chain submission, not Gateway credit or completion.
+- Production reconciliation proof: Base USDC `20 → 18`, Gateway allowance `2 → 0`, Gateway domain-6 unified credit `2 USDC`, and total Gateway unified balance `2 USDC`.
+- The effective production human application session lifetime is `604800` seconds / seven days.
 
-The earlier reconciliation bug is retained as historical context below. The current action reached `RECONCILING` after the source-chain deposit; its remaining work is read-only Gateway finality, never a rebroadcast or blind retry.
+This proves the Circle source deposit and Gateway credit/finality only. It does not prove a Gateway → Arc transfer, an external-wallet full Gateway flow, or the finality animation in production.
 
 Still required:
 
 - [x] Read only production prerequisites for the Circle approval stage (funded Base Sepolia source, prepared companion EOA)
-- [ ] Circle Base Sepolia to Gateway to Arc: prove Gateway domain-6 credit/unified balance for the submitted `2 USDC`, then obtain explicit approval before any controlled real burn intent transfer
+- [ ] Circle Gateway to Arc: obtain explicit approval before one controlled real burn intent transfer and destination reconciliation
 - [ ] External Base Sepolia to Gateway to Arc: one controlled real deposit, then one controlled real burn intent transfer
 - [ ] Explicit Koray approval before enabling broadcast
 - [ ] Transaction, transfer ID and destination reconciliation proof
@@ -1992,8 +1995,8 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
 - [x] Gateway `RECONCILING` finality UX implemented and deterministically validated
   - The rail is status-only, polls the same `actionId` at approximately 10 seconds without overlap, preserves the durable recovery through a transient read failure, and blocks new deposit submission. Only `RECONCILING` actions with a valid durable source `deposit_tx_hash` outlive the pre-submission 30-minute action TTL; malformed or unsubmitted rows fail closed. This is **IMPLEMENTED / VALIDATED**, not live UI proof until deployed and observed.
 - [x] Seven-day human application sessions and secure Circle refresh implemented and deterministically validated
-  - Cookie, JWT, and `auth_sessions` use `604800` seconds. Logout still revokes the DB session and clears the cookie; each financial action retains its own explicit external-wallet or Circle approval. Circle refresh credentials are encrypted server-side, identity-checked after rotation, and deleted on logout; unavailable refresh requires explicit Circle reauthentication. This is **IMPLEMENTED / VALIDATED**, not production-session proof until deployed and exercised.
-  - Deployment note: Railway must be checked for an explicit `JWT_TTL_SECONDS` value. An existing `JWT_TTL_SECONDS=1800` override remains authoritative as a 30-minute session until it is deliberately changed; this task did not change Railway environment state.
+  - Cookie, JWT, and `auth_sessions` use `604800` seconds. Logout still revokes the DB session and clears the cookie; each financial action retains its own explicit external-wallet or Circle approval. Circle refresh credentials are encrypted server-side, identity-checked after rotation, and deleted on logout; unavailable refresh requires explicit Circle reauthentication. Production verification confirms the effective human session lifetime is `604800` seconds / seven days.
+  - Deployment note: a future explicit Railway `JWT_TTL_SECONDS` override remains authoritative and must be changed deliberately. This task did not change Railway environment state.
 - [x] Existing pool 60-second refresh validated and hardened
   - Board and detail polling already existed. This change adds in-flight guards, retains last valid round/distribution data on transient refresh failure, and keeps own-entry immediate reconciliation. No WebSocket/SSE or artificial data was added.
 - [x] Gateway generalized to both human execution modes (funding and source deposit)
@@ -2008,13 +2011,13 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
   - Fix: `resolvePhaseTransaction` takes an additive `blockchain = circleUserWalletService.ARC_TESTNET` parameter (every existing Arc caller is unchanged since none pass it), and `gatewayDepositService.resolveCirclePhase` now passes `blockchain: source.circleBlockchain` (`'BASE-SEPOLIA'` for the current source). Challenge creation was untouched; this was a reconciliation-only bug.
   - Recovery: the existing production action reconciles forward with no manual database mutation, no new approval challenge, no new idempotency key, and no re-issued approve calldata — the next call to `verifyApproval` for the SAME action binds the already-known Circle transaction id and moves the SAME action to `DEPOSIT_REQUIRED` / `DEPOSIT_CHALLENGE`.
   - Proof: `GATEWAY_DEPOSIT_PRODUCTION_RECONCILIATION=PASS` (new) replays the exact production row shape and proves the reconciliation binds the already-landed transaction with zero new Circle mutations; `CIRCLE_ENGINE_BLOCKCHAIN_DEFAULT=PASS` (new) proves the engine still defaults to `ARC-TESTNET` when no blockchain is given; `GATEWAY_DEPOSIT_WRONG_BLOCKCHAIN_FAILS_CLOSED=PASS` (new) proves a genuine mismatch still fails closed. Verified by temporarily reverting the fix and confirming these tests fail with the exact same `circle_transaction_mismatch` production saw, then restoring it.
-  - **Updated live boundary:** a later Circle source deposit reached `RECONCILING` (recorded in the Circle Gateway status above). Gateway domain-6 credit and Gateway → Arc burn/transfer remain unproven for both execution modes.
+- **Historical boundary:** this source deposit had reached `RECONCILING` at this point in the timeline. Later production reconciliation confirmed the `2 USDC` Gateway credit recorded above; Gateway → Arc burn/transfer remains unproven for both execution modes.
 - [x] Production bug fixed: Gateway deposit recovery UI derived the amount from the disabled, empty input instead of the durable recovery
   - Found live for the same still-pending production action (`769088d9-cd91-4466-92e1-726ac76e8cf4`, `sourceDomain 6`, `amountRaw 2000000`, Circle mode): the Wallet page correctly detected the existing deposit recovery and showed "Recovering previous operation...", the amount input was disabled and visually empty, but clicking the recovery button parsed the empty editable field instead of using `depositRecovery.amountRaw` and immediately rejected with "Enter a valid USDC amount". No Circle challenge opened; no backend call and no financial mutation occurred.
   - Fix: `handleGatewayBaseDeposit()` in `app/wallet/page.tsx` now treats a live `depositRecovery` as the authoritative financial intent: it uses `depositRecovery.amountRaw`/`depositRecovery.sourceDomain` directly (failing closed if the source domain does not match the one configured source), and only falls back to parsing the editable input when no recovery exists. The two recovery-load effects now also seed the display field with `formatGatewayUsdcRaw(recovery.amountRaw)` so it never shows empty/0.000000 while a real amount exists. The idle button now reads "Continue previous operation" ("Önceki işleme devam et") instead of the misleading "Recovering previous operation...", which is now reserved for an actual in-flight resume. A `gateway_deposit_expired` report fails closed with a dedicated message and never clears recovery or retries automatically.
   - Recovery: unchanged call path — `confirmGatewayBaseDeposit` still resumes the SAME action via `gateway-actions.ts`'s existing recovery-first logic (`verifyGatewayDepositApproval`/`verifyGatewayDeposit` against the stored `actionId`); the page itself never mints a new request id or clears recovery before calling it.
   - Proof: `WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS` (new, in `verify-gateway-deposit.js`) statically proves the recovery branch is resolved before any input parsing, the input-parsing error is unreachable when recovery exists, both recovery-load effects seed the display amount, the input stays disabled, the idle/busy button labels are correct, recovery is never cleared before the call, and an expired report never clears recovery or retries. Verified by temporarily reverting the fix and confirming the test fails with the same "must be resolved... before the editable input is ever parsed" defect production hit, then restoring it.
-  - **Updated live boundary:** source-chain deposit proof is now recorded above, but this recovery/finality UI change itself remains **IMPLEMENTED / VALIDATED** until deployed and observed. Gateway credit and Gateway → Arc transfer remain unproven.
+- **Updated live boundary:** source-chain deposit and Gateway credit proof are recorded above. This recovery/finality UI change remains **IMPLEMENTED / VALIDATED** until its visual state is observed in production; Gateway → Arc transfer remains unproven.
 
 ### Remaining open work
 

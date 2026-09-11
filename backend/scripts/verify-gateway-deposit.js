@@ -927,7 +927,7 @@ function verifyWalletPageDepositRecoveryWiring() {
     'recovery present must never fall through to input parsing or its error',
   );
   assert.match(elseBranchSlice, /parseGatewayUsdcRaw\(depositAmount\)/);
-  assert.match(elseBranchSlice, /Enter a valid USDC amount/);
+  assert.match(elseBranchSlice, /t\.wallet\.gatewayAmountInvalid/);
 
   // sourceDomain/amountRaw actually used to call confirmGatewayBaseDeposit
   // are the local variables resolved above, not a hardcoded constant or a
@@ -975,6 +975,60 @@ function verifyWalletPageDepositRecoveryWiring() {
   );
   assert.match(submittedRecovery, /return recovery\.phase === "RECONCILING"/);
 
+  // Primary wallet language stays consumer-facing. Internal Gateway domains,
+  // protocol names, and chain IDs remain in execution data, never in the
+  // normal transfer/source presentation.
+  const fundingMarkupStart = walletPage.indexOf('<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>');
+  const fundingMarkupEnd = walletPage.indexOf('<section\n                  className={`ex-wallet-gateway', fundingMarkupStart);
+  assert.ok(fundingMarkupStart > -1 && fundingMarkupEnd > fundingMarkupStart);
+  const fundingMarkup = walletPage.slice(fundingMarkupStart, fundingMarkupEnd);
+  assert.match(walletPage, /const GATEWAY_SOURCE_CONFIGS = \[/);
+  assert.match(walletPage, /label: "Base Sepolia"/);
+  assert.match(fundingMarkup, /gatewaySourceNetworkLabel\(item\.domain\)/);
+  assert.match(fundingMarkup, /formatGatewayUsdcDisplay\(item\.balance, locale\)/);
+  assert.ok(!fundingMarkup.includes('Domain ${item.domain}'), 'a Gateway domain number must not enter the primary source label');
+  assert.match(copy, /gatewayPrepareTitle: "Move USDC to Arc"/);
+  assert.match(copy, /gatewayPrepareTitle: "USDC'yi Arc'a taşı"/);
+  assert.match(copy, /gatewayPrepareBody: "Use your Gateway balance on Arc\. You'll review and approve before anything moves\."/);
+  assert.match(copy, /gatewayPrepareBody: "Gateway bakiyeni Arc üzerinde kullan\. Herhangi bir transfer gerçekleşmeden önce işlemi inceleyip onaylayacaksın\."/);
+  assert.match(copy, /gatewayPrepareSignature: "Prepare transfer to Arc"/);
+  assert.match(copy, /gatewayPrepareSignature: "Arc'a transferi hazırla"/);
+  assert.match(copy, /gatewayTransferPrepared: "Transfer prepared\. Nothing has moved\."/);
+  assert.match(copy, /gatewayTransferPrepared: "Transfer hazır\. Henüz hiçbir şey taşınmadı\."/);
+  assert.ok(!/gatewayPrepareBody:[^\n]*EIP-712/.test(copy), 'primary Gateway copy must not expose EIP-712');
+  assert.ok(!fundingMarkup.includes('gatewayFundingStatus.state}'), 'the primary transfer surface must not display a raw Gateway state');
+  assert.match(
+    fundingMarkup,
+    /gatewayFundingStatus\?\.readyToBroadcast === true\s*\?\s*t\.wallet\.gatewayTransferPrepared/,
+    'Transfer prepared must require the authoritative ready-to-broadcast flag',
+  );
+  const canShowGatewayTransferPrepared = (status) => status?.readyToBroadcast === true;
+  assert.equal(
+    canShowGatewayTransferPrepared({ state: 'READY_TO_BROADCAST', readyToBroadcast: true }),
+    true,
+    'a ready-to-broadcast transfer may show Transfer prepared',
+  );
+  for (const state of ['FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED']) {
+    assert.equal(
+      canShowGatewayTransferPrepared({ state, readyToBroadcast: false }),
+      false,
+      `${state} must never show Transfer prepared`,
+    );
+  }
+
+  const summaryStart = walletPage.indexOf('className="ex-wallet-summary"');
+  const summaryEnd = walletPage.indexOf('<section className="ex-wallet-gateway"', summaryStart);
+  assert.ok(summaryStart > -1 && summaryEnd > summaryStart);
+  const summaryMarkup = walletPage.slice(summaryStart, summaryEnd);
+  assert.match(
+    summaryMarkup,
+    /executionMode === "EXTERNAL_WALLET"\s*\?\s*\(chain \? chain\.name : t\.wallet\.notConnected\)\s*:\s*chainState\.chain\.name/,
+    'Circle must show Arc Testnet while an external wallet shows its connected network name',
+  );
+  assert.ok(!/\b(?:chainState\.chain|chain)\.id\b/.test(summaryMarkup), 'the primary network label must not expose a numeric chain ID');
+  assert.match(walletPage, /formatGatewayUsdcDisplay\(gateway\.totalUsdc, locale\)/);
+  assert.match(walletPage, /placeholder="0\.00"/);
+
   // Finality is a read-only status mode: it prevents a duplicate resume or a
   // new amount until the same durable action reaches a terminal state.
   assert.match(walletPage, /gatewayDepositAmount[\s\S]{0,400}?disabled=\{depositBusy \|\| depositAwaitingFinality \|\| Boolean\(depositRecovery\)\}/);
@@ -1002,22 +1056,55 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(finalityMarkup, /gatewayDepositSubmitted/);
   assert.match(finalityMarkup, /gatewayWaitingFinality/);
   assert.match(finalityMarkup, /gatewayBalanceAvailable/);
-  assert.match(finalityMarkup, /gatewayFinalityConfirmed/);
-  assert.match(finalityMarkup, /depositFinalityCompleted \? "complete" : "active"/);
-  assert.match(finalityMarkup, /depositFinalityCompleted \? "complete" : "pending"/);
-  assert.match(finalityMarkup, /depositFinalityCompleted\s*\? t\.wallet\.gatewayFinalityConfirmed\s*:\s*t\.wallet\.gatewayWaitingFinality/);
+  assert.match(finalityMarkup, /data-state="active"/);
+  assert.match(finalityMarkup, /ex-gateway-finality__pulse/);
+  assert.match(finalityMarkup, /data-state="pending"/);
+  assert.ok(!finalityMarkup.includes('depositCompleted') && !finalityMarkup.includes('gatewayFinalityConfirmed'), 'the waiting rail must only render while reconciling');
   assert.ok(!/attestation|mint|countdown|progress|%/i.test(finalityMarkup), 'the finality rail must not invent technical or percentage progress');
   assert.match(styles, /animation:ex-gateway-finality-breathe/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,180}animation:none/);
   assert.match(copy, /gatewayFinalityAdvice: "Gateway balance may take up to 20 minutes to update\. Do not submit again\."/);
   assert.match(copy, /gatewayFinalityAdvice: "Gateway bakiyesinin güncellenmesi 20 dakikaya kadar sürebilir\. İşlemi tekrar göndermeyin\."/);
-  assert.match(copy, /gatewayFinalityConfirmed: "Gateway finality confirmed"/);
-  assert.match(copy, /gatewayFinalityConfirmed: "Gateway kesinleşti"/);
   const finalityStateStart = walletPage.indexOf('const depositAwaitingFinality =');
   const finalityStateEnd = walletPage.indexOf('\n\n  async function ensureArcTestnet', finalityStateStart);
   assert.ok(finalityStateStart > -1 && finalityStateEnd > finalityStateStart);
   const finalityState = walletPage.slice(finalityStateStart, finalityStateEnd);
   assert.match(finalityState, /depositStatus\s*\?\s*depositStatus\.state === "RECONCILING"\s*:\s*isSubmittedGatewayDepositRecovery\(depositRecovery\)/);
+  assert.match(finalityState, /const depositFinalityVisible = depositAwaitingFinality/);
+
+  const completedMarkupStart = walletPage.indexOf('{baseWalletStatus === "ready" && depositCompleted ? (');
+  const completedMarkupEnd = walletPage.indexOf(') : baseWalletStatus === "ready" && !depositAwaitingFinality ? (', completedMarkupStart);
+  assert.ok(completedMarkupStart > -1 && completedMarkupEnd > completedMarkupStart);
+  const completedMarkup = walletPage.slice(completedMarkupStart, completedMarkupEnd);
+  assert.match(completedMarkup, /ex-gateway-deposit-complete/);
+  assert.match(completedMarkup, /data-state="completed"/);
+  assert.match(completedMarkup, /gatewayDepositAddedToGateway/);
+  assert.match(completedMarkup, /gatewayAddMoreUsdc/);
+  assert.ok(
+    !completedMarkup.includes('gatewayWaitingFinality') &&
+    !completedMarkup.includes('gatewayDepositAmount') &&
+    !completedMarkup.includes('handleGatewayBaseDeposit'),
+    'COMPLETED must collapse rather than keep the waiting rail or deposit form',
+  );
+  assert.match(copy, /gatewayBaseAvailable: "\{amount\} USDC available"/);
+  assert.match(copy, /gatewayBaseAvailable: "\{amount\} USDC kullanılabilir"/);
+  assert.match(copy, /gatewayDepositAddedToGateway: "\{amount\} USDC added to Gateway"/);
+  assert.match(copy, /gatewayDepositAddedToGateway: "Gateway'e \{amount\} USDC eklendi"/);
+  assert.match(copy, /gatewayAddMoreUsdc: "Add more USDC"/);
+  assert.match(copy, /gatewayAddMoreUsdc: "Daha fazla USDC ekle"/);
+  assert.match(walletPage, /!depositCompleted && depositNotice/);
+  assert.ok(!walletPage.includes('gatewayDepositComplete'), 'the compact completed state must not render duplicate refresh copy');
+
+  const addMoreStart = walletPage.indexOf('function handleAddMoreGatewayUsdc()');
+  const addMoreEnd = walletPage.indexOf('\n\n  async function ensureArcTestnet', addMoreStart);
+  assert.ok(addMoreStart > -1 && addMoreEnd > addMoreStart);
+  const addMoreHandler = walletPage.slice(addMoreStart, addMoreEnd);
+  assert.match(addMoreHandler, /setDepositStatus\(null\)/);
+  assert.match(addMoreHandler, /setDepositAmount\(""\)/);
+  assert.ok(
+    !/confirmGatewayBaseDeposit|executeHostedChallenge|crypto\.randomUUID|backendApi\./.test(addMoreHandler),
+    'Add more USDC must only reveal the empty form and never create a financial action',
+  );
 
   // Button copy: idle with a live recovery says "continue", never
   // "recovering" (which falsely implies something is already in progress);
@@ -1056,6 +1143,8 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(depositService, /if \(row\.state === 'RECONCILING'\) row = await reconcile\(row\)/);
 
   console.log('GATEWAY_DEPOSIT_REVIEW_FIXES=PASS');
+  console.log('GATEWAY_WALLET_UI_CLEANUP=PASS');
+  console.log('GATEWAY_WALLET_UI_REGRESSIONS=PASS');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_LIVE_NETWORK_CALLS=0');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS');
 }

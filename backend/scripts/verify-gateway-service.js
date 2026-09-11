@@ -496,7 +496,8 @@ async function verifyForwardingClient() {
     'the Gateway section must render unconditionally for both human modes',
   );
   assert.match(walletPage, /<section className="ex-wallet-gateway" aria-label=\{t\.wallet\.gatewayFundingAriaLabel\}>/);
-  assert.match(walletPage, /<section className="ex-wallet-gateway" aria-label=\{t\.wallet\.gatewayDepositAriaLabel\}>/);
+  assert.match(walletPage, /className=\{`ex-wallet-gateway\$\{depositCompleted/);
+  assert.match(walletPage, /aria-label=\{t\.wallet\.gatewayDepositAriaLabel\}/);
   assert.match(walletPage, /gatewayReadState === "ready" && gateway/);
   assert.match(walletPage, /gatewayBalanceUnavailable/);
   assert.match(walletPage, /gatewayRetry/);
@@ -506,7 +507,8 @@ async function verifyForwardingClient() {
 
   // Base Sepolia source deposit surfaces, for both modes, using config
   // rather than scattered chain magic numbers.
-  assert.match(walletPage, /const BASE_SEPOLIA_SOURCE = \{/);
+  assert.match(walletPage, /const GATEWAY_SOURCE_CONFIGS = \[/);
+  assert.match(walletPage, /const BASE_SEPOLIA_SOURCE = GATEWAY_SOURCE_CONFIGS\[0\];/);
   assert.match(walletPage, /confirmGatewayBaseDeposit/);
   assert.match(walletPage, /confirmGatewayBurnSignature/);
   assert.match(walletPage, /gatewayPrepareBaseWallet/);

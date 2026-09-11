@@ -2411,6 +2411,46 @@ img{max-width:100%}
 .ex-wallet-gateway__controls select:disabled,
 .ex-wallet-gateway__controls input:disabled{opacity:.6}
 
+.ex-wallet-gateway--completed{
+  grid-template-columns:minmax(150px,.72fr) minmax(0,1.28fr);
+  align-items:center;
+  gap:clamp(18px,3vw,36px);
+  padding-block:14px;
+}
+
+.ex-wallet-gateway .ex-wallet-gateway__available{
+  color:var(--ink);
+  font-size:.94rem;
+  font-weight:500;
+}
+
+.ex-gateway-deposit-complete{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  min-width:0;
+  padding-left:clamp(18px,3vw,32px);
+  border-left:1px solid var(--line);
+}
+
+.ex-wallet-gateway .ex-gateway-deposit-complete p{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  color:var(--ink);
+  font-size:.84rem;
+  font-weight:500;
+}
+
+.ex-gateway-deposit-complete p span{
+  flex:0 0 auto;
+  font-size:.95rem;
+}
+
+.ex-gateway-deposit-complete .ex-btn{flex:0 0 auto;}
+
 .ex-gateway-finality{
   display:grid;
   gap:8px;
@@ -2464,6 +2504,8 @@ img{max-width:100%}
 @media(max-width:700px){
   .ex-wallet-gateway__controls{grid-template-columns:minmax(0,1fr)}
   .ex-wallet-gateway__controls .ex-btn{justify-self:start}
+  .ex-wallet-gateway--completed{grid-template-columns:minmax(0,1fr);gap:12px}
+  .ex-gateway-deposit-complete{padding-left:0;border-left:0;flex-wrap:wrap}
   .ex-gateway-finality__rail{grid-template-columns:minmax(0,1fr)}
 }
 

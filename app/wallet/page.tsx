@@ -47,16 +47,24 @@ import { readBinanceLiveMarket } from "../lib/live-market";
 type Step = "owner" | "choice" | "ready";
 type GatewayReadState = "idle" | "loading" | "ready" | "error";
 
-// The single configured Gateway deposit source. Config driven so ETH
-// Sepolia / Arbitrum Sepolia / OP Sepolia can be added later as more map
-// entries instead of scattering chain magic numbers through this page.
-const BASE_SEPOLIA_SOURCE = {
-  domain: 6,
-  chainId: baseSepolia.id,
-  label: "Base Sepolia",
-  usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  gatewayWallet: "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
-} as const;
+// Every user-facing Gateway source is named here. Adding a future testnet
+// source is a configuration entry, never a reason to expose its internal
+// Gateway domain number in the wallet UI.
+const GATEWAY_SOURCE_CONFIGS = [
+  {
+    domain: 6,
+    chainId: baseSepolia.id,
+    label: "Base Sepolia",
+    usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    gatewayWallet: "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+  },
+] as const;
+
+const BASE_SEPOLIA_SOURCE = GATEWAY_SOURCE_CONFIGS[0];
+
+function gatewaySourceNetworkLabel(sourceDomain: number) {
+  return GATEWAY_SOURCE_CONFIGS.find((source) => source.domain === sourceDomain)?.label || "Gateway";
+}
 
 const ERC20_BALANCE_OF_ABI = [
   {
@@ -140,6 +148,43 @@ function formatGatewayUsdcRaw(valueRaw: string) {
   const whole = padded.slice(0, -6).replace(/^0+(?=\d)/, "") || "0";
   const fraction = padded.slice(-6).replace(/0+$/, "");
   return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function incrementDecimalString(value: string) {
+  let carry = 1;
+  let result = "";
+
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const next = Number(value[index]) + carry;
+    result = `${next % 10}${result}`;
+    carry = next >= 10 ? 1 : 0;
+  }
+
+  return carry ? `1${result}` : result;
+}
+
+// Amounts stay exact for requests and recoveries. This is presentation only:
+// normal wallet balances are rounded to familiar cents without converting the
+// canonical raw value through a floating-point number.
+function formatGatewayUsdcDisplay(value: string, locale: "en" | "tr") {
+  const match = /^(\d+)(?:\.(\d*))?$/.exec(value.trim());
+  if (!match) return locale === "tr" ? "0,00" : "0.00";
+
+  let whole = match[1].replace(/^0+(?=\d)/, "") || "0";
+  const fraction = (match[2] || "").padEnd(3, "0");
+  let cents = fraction.slice(0, 2).padEnd(2, "0");
+
+  if (Number(fraction[2]) >= 5) {
+    const rounded = incrementDecimalString(`${whole}${cents}`.replace(/^0+(?=\d)/, "") || "0").padStart(3, "0");
+    whole = rounded.slice(0, -2).replace(/^0+(?=\d)/, "") || "0";
+    cents = rounded.slice(-2);
+  }
+
+  return `${whole}${locale === "tr" ? "," : "."}${cents}`;
+}
+
+function withGatewayAmount(template: string, amount: string) {
+  return template.replace("{amount}", amount);
 }
 
 function WalletLiveMarket() {
@@ -762,7 +807,7 @@ export default function WalletPage() {
         if (current.state === "COMPLETED") {
           clearCompletedRecovery();
           setDepositPhase("");
-          setDepositNotice(t.wallet.gatewayDepositComplete);
+          setDepositNotice("");
           void refreshGatewayBalance();
           void refreshBaseSourceState();
           return;
@@ -860,7 +905,7 @@ export default function WalletPage() {
     } else {
       const parsed = parseGatewayUsdcRaw(depositAmount);
       if (!parsed) {
-        setDepositError(locale === "tr" ? "6 ondalığa kadar geçerli bir USDC tutarı gir." : "Enter a valid USDC amount with up to 6 decimals.");
+        setDepositError(t.wallet.gatewayAmountInvalid);
         return;
       }
       sourceDomain = BASE_SEPOLIA_SOURCE.domain;
@@ -888,11 +933,8 @@ export default function WalletPage() {
         },
       );
       if (result.state === "COMPLETED") {
-        setDepositNotice(
-          locale === "tr"
-            ? "Yatırma tamamlandı. Gateway bakiyeni yenile."
-            : "Deposit complete. Refresh your Gateway balance.",
-        );
+        setDepositStatus(result);
+        setDepositNotice("");
         setDepositRecovery(null);
         setDepositAmount("");
         void refreshGatewayBalance();
@@ -938,8 +980,21 @@ export default function WalletPage() {
   const depositAwaitingFinality = depositStatus
     ? depositStatus.state === "RECONCILING"
     : isSubmittedGatewayDepositRecovery(depositRecovery);
-  const depositFinalityCompleted = depositStatus?.state === "COMPLETED";
-  const depositFinalityVisible = depositAwaitingFinality || depositFinalityCompleted;
+  const depositCompleted = depositStatus?.state === "COMPLETED";
+  const completedDepositAmount = depositCompleted && depositStatus
+    ? formatGatewayUsdcDisplay(formatGatewayUsdcRaw(depositStatus.amountRaw), locale)
+    : "";
+  const depositFinalityVisible = depositAwaitingFinality;
+
+  function handleAddMoreGatewayUsdc() {
+    // This only returns the compact completed view to its idle form. It does
+    // not create a request id, call the backend, or open a Circle challenge.
+    setDepositStatus(null);
+    setDepositNotice("");
+    setDepositError("");
+    setDepositStatusWarning("");
+    setDepositAmount("");
+  }
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -1019,7 +1074,7 @@ export default function WalletPage() {
     if (!selectedGatewaySource && !gatewayFundingRecovery) return;
     const valueRaw = gatewayFundingRecovery?.valueRaw || parseGatewayUsdcRaw(gatewayAmount);
     if (!valueRaw) {
-      setGatewayFundingError(locale === "tr" ? "6 ondalığa kadar geçerli bir USDC tutarı gir." : "Enter a valid USDC amount with up to 6 decimals.");
+      setGatewayFundingError(t.wallet.gatewayAmountInvalid);
       return;
     }
     const sourceDomain = gatewayFundingRecovery?.sourceDomain ?? selectedGatewaySource!.domain;
@@ -1043,17 +1098,9 @@ export default function WalletPage() {
       if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
         throw new Error("gateway_signature_challenge_unavailable");
       }
-      setGatewayFundingNotice(
-        locale === "tr"
-          ? "İmza doğrulandı. Transfer gönderilmedi; yayınlama için ayrı onay gerekir."
-          : "Signature verified. No transfer was submitted; broadcasting requires separate approval.",
-      );
-    } catch (cause) {
-      setGatewayFundingError(
-        cause instanceof Error
-          ? cause.message
-          : (locale === "tr" ? "Gateway hazırlığı tamamlanamadı." : "Gateway preparation could not be completed."),
-      );
+      setGatewayFundingNotice(t.wallet.gatewayTransferPrepared);
+    } catch {
+      setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
     } finally {
       setGatewayFundingBusy(false);
     }
@@ -1118,11 +1165,11 @@ export default function WalletPage() {
                   data-columns="3"
                 >
                   <div className="ex-wallet-summary__item">
-                    <span>Network</span>
+                    <span>{t.wallet.chainNetwork}</span>
                     <strong className="ex-num">
                       {executionMode === "EXTERNAL_WALLET"
-                        ? (chain ? `${chain.name} · ${chain.id}` : t.wallet.notConnected)
-                        : `${chainState.chain.name} · ${chainState.chain.id}`}
+                        ? (chain ? chain.name : t.wallet.notConnected)
+                        : chainState.chain.name}
                     </strong>
                   </div>
 
@@ -1137,7 +1184,7 @@ export default function WalletPage() {
                     <span>{t.wallet.gatewayBalance}</span>
                     <strong className="ex-num">
                       {gatewayReadState === "ready" && gateway
-                        ? `${gateway.totalUsdc} ${gateway.token}`
+                        ? `${formatGatewayUsdcDisplay(gateway.totalUsdc, locale)} ${gateway.token}`
                         : gatewayReadState === "loading" || gatewayReadState === "idle"
                           ? t.wallet.gatewayReading
                           : t.wallet.gatewayBalanceUnavailable}
@@ -1186,7 +1233,7 @@ export default function WalletPage() {
                         >
                           {gatewaySources.map((item) => (
                             <option key={item.domain} value={item.domain}>
-                              {`Domain ${item.domain} · ${item.balance} USDC`}
+                              {`${gatewaySourceNetworkLabel(item.domain)} · ${formatGatewayUsdcDisplay(item.balance, locale)} ${gateway?.token || "USDC"}`}
                             </option>
                           ))}
                         </select>
@@ -1195,7 +1242,7 @@ export default function WalletPage() {
                         <span>{t.wallet.gatewayAmount}</span>
                         <input
                           inputMode="decimal"
-                          placeholder="0.000000"
+                          placeholder="0.00"
                           value={gatewayAmount}
                           onChange={(event) => setGatewayAmount(event.target.value)}
                           disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
@@ -1209,8 +1256,8 @@ export default function WalletPage() {
                       >
                         {gatewayFundingBusy
                           ? t.wallet.gatewayPreparingSignature
-                          : gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING"
-                            ? `${t.wallet.gatewayStatus}: ${gatewayFundingStatus.state}`
+                          : gatewayFundingStatus?.readyToBroadcast === true
+                            ? t.wallet.gatewayTransferPrepared
                           : gatewayFundingRecovery
                             ? t.wallet.gatewayResumeSignature
                             : t.wallet.gatewayPrepareSignature}
@@ -1219,25 +1266,37 @@ export default function WalletPage() {
                   )}
                   {gatewayFundingNotice && <p className="ex-entry__msg" data-tone="ok">{gatewayFundingNotice}</p>}
                   {gatewayFundingError && <p className="ex-entry__msg" data-tone="error">{gatewayFundingError}</p>}
-                  {gatewayFundingStatus && (
-                    <p className="ex-entry__msg" aria-live="polite">
-                      {`${t.wallet.gatewayStatus}: ${gatewayFundingStatus.state}`}
-                      {gatewayFundingStatus.transferId ? ` · ${gatewayFundingStatus.transferId}` : ""}
-                    </p>
-                  )}
                 </section>
 
-                <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayDepositAriaLabel}>
+                <section
+                  className={`ex-wallet-gateway${depositCompleted ? " ex-wallet-gateway--completed" : ""}`}
+                  aria-label={t.wallet.gatewayDepositAriaLabel}
+                >
                   <div>
                     <p className="ex-eyebrow">{BASE_SEPOLIA_SOURCE.label}</p>
-                    <h3>{t.wallet.gatewayBaseSourceTitle}</h3>
-                    <p>
-                      {t.wallet.gatewayBaseUsdcBalance}
-                      {": "}
-                      <strong className="ex-num">
-                        {baseUsdcRaw !== null ? formatGatewayUsdcRaw(baseUsdcRaw) : baseReadError ? "—" : t.wallet.gatewayBaseReading}
-                      </strong>
-                    </p>
+                    {depositCompleted ? (
+                      <p className="ex-wallet-gateway__available">
+                        {baseUsdcRaw !== null
+                          ? withGatewayAmount(
+                            t.wallet.gatewayBaseAvailable,
+                            formatGatewayUsdcDisplay(formatGatewayUsdcRaw(baseUsdcRaw), locale),
+                          )
+                          : baseReadError ? "—" : t.wallet.gatewayBaseReading}
+                      </p>
+                    ) : (
+                      <>
+                        <h3>{t.wallet.gatewayBaseSourceTitle}</h3>
+                        <p>
+                          {t.wallet.gatewayBaseUsdcBalance}
+                          {": "}
+                          <strong className="ex-num">
+                            {baseUsdcRaw !== null
+                              ? formatGatewayUsdcDisplay(formatGatewayUsdcRaw(baseUsdcRaw), locale)
+                              : baseReadError ? "—" : t.wallet.gatewayBaseReading}
+                          </strong>
+                        </p>
+                      </>
+                    )}
                     {baseReadError && <p className="ex-entry__msg" data-tone="error">{baseReadError}</p>}
                   </div>
 
@@ -1269,30 +1328,37 @@ export default function WalletPage() {
                     <div className="ex-gateway-finality" aria-live="polite">
                       <ol className="ex-gateway-finality__rail">
                         <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
-                        <li data-state={depositFinalityCompleted ? "complete" : "active"}>
-                          {!depositFinalityCompleted && (
-                            <span className="ex-gateway-finality__pulse" aria-hidden="true" />
-                          )}
-                          {depositFinalityCompleted
-                            ? t.wallet.gatewayFinalityConfirmed
-                            : t.wallet.gatewayWaitingFinality}
+                        <li data-state="active">
+                          <span className="ex-gateway-finality__pulse" aria-hidden="true" />
+                          {t.wallet.gatewayWaitingFinality}
                         </li>
-                        <li data-state={depositFinalityCompleted ? "complete" : "pending"}>
-                          {t.wallet.gatewayBalanceAvailable}
-                        </li>
+                        <li data-state="pending">{t.wallet.gatewayBalanceAvailable}</li>
                       </ol>
-                      <p>{depositFinalityCompleted ? t.wallet.gatewayDepositComplete : t.wallet.gatewayFinalityAdvice}</p>
+                      <p>{t.wallet.gatewayFinalityAdvice}</p>
                       {depositStatusWarning && <small>{depositStatusWarning}</small>}
                     </div>
                   )}
 
-                  {baseWalletStatus === "ready" && (
+                  {baseWalletStatus === "ready" && depositCompleted ? (
+                    <div className="ex-gateway-deposit-complete" data-state="completed">
+                      <p>
+                        <span aria-hidden="true">✓</span>
+                        {withGatewayAmount(
+                          t.wallet.gatewayDepositAddedToGateway,
+                          completedDepositAmount,
+                        )}
+                      </p>
+                      <button className="ex-btn ex-btn--ghost" type="button" onClick={handleAddMoreGatewayUsdc}>
+                        {t.wallet.gatewayAddMoreUsdc}
+                      </button>
+                    </div>
+                  ) : baseWalletStatus === "ready" && !depositAwaitingFinality ? (
                     <div className="ex-wallet-gateway__controls">
                       <label>
                         <span>{t.wallet.gatewayDepositAmount}</span>
                         <input
                           inputMode="decimal"
-                          placeholder="0.000000"
+                          placeholder="0.00"
                           value={depositAmount}
                           onChange={(event) => setDepositAmount(event.target.value)}
                           disabled={depositBusy || depositAwaitingFinality || Boolean(depositRecovery)}
@@ -1324,9 +1390,9 @@ export default function WalletPage() {
                             : t.wallet.gatewayConfirmDeposit}
                       </button>
                     </div>
-                  )}
-                  {depositNotice && <p className="ex-entry__msg" data-tone="ok">{depositNotice}</p>}
-                  {depositError && <p className="ex-entry__msg" data-tone="error">{depositError}</p>}
+                  ) : null}
+                  {!depositCompleted && depositNotice && <p className="ex-entry__msg" data-tone="ok">{depositNotice}</p>}
+                  {!depositCompleted && depositError && <p className="ex-entry__msg" data-tone="error">{depositError}</p>}
                 </section>
 
               <div className="ex-wallet-actions">
