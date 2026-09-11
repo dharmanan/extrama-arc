@@ -131,6 +131,69 @@ function DirectionMark({ direction }: { direction: LivePool["direction"] }) {
   );
 }
 
+// Floating labels stay inside the plot: near either edge they anchor to that
+// edge instead of centering on their mark.
+function labelAlign(positionPercent: number, edgePercent: number) {
+  if (positionPercent < edgePercent) return "start";
+  if (positionPercent > 100 - edgePercent) return "end";
+  return "center";
+}
+
+const DENSITY_COLUMNS = 48;
+
+// Display only. A smoothed density over the exact numeric positions, so even a
+// handful of predictions reads as a distribution. Bar height is relative
+// concentration, never a count or a price bucket; every exact price stays on
+// its own notch under the baseline.
+function densityColumns(positions: number[]) {
+  const span = positions[positions.length - 1] - positions[0];
+  const bandwidth = Math.max(span / 9, 2);
+  const values = Array.from({ length: DENSITY_COLUMNS }, (_, index) => {
+    const center = ((index + 0.5) / DENSITY_COLUMNS) * 100;
+    return positions.reduce(
+      (sum, position) => sum + Math.exp(-0.5 * ((center - position) / bandwidth) ** 2),
+      0,
+    );
+  });
+  const peak = Math.max(...values);
+  return values.map((value) => {
+    const level = peak > 0 ? value / peak : 0;
+    return level < 0.03 ? 0 : level;
+  });
+}
+
+function densityColumnIndex(positionPercent: number) {
+  return Math.min(DENSITY_COLUMNS - 1, Math.max(0, Math.floor((positionPercent / 100) * DENSITY_COLUMNS)));
+}
+
+const MARKET_SCALE = 100_000_000;
+
+// Round price labels for the scale under the baseline. Display only; the
+// numeric axis itself comes from buildPredictionMap.
+function scaleLabels(fromScaled: bigint, toScaled: bigint, locale: Locale) {
+  const from = Number(fromScaled) / MARKET_SCALE;
+  const to = Number(toScaled) / MARKET_SCALE;
+  if (!(to > from)) return [];
+  const raw = (to - from) / 5;
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((factor) => factor * magnitude).find((value) => value >= raw) ?? raw;
+  const formatter = new Intl.NumberFormat(localeTag(locale), {
+    maximumFractionDigits: step >= 1 ? 0 : 2,
+    minimumFractionDigits: step >= 1 ? 0 : 2,
+  });
+  const labels: { key: string; text: string; positionPercent: number }[] = [];
+  const first = Math.ceil(from / step);
+  for (let index = first; index * step <= to; index += 1) {
+    const value = index * step;
+    labels.push({
+      key: String(index),
+      text: `$${formatter.format(value)}`,
+      positionPercent: ((value - from) / (to - from)) * 100,
+    });
+  }
+  return labels;
+}
+
 function Distribution({
   entriesState,
   entriesError,
@@ -182,70 +245,116 @@ function Distribution({
     );
   }
 
-  const activePoint = model.points.find((point) => point.id === activePointId) ?? null;
+  const livePrice = formatMarketPrice(liveMarkPrice, locale);
+  const liveShortLabel = `${locale === "tr" ? "CANLI" : "LIVE"} ${livePrice}`;
+  const ownPoint = ownPriceCents === null
+    ? null
+    : model.points.find((point) => point.priceCents === ownPriceCents) ?? null;
+  const hoveredPoint = model.points.find((point) => point.id === activePointId) ?? null;
+  // Hover, focus or tap shows that prediction; otherwise the connected
+  // user's own prediction stays labelled, as a quiet default.
+  const labelledPoint = hoveredPoint ?? ownPoint;
+  const labelledIsOwn = labelledPoint !== null && ownPoint !== null && labelledPoint.id === ownPoint.id;
+  const density = densityColumns(model.points.map((point) => point.positionPercent));
+  const ownColumn = ownPoint ? densityColumnIndex(ownPoint.positionPercent) : null;
+  const activeColumn = hoveredPoint ? densityColumnIndex(hoveredPoint.positionPercent) : null;
+  const labelledColumn = labelledPoint ? densityColumnIndex(labelledPoint.positionPercent) : null;
+  const scale = scaleLabels(model.fromScaled, model.toScaled, locale).filter((label) =>
+    label.positionPercent >= 4 &&
+    label.positionPercent <= 96 &&
+    (model.livePositionPercent === null || Math.abs(label.positionPercent - model.livePositionPercent) > 11) &&
+    !(model.offscaleLive === "LEFT" && label.positionPercent < 24) &&
+    !(model.offscaleLive === "RIGHT" && label.positionPercent > 76),
+  );
 
   return (
-    <div className="ex-dist" style={{ "--map-lanes": model.laneCount } as CSSProperties}>
+    <div className="ex-dist">
       <div className="ex-dist__plot" role="group" aria-label={t.poolDistribution}>
-        {model.livePositionPercent !== null && (
+        <div className="ex-dist__bars" aria-hidden="true">
+          {density.map((level, index) => (
+            <span
+              key={index}
+              className="ex-dist__bar"
+              data-own={index === ownColumn || undefined}
+              data-active={index === activeColumn || undefined}
+              style={{ height: `${level * 100}%` }}
+            />
+          ))}
+        </div>
+        <span className="ex-dist__rail" aria-hidden="true" />
+
+        {scale.map((label) => (
           <span
-            className="ex-dist__live"
-            style={{ left: `${model.livePositionPercent}%` }}
-            aria-label={`${t.liveMark}: ${formatMarketPrice(liveMarkPrice, locale)}`}
+            key={label.key}
+            className="ex-dist__scale"
+            aria-hidden="true"
+            style={{ left: `${label.positionPercent}%` }}
           >
-            <span className="ex-dist__live-label">{t.liveMark} {formatMarketPrice(liveMarkPrice, locale)}</span>
+            {label.text}
           </span>
-        )}
-        {model.offscaleLive !== null && (
-          <span
-            className="ex-dist__offscale-live"
-            data-edge={model.offscaleLive}
-            aria-label={`${t.liveMark}: ${formatMarketPrice(liveMarkPrice, locale)}. ${model.offscaleLive === "LEFT" ? "Below" : "Above"} the displayed prediction range.`}
-          >
-            <span aria-hidden="true">{model.offscaleLive === "LEFT" ? "←" : "→"}</span>
-            {t.liveMark} · {formatMarketPrice(liveMarkPrice, locale)}
-          </span>
-        )}
+        ))}
+
         {model.points.map((point) => {
-          const isOwn = ownPriceCents !== null && point.priceCents === ownPriceCents;
+          const isOwn = ownPoint !== null && point.id === ownPoint.id;
           const priceLabel = formatPredictionPrice(point.priceCents.toString(), locale);
           return (
             <button
               type="button"
-              className="ex-dist__marker"
+              className="ex-dist__tick"
               key={point.id}
               data-own={isOwn || undefined}
-              data-active={activePoint?.id === point.id || undefined}
-              style={{ left: `${point.positionPercent}%`, "--map-lane": point.lane } as CSSProperties}
+              data-active={hoveredPoint?.id === point.id || undefined}
+              style={{ left: `${point.positionPercent}%` }}
               onMouseEnter={() => setActivePointId(point.id)}
               onMouseLeave={() => setActivePointId((current) => current === point.id ? null : current)}
               onFocus={() => setActivePointId(point.id)}
               onBlur={() => setActivePointId((current) => current === point.id ? null : current)}
               onClick={() => setActivePointId(point.id)}
               aria-label={`${isOwn ? `${t.poolYourPrediction}. ` : ""}${priceLabel}. Ticket ${point.id}.`}
-              title={priceLabel}
-            >
-            <span aria-hidden="true" />
-          </button>
-        );
-      })}
+            />
+          );
+        })}
 
-      {activePoint && (
-        <span
-          className="ex-dist__detail"
-          style={{ left: `${activePoint.positionPercent}%`, "--map-lane": activePoint.lane } as CSSProperties}
-          role="status"
-        >
-          {ownPriceCents !== null && activePoint.priceCents === ownPriceCents ? `${t.poolYourPrediction} · ` : ""}
-          {formatPredictionPrice(activePoint.priceCents.toString(), locale)} · Ticket #{activePoint.id}
-        </span>
-      )}
-    </div>
+        {model.livePositionPercent !== null && (
+          <span
+            className="ex-dist__live"
+            data-align={labelAlign(model.livePositionPercent, 18)}
+            style={{ left: `${model.livePositionPercent}%` }}
+            role="img"
+            aria-label={`${t.liveMark}: ${livePrice}`}
+          >
+            <span className="ex-dist__live-label" aria-hidden="true">{liveShortLabel}</span>
+          </span>
+        )}
 
-      <div className="ex-dist__axis">
-        <span aria-label={t.poolLowest}>{formatPredictionPrice(model.minCents.toString(), locale)}</span>
-        <span aria-hidden="true" />
-        <span aria-label={t.poolHighest}>{formatPredictionPrice(model.maxCents.toString(), locale)}</span>
+        {model.offscaleLive !== null && (
+          <span
+            className="ex-dist__offscale"
+            data-edge={model.offscaleLive}
+            role="img"
+            aria-label={`${t.liveMark}: ${livePrice}. ${model.offscaleLive === "LEFT" ? "Below" : "Above"} the displayed prediction range.`}
+          >
+            <span className="ex-dist__live-label" aria-hidden="true">{liveShortLabel}</span>
+          </span>
+        )}
+
+        {labelledPoint && labelledColumn !== null && (
+          <span
+            className="ex-dist__detail"
+            data-align={labelAlign(labelledPoint.positionPercent, 12)}
+            data-own={labelledIsOwn || undefined}
+            style={{
+              left: `${labelledPoint.positionPercent}%`,
+              "--bar-level": density[labelledColumn],
+            } as CSSProperties}
+            role="status"
+          >
+            <span className="ex-dist__detail-meta">
+              {labelledIsOwn ? `${t.poolYourPrediction} · ` : ""}#{labelledPoint.id}
+            </span>
+            <span className="ex-dist__detail-price">{formatPredictionPrice(labelledPoint.priceCents.toString(), locale)}</span>
+          </span>
+        )}
       </div>
     </div>
   );
