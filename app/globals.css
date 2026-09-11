@@ -1371,15 +1371,17 @@ img{max-width:100%}
 .ex-result-loading .ex-display{margin:0}
 .ex-result-loading__body{margin:0;font-size:clamp(1rem,1.3vw,1.14rem);line-height:1.55;color:var(--ink-2)}
 .ex-result-loading__line{position:relative;display:block;width:min(240px,60%);height:1px;margin-top:10px;overflow:hidden;background:var(--line-strong)}
-.ex-result-loading__line::after,.ex-route-progress::after{content:"";position:absolute;top:0;bottom:0;left:0;width:34%;background:var(--ember);animation:ex-progress-sweep 1.4s cubic-bezier(.45,0,.2,1) infinite}
+.ex-result-loading__line::after,.ex-route-progress::after,.ex-state-progress::after{content:"";position:absolute;top:0;bottom:0;left:0;width:34%;background:var(--ember);animation:ex-progress-sweep 1.4s cubic-bezier(.45,0,.2,1) infinite}
 .ex-route-progress{position:fixed;top:0;left:0;right:0;z-index:60;height:2px;overflow:hidden;pointer-events:none}
 @keyframes ex-progress-sweep{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
 .ex-link-status[data-pending="true"]{animation:ex-link-pending 1s ease-in-out infinite}
 @keyframes ex-link-pending{50%{opacity:.4}}
 .ex-archive-row__actions a:active{border-bottom-color:var(--ember)}
+/* Genuine first load of the archive or leaderboard, with no cached copy yet. */
+.ex-state-progress{position:relative;display:block;width:min(240px,60%);height:1px;margin-top:14px;overflow:hidden;background:var(--line-strong)}
 .ex-result__refresh{margin:10px 0 0;font-family:var(--mono);font-size:.74rem;letter-spacing:.02em;color:var(--muted)}
 .ex-result__refresh[data-failed="true"]{color:var(--ember)}
-@media (prefers-reduced-motion:reduce){.ex-result-loading__line::after,.ex-route-progress::after{animation:none;width:100%;opacity:.55}.ex-link-status[data-pending="true"]{animation:none;opacity:.55}}
+@media (prefers-reduced-motion:reduce){.ex-result-loading__line::after,.ex-route-progress::after,.ex-state-progress::after{animation:none;width:100%;opacity:.55}.ex-link-status[data-pending="true"]{animation:none;opacity:.55}}
 .ex-result__head{display:grid;grid-template-columns:minmax(0,6fr) minmax(280px,4fr);gap:clamp(32px,6vw,100px);padding-block:clamp(30px,4vw,58px) clamp(42px,6vw,82px);border-bottom:1px solid var(--line-strong)}
 .ex-result__identity{display:grid;align-content:start;gap:clamp(12px,1.8vw,22px);min-width:0}
 .ex-result__market{margin:0;font-family:var(--mono);font-size:.87rem;color:var(--muted);letter-spacing:.03em}

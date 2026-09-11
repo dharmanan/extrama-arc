@@ -196,6 +196,7 @@ export default function ArchivePage() {
           <section className="ex-archive__state">
             <p className="ex-eyebrow">{locale === "tr" ? "ZİNCİR OKUNUYOR" : "READING CHAIN"}</p>
             <p>{locale === "tr" ? "Arşiv yükleniyor…" : "Loading archived rounds…"}</p>
+            <span className="ex-state-progress" aria-hidden="true" />
           </section>
         )}
 

@@ -4,6 +4,11 @@ const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const arcService = require('../services/arcService');
 const { createRoundResultCache } = require('../services/roundResultCache');
+const {
+  createArchiveSnapshotService,
+  createPostgresArchiveSnapshotStore,
+} = require('../services/archiveSnapshotService');
+const db = require('../db');
 
 const router = express.Router();
 
@@ -25,32 +30,14 @@ router.get('/', async (req, res, next) => {
 
 
 // The archive is an expensive chain read that only changes when a round
-// closes or a claim lands, so it alone gets a short in memory cache keyed by
-// `days`. Concurrent identical requests share one in flight read, a failed
-// read is never cached, and the first request after the TTL refreshes it.
-// Live round endpoints are deliberately not cached here.
-const ARCHIVE_CACHE_TTL_MS = 45 * 1000;
-const archiveCache = new Map();
-const archiveInFlight = new Map();
-
-function readRoundArchiveCached(days) {
-  const cached = archiveCache.get(days);
-  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.archive);
-
-  const pending = archiveInFlight.get(days);
-  if (pending) return pending;
-
-  const read = arcService.readRoundArchive({ days })
-    .then((archive) => {
-      archiveCache.set(days, { archive, expiresAt: Date.now() + ARCHIVE_CACHE_TTL_MS });
-      return archive;
-    })
-    .finally(() => {
-      archiveInFlight.delete(days);
-    });
-  archiveInFlight.set(days, read);
-  return read;
-}
+// closes or a claim lands. Its last successful response is kept in memory and
+// durably in PostgreSQL and served stale while revalidate: a request never
+// waits for Arc while a snapshot exists, even right after a restart. Live
+// round endpoints are deliberately not cached here.
+const archiveSnapshots = createArchiveSnapshotService({
+  readRoundArchive: (params) => arcService.readRoundArchive(params),
+  store: createPostgresArchiveSnapshotStore(db),
+});
 
 router.get('/archive', async (req, res, next) => {
   try {
@@ -59,7 +46,7 @@ router.get('/archive', async (req, res, next) => {
       return res.status(400).json({ error: 'archive_days_invalid' });
     }
 
-    const archive = await readRoundArchiveCached(days);
+    const archive = await archiveSnapshots.get(days);
     res.json(archive);
   } catch (error) {
     next(error);

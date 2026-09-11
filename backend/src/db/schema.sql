@@ -337,3 +337,17 @@ CREATE TABLE IF NOT EXISTS seed_bot_plans (
 
 CREATE INDEX IF NOT EXISTS seed_bot_plans_due_idx
   ON seed_bot_plans (planned_execution_at, entry_close_at);
+
+-- Last successful public round archive response per `days` window. It lets
+-- GET /rounds/archive answer immediately after a deploy or restart while a
+-- fresh Arc read refreshes it in the background. It holds exactly the payload
+-- that endpoint already returns publicly: no private or financial state. JSON
+-- (not JSONB) keeps the response byte for byte, including key order.
+CREATE TABLE IF NOT EXISTS round_archive_snapshots (
+  days SMALLINT PRIMARY KEY,
+  payload JSON NOT NULL,
+  refreshed_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT round_archive_snapshots_days_check
+    CHECK (days BETWEEN 1 AND 90)
+);

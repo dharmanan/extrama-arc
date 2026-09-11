@@ -63,9 +63,11 @@ Code existing is never sufficient to mark an item `[x]`. A checkbox is only tick
 
 ## Production state snapshot
 
-Snapshot date: 2026-09-09. Reference commit: `f09ca39742d47206af18a2f255895d42b4ba1c02`.
+Snapshot date: 2026-09-11. Reference: current working tree on top of `main` at `d17abe8`, to be replaced with the final commit SHA at commit.
 
-This section is a summary. The authoritative per-item status remains in the numbered sections below.
+Previous snapshot: 2026-09-09, commit `f09ca39742d47206af18a2f255895d42b4ba1c02`. Everything recorded under that snapshot remains valid historical proof and is kept unchanged below.
+
+This section is a summary. The authoritative per-item status remains in the numbered sections below and in the [Current roadmap](#current-roadmap).
 
 ### Live in production
 
@@ -103,25 +105,159 @@ The deterministic suite separately proves replay rejection, double claim prevent
 
 Section 15 remains open: the evidence above spans multiple real rounds and therefore does not yet satisfy the stricter requirement for one single round demonstrated from creation through final claim.
 
+### Updates since the 2026-09-09 snapshot (as of 2026-09-11)
+
+#### System seed agents v3
+
+IMPLEMENTED / DEPLOYED:
+
+- 9 approved autonomous `SYSTEM_SEED_WALLET` agents
+- 8 DAILY pools × 9 agents = target of 72 plans per daily round
+- Prediction planning from the Binance settlement source only
+- Observed HIGH and LOW extrema as the anchor
+- Elapsed and remaining time model, with the projected time scale clamped to 0.25x..2.5x
+- Nine risk profiles
+- Unique exact cent predictions; a taken slot only moves outward (HIGH higher, LOW lower)
+- Fresh v3 recalculation from current observed extrema immediately before execution
+- A stale planner version fails closed
+- At most one dispatch per scheduler tick
+- About 5 minutes of global dispatch spacing
+- Partial round replanning every 15 minutes
+- Existing same version plans are never rewritten
+- Missing plans can be filled after a partial planning pass
+- Deterministic v3 prediction safety verification added
+
+LIVE STATUS:
+
+- Round 7 did **not** reach 72/72 before entry close: 49 seed entries completed, 23 missing.
+- Round 8 72/72 production result is **NOT YET VERIFIED** after the new deployment.
+- Daily 72/72 is therefore **not** LIVE PROVEN.
+
+#### Round 7 real settlement
+
+- All 8 DAILY Round 7 pools reached a final state: 6 SETTLED, 2 CANCELLED.
+- BTC, ETH and SOL HIGH and LOW pools settled; HYPE HIGH and HYPE LOW were cancelled.
+- 16 winning seed tickets were claimed, for a total of 44.01 USDC in seed winner claims.
+- Human winning claims were executed separately by their holders.
+- HYPE Round 7 cancelled ticket refunds remain a separate open operation if not yet executed (see the roadmap).
+
+Earlier settlement, refund and claim proofs recorded in this document are unchanged.
+
+#### Archive, Result and Verify UX
+
+IMPLEMENTED / DEPLOYED:
+
+- Archive browser stale while revalidate session cache
+- Result historical snapshot handoff from the Archive
+- The Result route renders a known historical result without waiting for Arc
+- Result backend winner reads run concurrently
+- Result backend 15 second cache with in flight deduplication
+- Slow Result requests are aborted on unmount
+- Archive requests are aborted on unmount
+- Leaderboard archive request is aborted on unmount
+- Result page "Back to archive" navigation
+- Verify Result shows a user first verdict
+- The technical verification proof sits behind a disclosure
+
+STILL OPEN: Archive and Leaderboard **first load**. A fresh browser with no session cache still waits for the expensive 90 day chain archive read.
+
+CURRENT ACTIVE TASK (implemented in the working tree, not yet deployed):
+
+- PostgreSQL backed durable last successful Archive snapshot (`round_archive_snapshots`)
+- Backend stale while revalidate: a known snapshot is served immediately and refreshed in the background, one refresh at a time; a failed refresh never replaces it
+- Leaderboard derives its standings from the same shared Archive data and browser cache
+- Real loading feedback when no snapshot exists yet
+- Production verification still required
+
+Archive and Leaderboard first load performance is **not** complete until this is deployed and verified in production.
+
+#### Arc RPC and retry safety
+
+IMPLEMENTED / VERIFIED IN CODE:
+
+- Primary Arc read RPC plus a fallback read RPC
+- ethers `batchMaxCount: 1`
+- Read concurrency gate of 8
+- Read timeout
+- Read retry only for transient failures and rate limits
+- Exponential backoff with jitter
+- Primary only write provider; the fallback is never used for broadcast
+- An uncertain send or wait is reconciled read only
+- No blind transaction rebroadcast
+
+This does not claim support for 100 simultaneous financial transactions.
+
+#### Circle status
+
+LIVE PROVEN:
+
+- Circle user controlled Arc EOA session
+- Real Circle ENTRY executed on Arc Testnet (SOL Daily Low Round #6, see the proof table above)
+
+IMPLEMENTED:
+
+- Circle human lifecycle architecture for entry, transfer, refund, claim and marketplace actions
+
+NOT YET FULLY LIVE PROVEN:
+
+- The complete post entry Circle lifecycle across those actions
+
+Circle live proof and Circle Gateway live proof are separate gates.
+
+#### Marketplace status
+
+- Marketplace contract and deterministic lifecycle coverage are complete.
+- Listing grouping UI is complete.
+- A real historical listing exists and has been exercised on Arc Testnet (Listing #2).
+- A secondary full live buy or trade proof remains optional and pending, only if required for final acceptance. No new live trade is claimed here.
+
+### Circle Gateway
+
+Circle Gateway is its own roadmap item and is not part of the Circle wallet or wallet notes.
+
+IMPLEMENTED:
+
+- Circle Gateway testnet service integration
+- Gateway balance read
+- Durable `gateway_funding_actions` database state
+- Burn intent and signature preparation
+- Recovery state
+- Reconciliation state
+- An uncertain outcome is handled by read only reconciliation, never a blind retry
+- Server side broadcast safety gate
+- Deterministic Gateway funding verification
+
+CURRENT PRODUCTION SAFETY: `EXTREMA_ENABLE_GATEWAY_BROADCAST=false`
+
+UI CURRENT ISSUE / ACTIVE WORK:
+
+- The Gateway UI previously disappeared when the Gateway balance was zero, unavailable, or had no transferable source.
+- The Circle Gateway surface must stay visible and honest for Circle sessions:
+  - a known zero shows 0 USDC
+  - unavailable shows unavailable instead of disappearing
+  - a positive transferable source may show the existing preparation flow
+  - recovery stays visible
+- An external wallet session must not receive a Circle Gateway funding action.
+
+LIVE PROOF STATUS: **NOT LIVE PROVEN.**
+
+Still required:
+
+- [ ] UI visibility correction
+- [ ] Read only production prerequisites
+- [ ] Explicit Koray approval before enabling broadcast
+- [ ] One controlled real Gateway transfer
+- [ ] Transaction, transfer ID and destination reconciliation proof
+- [ ] Post transfer balance and status verification
+- [ ] Return the broadcast gate to its intended safe state if appropriate
+
+Gateway is never marked complete only because deterministic tests pass.
+
 ### Final hackathon acceptance work
 
-The project is now feature-frozen for submission. No architecture changes, refactors, or new product features are planned unless a reproduced P0 submission blocker requires one.
+The project is feature frozen for submission. No architecture changes, refactors, or new product features are planned unless a reproduced P0 submission blocker requires one.
 
-1. Wrong-network detection and switch proof
-2. Final security acceptance gate
-3. Secondary marketplace live trade proof if required for final product acceptance; deterministic marketplace lifecycle coverage already passes
-4. Hackathon submission packaging, architecture diagram, project copy, and demo video
-5. Final browser-level visual polish:
-   - spacing, alignment, overflow, and responsive checks
-   - Koray Çifci identity/logo + `koraycifci.com`
-   - GitHub mark + repository link
-   - official Arc branding
-   - official Circle branding
-6. Final Arc Testnet single-round end-to-end proof in Section 15
-
-Target: complete items 1-5 before the final Section 15 live round proof.
-
-See [Current roadmap](#current-roadmap) at the end of this document for the execution order.
+The complete list of remaining work, in priority order, lives in the [Current roadmap](#current-roadmap) at the end of this document.
 
 ---
 
@@ -1778,7 +1914,13 @@ The global EXTREMA visual system is now active across the normal product routes.
 
 ## Current roadmap
 
-The old calendar-gated lifecycle proof is closed. As of 2026-09-09, the resolver has executed real cancellation and settlement transactions, a real refund and a real winner claim have moved Arc Testnet USDC, Circle production entry reconciliation is verified, and the live marketplace cache refresh path is proven.
+Updated 2026-09-11.
+
+> **Document rule.** Any material production, live proof, or submission status change must update this checklist in the same commit. A task is never considered closed only because it was discussed in chat.
+>
+> This file is the authoritative source for what is COMPLETE / LIVE PROVEN, what is IMPLEMENTED / WAITING FOR LIVE PROOF, and what is REMAINING.
+
+The old calendar gated lifecycle proof is closed. As of 2026-09-09, the resolver had executed real cancellation and settlement transactions, a real refund and a real winner claim had moved Arc Testnet USDC, Circle production entry reconciliation was verified, and the live marketplace cache refresh path was proven. The 2026-09-11 updates are summarized in the [production state snapshot](#production-state-snapshot).
 
 ### Completed live proof gate: C6
 
@@ -1800,21 +1942,62 @@ These proofs intentionally do **not** imply that every negative case was redunda
 - [x] **Real settlement result and verification surfaces verified.** ETH Daily High Round #4 returned real settled winners and `VERIFIED` Binance/onchain evidence from the canonical Railway endpoints.
 - [x] **Real leaderboard verified.** The page derives deterministic rankings from the real 90-day settled-round archive; the live archive returned Round #4 and three real winners.
 
-### Next execution order
+### Completed major systems
 
-The hackathon build is feature-frozen. Existing architecture stays unchanged unless a reproduced P0 submission blocker requires a change.
+Finished work, listed so it is not reopened. Items whose production proof is still open are listed under Remaining open work instead.
 
-1. **Documentation truth.** Synchronize README and proof documentation with the live production state.
-2. **Wrong-network proof.** Confirm transaction actions block the wrong chain and switching to Arc works.
-3. **Final security gate.** Close only submission-relevant acceptance items; no speculative refactors.
-4. **Marketplace proof decision.** Complete one real Arc Testnet sale only if needed for final EXTREMA acceptance.
-5. **Submission packaging.** Architecture diagram, project description, prize-track explanation, demo script, and video.
-6. **Final UI polish.** Only small spacing/responsive/overflow fixes plus Koray/site, GitHub/repository, official Arc, and official Circle branding.
-7. **Final deterministic E2E and production smoke.** Freeze after PASS.
-8. **Section 15 single-round live proof.** Existing production evidence proves the component paths across multiple rounds; this final test consolidates them into one round from creation through claim.
+- [x] 24 pool / 24 ticket deployment
+- [x] One economic Arc USDC model
+- [x] Fixed 1 USDC stake
+- [x] Payout and treasury math
+- [x] Transferable ticket claim right semantics
+- [x] DAILY / WEEKLY / QUARTERLY automation
+- [x] Binance archive and settlement evidence
+- [x] Real cancel proof
+- [x] Real settle proof
+- [x] Real refund proof
+- [x] Real claim proof
+- [x] External wallet execution
+- [x] Circle real entry
+- [x] Seed v3 implementation (implemented and deployed; daily 72/72 live proof is still open below)
+- [x] Seed partial plan retry fix
+- [x] RPC retry, failover and write safety
+- [x] Result immediate historical snapshot UX
+- [x] Verify Result user facing proof UX
 
-### Live actions pending
+### Remaining open work
 
-No C6 lifecycle transaction is waiting on a calendar gate anymore.
+Every open item is listed on its own line.
 
-Normal DAILY/WEEKLY/QUARTERLY lifecycle automation continues operating on future rounds, but those future transitions are ordinary protocol operation rather than blockers for the C6 proof gate.
+P0 / production proof:
+
+- [ ] Round 8 seed production reconciliation: 72 plans target, or an explicit reason for every missing plan
+- [ ] Archive durable PostgreSQL snapshot plus Leaderboard shared cache: deployment and production proof
+- [ ] Circle Gateway UI visibility correction
+- [ ] Circle Gateway controlled live transfer proof
+- [ ] Wrong network detection and Switch to Arc proof
+- [ ] Final security acceptance gate
+- [ ] Circle post entry lifecycle live proof, if required for final acceptance
+- [ ] HYPE Round 7 cancelled ticket refunds, if still unexecuted
+- [ ] Marketplace secondary live trade proof, if required
+
+Final submission:
+
+- [ ] Final responsive and browser visual pass
+- [ ] Koray Çifci identity and `koraycifci.com`
+- [ ] GitHub repository link
+- [ ] Official Arc branding
+- [ ] Official Circle branding
+- [ ] Architecture diagram
+- [ ] Hackathon project copy
+- [ ] Demo script
+- [ ] Demo video
+- [ ] Submission form and package
+- [ ] README and proof documentation synchronized with the live production state
+- [ ] Final deterministic E2E and production smoke; freeze after PASS
+
+Final onchain acceptance:
+
+- [ ] Section 15 ONE SINGLE ROUND end to end proof, all within the same real Arc Testnet round: creation → entries → lock → settlement or cancellation as applicable → winner or refund state → final claim or refund
+
+Normal DAILY / WEEKLY / QUARTERLY lifecycle automation keeps operating on future rounds; those transitions are ordinary protocol operation, not blockers.

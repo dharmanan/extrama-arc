@@ -1,11 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ProductHeader } from "../product-components";
-import { backendApi, type ArchiveWinner } from "../lib/backend-api";
+import { backendApi, type ArchiveResponse, type ArchiveWinner } from "../lib/backend-api";
+import { readCachedArchive, writeCachedArchive } from "../lib/archive-cache";
 import { formatUsdc } from "../lib/display";
 import { useCopy, useLocale } from "../i18n";
 import { useWalletSession } from "../wallet-session";
+
+// The leaderboard is derived entirely from the archive, so it shares the
+// Archive page's tab cache: known standings render before the first paint on
+// the client, and one archive revalidation refreshes both.
+const ARCHIVE_DAYS = 90;
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -66,34 +73,35 @@ export default function LeaderboardPage() {
   const { locale } = useLocale();
   const t = useCopy();
   const { address: ownAddress } = useWalletSession();
-  const [winners, setWinners] = useState<ArchiveWinner[] | null>(null);
-  const [blockNumber, setBlockNumber] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [archive, setArchive] = useState<ArchiveResponse | null>(null);
   const [error, setError] = useState("");
+  const hasArchive = useRef(false);
 
-  useEffect(() => {
+  // Stale while revalidate on the shared archive cache: render known
+  // standings at once, refresh silently, keep them if the refresh fails.
+  useIsomorphicLayoutEffect(() => {
     let cancelled = false;
+
+    const cached = readCachedArchive(ARCHIVE_DAYS);
+    if (cached) {
+      hasArchive.current = true;
+      setArchive(cached.archive);
+    }
+
     // Cancelled on unmount so a slow archive read never stalls navigation.
     const controller = new AbortController();
 
-    backendApi.rounds.archive(90, { signal: controller.signal })
+    backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal })
       .then((result) => {
         if (cancelled) return;
-        // Only SETTLED rounds carry real winners; LOCKED/ENTRY_OPEN/CANCELLED
-        // rounds either have no resolved outcome yet or none at all.
-        const settledWinners = result.rounds
-          .filter((round) => round.contractStatus === "SETTLED")
-          .flatMap((round) => round.winners);
-        setWinners(settledWinners);
-        setBlockNumber(result.chain.blockNumber);
+        writeCachedArchive(ARCHIVE_DAYS, result);
+        hasArchive.current = true;
+        setArchive(result);
         setError("");
       })
       .catch((cause: unknown) => {
-        if (cancelled) return;
+        if (cancelled || hasArchive.current) return;
         setError(cause instanceof Error ? cause.message : "Unable to load leaderboard.");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
 
     return () => {
@@ -101,6 +109,19 @@ export default function LeaderboardPage() {
       controller.abort();
     };
   }, []);
+
+  // Only SETTLED rounds carry real winners; LOCKED/ENTRY_OPEN/CANCELLED
+  // rounds either have no resolved outcome yet or none at all.
+  const winners = useMemo<ArchiveWinner[] | null>(
+    () => archive
+      ? archive.rounds
+          .filter((round) => round.contractStatus === "SETTLED")
+          .flatMap((round) => round.winners)
+      : null,
+    [archive],
+  );
+  const blockNumber = archive?.chain.blockNumber ?? null;
+  const loading = archive === null && !error;
 
   const rows = useMemo(() => (winners ? buildLeaderboard(winners) : []), [winners]);
 
@@ -123,8 +144,8 @@ export default function LeaderboardPage() {
           </div>
 
           <dl className="ex-leaderboard__summary">
-            <div><dt>{t.leaderboardEntrants}</dt><dd className="ex-num">{rows.length}</dd></div>
-            <div><dt>{t.leaderboardTotalPrize}</dt><dd className="ex-num">{formatUsdc(rawToDecimalString(totalPrizeRaw), locale)}</dd></div>
+            <div><dt>{t.leaderboardEntrants}</dt><dd className="ex-num">{archive ? rows.length : "—"}</dd></div>
+            <div><dt>{t.leaderboardTotalPrize}</dt><dd className="ex-num">{archive ? formatUsdc(rawToDecimalString(totalPrizeRaw), locale) : "—"}</dd></div>
             <div><dt>Arc Testnet</dt><dd className="ex-num">{blockNumber ?? "—"}</dd></div>
           </dl>
         </section>
@@ -133,6 +154,7 @@ export default function LeaderboardPage() {
           <section className="ex-leaderboard__state">
             <p className="ex-eyebrow">{t.leaderboardWindow}</p>
             <p>{t.leaderboardLoading}</p>
+            <span className="ex-state-progress" aria-hidden="true" />
           </section>
         )}
 
