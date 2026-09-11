@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 
 const {
   APPROVED_SEED_WALLETS,
+  readObservedMarketReferences,
+  generateDeterministicPredictions,
 } = require('../src/services/seedBotCore');
 
 const {
@@ -149,6 +151,70 @@ async function main() {
   let capturedCandidate = null;
   let capturedPayload = null;
 
+  const marketLayer = {
+    async getLiveMarkPrices({
+      forceFresh,
+    }) {
+      assert.equal(
+        forceFresh,
+        true,
+      );
+
+      return {
+        source:
+          'Binance verifier fixture',
+
+        prices:
+          Object.fromEntries(
+            Object.entries(fixtures)
+              .map(
+                ([symbol, value]) => [
+                  symbol,
+                  {
+                    symbol,
+                    markPrice:
+                      value.mark,
+                    source:
+                      'Binance USDⓈ-M Futures Mark Price',
+                    isSettlementSource:
+                      true,
+                  },
+                ],
+              ),
+          ),
+      };
+    },
+
+    async fetchMarkPriceWindow({
+      symbol,
+      cadence,
+    }) {
+      assert.equal(
+        cadence,
+        'DAILY',
+      );
+
+      return { symbol };
+    },
+
+    calculateExtrema(window) {
+      const fixture =
+        fixtures[window.symbol];
+
+      return {
+        high: {
+          resolvedPriceCents:
+            fixture.high,
+        },
+
+        low: {
+          resolvedPriceCents:
+            fixture.low,
+        },
+      };
+    },
+  };
+
   const executor =
     createSeedBotProductionExecutor({
       topology,
@@ -172,69 +238,7 @@ async function main() {
         },
       },
 
-      marketLayer: {
-        async getLiveMarkPrices({
-          forceFresh,
-        }) {
-          assert.equal(
-            forceFresh,
-            true,
-          );
-
-          return {
-            source:
-              'Binance verifier fixture',
-
-            prices:
-              Object.fromEntries(
-                Object.entries(fixtures)
-                  .map(
-                    ([symbol, value]) => [
-                      symbol,
-                      {
-                        symbol,
-                        markPrice:
-                          value.mark,
-                        source:
-                          'Binance USDⓈ-M Futures Mark Price',
-                        isSettlementSource:
-                          true,
-                      },
-                    ],
-                  ),
-              ),
-          };
-        },
-
-        async fetchMarkPriceWindow({
-          symbol,
-          cadence,
-        }) {
-          assert.equal(
-            cadence,
-            'DAILY',
-          );
-
-          return { symbol };
-        },
-
-        calculateExtrema(window) {
-          const fixture =
-            fixtures[window.symbol];
-
-          return {
-            high: {
-              resolvedPriceCents:
-                fixture.high,
-            },
-
-            low: {
-              resolvedPriceCents:
-                fixture.low,
-            },
-          };
-        },
-      },
+      marketLayer,
 
       dbClient: {
         async query() {
@@ -436,6 +440,77 @@ async function main() {
     capturedPayload.payload.nonce,
     /^seed:seed:test:round8$/,
   );
+
+  // The executed price is exactly the v3 prediction for this wallet computed
+  // from the CURRENT observed extrema, never the persisted plan value.
+  async function expectedFreshPrediction() {
+    const references = await readObservedMarketReferences({
+      marketLayer,
+      roundsState,
+      topology,
+      now: roundsState.chain.timestamp,
+      forceFresh: true,
+    });
+    const reference = references.BTC;
+    assert.equal(reference.available, true);
+    const predictions = generateDeterministicPredictions({
+      markPriceCents: reference.markPriceCents,
+      observedHighCents: reference.observedHighCents,
+      observedLowCents: reference.observedLowCents,
+      elapsedSeconds: reference.elapsedSeconds,
+      remainingSeconds: reference.remainingSeconds,
+      direction: 'HIGH',
+      wallets: APPROVED_SEED_WALLETS,
+      seed: 'extrema-seed-bot-v3',
+      poolKey: `${btcHigh.poolAddress}:8:${marketStart}`,
+    });
+    return predictions[wallet.toLowerCase()];
+  }
+
+  const firstFresh = await expectedFreshPrediction();
+  assert.equal(
+    capturedCandidate.predictionPriceCents,
+    firstFresh,
+    'refreshed price equals the v3 prediction from current observed extrema',
+  );
+  assert.equal(capturedCandidate.observedHighCents, '6700000');
+
+  // The market moves: a new observed high above the previously executed
+  // price. A persisted plan still carrying that earlier price is stale and
+  // must be replaced with a fresh prediction above the new observed high.
+  fixtures.BTCUSDT.high = '6950000';
+  const secondFresh = await expectedFreshPrediction();
+  assert.notEqual(secondFresh, firstFresh, 'a new observed high changes the fresh prediction');
+
+  const refreshed = await executor.executeDueEntry(
+    {
+      ...entry,
+      predictionPriceCents: firstFresh,
+    },
+    {
+      idempotencyKey:
+        'seed:test:round8-refresh',
+    },
+  );
+
+  assert.equal(refreshed.executed, true);
+  assert.equal(capturedCandidate.observedHighCents, '6950000');
+  assert.equal(
+    capturedCandidate.predictionPriceCents,
+    secondFresh,
+    'stale persisted prediction is replaced with the fresh one',
+  );
+  assert.equal(
+    BigInt(capturedCandidate.predictionPriceCents) > 6950000n,
+    true,
+    'fresh HIGH prediction extends the new observed high',
+  );
+  assert.equal(
+    String(capturedPayload.payload.predictionPriceCents),
+    secondFresh,
+    'the executed price is the fresh price',
+  );
+  assert.equal(broadcasts, 2);
 
   const liveReadsBeforeStale =
     liveReads;

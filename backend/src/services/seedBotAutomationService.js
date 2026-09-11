@@ -160,12 +160,13 @@ function createSeedBotAutomationService({
 
       let insertedPlans = 0;
 
+      // Planning is retried on its own interval even while open plans exist,
+      // so a pass that planned only some pools is completed later. Existing
+      // same version plans are never rewritten: persistEntries inserts only
+      // missing wallet, pool and round plans.
       const planRefreshDue =
-        entries.length === 0 &&
-        (
-          lastPlanAttemptAtMs === null ||
-          nowMs - lastPlanAttemptAtMs >= planRefreshMs
-        );
+        lastPlanAttemptAtMs === null ||
+        nowMs - lastPlanAttemptAtMs >= planRefreshMs;
 
       if (planRefreshDue) {
         lastPlanAttemptAtMs = nowMs;

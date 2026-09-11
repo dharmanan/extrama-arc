@@ -273,6 +273,180 @@ async function main() {
   assert.equal(fakeClient.unlockCalls, 3);
   assert.equal(fakeClient.released, 4);
 
+  // Partial planning pass. The first planner pass yields only one pool's
+  // plans, so open plans exist; the planning refresh must still run again
+  // after planRefreshMs and persist the missing pool's plans, without
+  // duplicating or rewriting the plans that already exist.
+  {
+    const PLAN_REFRESH_MS = 15 * 60 * 1000;
+    const ethPool = '0x0000000000000000000000000000000000000011';
+    const btcPool = '0x0000000000000000000000000000000000000021';
+    const partialTopology = [
+      { asset: 'ETH', direction: 'HIGH', cadence: 'DAILY', poolAddress: ethPool, ticketAddress },
+      { asset: 'BTC', direction: 'HIGH', cadence: 'DAILY', poolAddress: btcPool, ticketAddress },
+    ];
+    const planEntry = (wallet, pool, poolAddr, priceCents, plannedExecutionAt) => ({
+      wallet,
+      pool,
+      poolAddress: poolAddr,
+      roundId: '8',
+      plannerVersion: 'extrema-seed-bot-v3',
+      predictionPriceCents: priceCents,
+      plannedExecutionAt,
+      entryOpenAt: '2030-01-01T00:00:00.000Z',
+      entryCloseAt: '2030-01-01T20:00:00.000Z',
+      eligible: true,
+      alreadyEntered: false,
+    });
+
+    let partialNowMs = baseMs;
+    let partialPlannerCalls = 0;
+    let partialExecutorCalls = 0;
+    const partialStore = [];
+    const persistCalls = [];
+
+    const partialPlanner = async () => {
+      partialPlannerCalls += 1;
+      const ethEntries = [
+        planEntry(walletA, 'eth-daily-high', ethPool, '350000', '2030-01-01T09:00:00.000Z'),
+        planEntry(walletB, 'eth-daily-high', ethPool, '351000', '2030-01-01T09:01:00.000Z'),
+      ];
+      if (partialPlannerCalls === 1) return { executableEntries: ethEntries };
+      // A later pass also plans BTC. Its ETH entries carry different values
+      // on purpose: persisted plans must keep their original values.
+      return {
+        executableEntries: [
+          ...ethEntries.map((entry) => ({ ...entry, predictionPriceCents: '999999' })),
+          planEntry(walletA, 'btc-daily-high', btcPool, '6500000', '2030-01-01T10:05:00.000Z'),
+          planEntry(walletB, 'btc-daily-high', btcPool, '6600000', '2030-01-01T10:06:00.000Z'),
+        ],
+      };
+    };
+
+    const partialPlanStoreFactory = () => ({
+      async loadOpenEntries({ now, plannerVersion = null }) {
+        const timestamp = new Date(now).getTime();
+        return partialStore
+          .filter((entry) =>
+            new Date(entry.entryCloseAt).getTime() > timestamp &&
+            (plannerVersion === null || entry.plannerVersion === plannerVersion))
+          .map((entry) => ({ ...entry }));
+      },
+      async persistEntries(entries) {
+        persistCalls.push(entries.length);
+        let inserted = 0;
+        for (const entry of entries) {
+          const exists = partialStore.some((existing) =>
+            existing.wallet.toLowerCase() === entry.wallet.toLowerCase() &&
+            existing.poolAddress.toLowerCase() === entry.poolAddress.toLowerCase() &&
+            String(existing.roundId) === String(entry.roundId));
+          if (!exists) {
+            partialStore.push({ ...entry });
+            inserted += 1;
+          }
+        }
+        return { inserted };
+      },
+    });
+
+    const partialState = {};
+    const partialService = createSeedBotAutomationService({
+      db: fakeDb,
+      arcService: {
+        ARC_POOL_TOPOLOGY: partialTopology,
+        async getStandardRoundsState({ forceFresh }) {
+          assert.equal(forceFresh, true);
+          return { chain: { timestamp: Math.floor(partialNowMs / 1000) }, pools: [] };
+        },
+      },
+      topology: partialTopology,
+      enabled: true,
+      clock: () => partialNowMs,
+      planRefreshMs: PLAN_REFRESH_MS,
+      planner: partialPlanner,
+      loadWallets: async () => [walletA, walletB],
+      planStoreFactory: partialPlanStoreFactory,
+      idempotencyStoreFactory: () => createIdempotencyStore(partialState),
+      executorFactory: () => ({
+        async executeDueEntry(entry) {
+          partialExecutorCalls += 1;
+          return { executed: true, reason: 'executed', wallet: entry.wallet };
+        },
+      }),
+      schedulerFactory: createSeedBotScheduler,
+      logger: { log() {}, error() {} },
+    });
+
+    // t0: the partial pass persists only ETH and dispatches one entry.
+    const p1 = await partialService.runTick();
+    assert.equal(p1.planned, 2);
+    assert.equal(p1.openPlans, 2);
+    assert.equal(p1.dispatched, true);
+    assert.equal(partialPlannerCalls, 1);
+    assert.equal(partialExecutorCalls, 1);
+    const ethSnapshot = JSON.stringify(partialStore);
+
+    // t0 + 1 min: open plans exist and the refresh interval has not passed,
+    // so the planner is not called; spacing blocks the second ETH entry.
+    partialNowMs = baseMs + 60 * 1000;
+    const p2 = await partialService.runTick();
+    assert.equal(partialPlannerCalls, 1, 'planning waits for its refresh interval');
+    assert.equal(p2.dispatched, false);
+    assert.equal(p2.reason, 'global_spacing');
+
+    // t0 + 5 min: the second ETH entry dispatches; still no replanning.
+    partialNowMs = baseMs + 5 * 60 * 1000;
+    const p3 = await partialService.runTick();
+    assert.equal(p3.dispatched, true);
+    assert.equal(partialExecutorCalls, 2);
+    assert.equal(partialPlannerCalls, 1);
+
+    // t0 + 14 min 59 s: just before the interval, open plans exist and no
+    // replanning happens.
+    partialNowMs = baseMs + PLAN_REFRESH_MS - 1000;
+    await partialService.runTick();
+    assert.equal(partialPlannerCalls, 1);
+
+    // t0 + 15 min: the refresh is due although open plans exist. The missing
+    // BTC plans are inserted; ETH plans are neither duplicated nor rewritten.
+    partialNowMs = baseMs + PLAN_REFRESH_MS;
+    const executorBeforeRefresh = partialExecutorCalls;
+    const p4 = await partialService.runTick();
+    assert.equal(partialPlannerCalls, 2, 'planner runs again while open plans exist');
+    assert.equal(p4.planned, 2, 'only the missing BTC plans are inserted');
+    assert.equal(p4.openPlans, 4);
+    assert.equal(partialStore.length, 4, 'existing plans are not duplicated');
+    assert.equal(JSON.stringify(partialStore.slice(0, 2)), ethSnapshot, 'existing plans are not rewritten');
+    assert.deepEqual(
+      partialStore.map((entry) => `${entry.pool}:${entry.wallet}:${entry.predictionPriceCents}`),
+      [
+        `eth-daily-high:${walletA}:350000`,
+        `eth-daily-high:${walletB}:351000`,
+        `btc-daily-high:${walletA}:6500000`,
+        `btc-daily-high:${walletB}:6600000`,
+      ],
+    );
+    assert.equal(p4.dispatched, true);
+    assert.equal(partialExecutorCalls - executorBeforeRefresh, 1, 'at most one due entry per tick');
+
+    // t0 + 16 min: spacing still blocks the second BTC entry and planning is
+    // back on its interval.
+    partialNowMs = baseMs + PLAN_REFRESH_MS + 60 * 1000;
+    const p5 = await partialService.runTick();
+    assert.equal(p5.dispatched, false);
+    assert.equal(p5.reason, 'global_spacing');
+    assert.equal(partialPlannerCalls, 2);
+
+    // t0 + 20 min: five minutes after the last dispatch, the second BTC
+    // entry dispatches.
+    partialNowMs = baseMs + PLAN_REFRESH_MS + 5 * 60 * 1000;
+    const p6 = await partialService.runTick();
+    assert.equal(p6.dispatched, true);
+    assert.equal(partialExecutorCalls, 4);
+    assert.equal(partialPlannerCalls, 2);
+    assert.deepEqual(persistCalls, [2, 4]);
+  }
+
   // Disabled startup must schedule absolutely nothing.
   const disabledTimers = [];
 

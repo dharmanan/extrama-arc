@@ -10,7 +10,47 @@ const {
   readObservedMarketReferences,
   participationKey,
   createSeedBotDryRunPlan,
+  generateDeterministicPredictions,
+  resolveDeterministicPredictionSlot,
 } = require('../src/services/seedBotCore');
+
+function compareBigInt(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+// Shared v3 prediction safety invariants for one pool's nine predictions:
+// positive, strictly beyond the already observed extreme, unique, and spread
+// out with no two predictions closer than the algorithm's own minimum gap
+// floor (0.01% of the current mark, at least one cent).
+function assertPoolPredictionSafety(label, predictionCents, { direction, markPriceCents, observedHighCents, observedLowCents }) {
+  const values = predictionCents.map((value) => BigInt(value));
+  assert.equal(values.length, 9, `${label}: nine predictions`);
+  assert.equal(new Set(values.map(String)).size, 9, `${label}: all nine prices are unique`);
+
+  const observedHigh = BigInt(observedHighCents);
+  const observedLow = BigInt(observedLowCents);
+  for (const value of values) {
+    assert.equal(value > 0n, true, `${label}: prediction must be positive`);
+    if (direction === 'HIGH') {
+      assert.equal(value > observedHigh, true, `${label}: HIGH ${value} must be strictly above observed high ${observedHigh}`);
+    } else {
+      assert.equal(value < observedLow, true, `${label}: LOW ${value} must be strictly below observed low ${observedLow}`);
+    }
+  }
+
+  const mark = BigInt(markPriceCents);
+  const gapFloor = mark / 10_000n > 0n ? mark / 10_000n : 1n;
+  const sorted = [...values].sort(compareBigInt);
+  for (let index = 1; index < sorted.length; index += 1) {
+    assert.equal(
+      sorted[index] - sorted[index - 1] >= gapFloor,
+      true,
+      `${label}: adjacent predictions must not cluster (gap ${sorted[index] - sorted[index - 1]} < ${gapFloor})`,
+    );
+  }
+  assert.equal(sorted[sorted.length - 1] - sorted[0] >= gapFloor * 8n, true, `${label}: risk profiles must spread out`);
+  return sorted;
+}
 
 const topology = [
   ['BTC', 'HIGH'],
@@ -501,6 +541,155 @@ async function main() {
   });
   assert.equal(unfunded.executableEntries.length, 0, 'funding failure has no executable entries');
   assert.equal(unfunded.entries.every((entry) => entry.reason === 'insufficient_usdc'), true);
+
+  // =========================================================================
+  // v3 prediction safety. Verification only; the algorithm is unchanged.
+  // =========================================================================
+
+  // 1. All 8 DAILY pools x 9 approved seed wallets = 72 predictions when
+  //    every market reference is available.
+  const approvedKeys = APPROVED_SEED_WALLETS.map((wallet) => wallet.toLowerCase()).sort();
+  const fullPredictions = full.executableEntries.filter((entry) => entry.predictionPriceCents !== null);
+  assert.equal(fullPredictions.length, 72, '72 predictions with all market references available');
+  for (const pool of dailyPools) {
+    const poolEntries = fullPredictions.filter((entry) => entry.poolAddress.toLowerCase() === pool.poolAddress.toLowerCase());
+    assert.deepEqual(
+      poolEntries.map((entry) => entry.wallet.toLowerCase()).sort(),
+      approvedKeys,
+      `${pool.asset} ${pool.direction}: every approved seed wallet predicts exactly once`,
+    );
+    // 2, 3, 4 and 6 for every live shaped pool.
+    const reference = marketReferences[pool.asset];
+    assertPoolPredictionSafety(`plan ${pool.asset} ${pool.direction}`, poolEntries.map((entry) => entry.predictionPriceCents), {
+      direction: pool.direction,
+      ...reference,
+    });
+  }
+
+  // 5. Same inputs produce exactly the same predictions.
+  const fullReplay = await createSeedBotDryRunPlan({ ...options, existingParticipation: new Set() });
+  assert.deepEqual(
+    fullReplay.executableEntries.map((entry) => entry.predictionPriceCents),
+    full.executableEntries.map((entry) => entry.predictionPriceCents),
+    'same inputs replay the same 72 predictions',
+  );
+
+  const V3_SEED = 'extrema-seed-bot-v3';
+  const POOL_KEY = '0x0000000000000000000000000000000000000001:8:1800000000';
+  const predict = (reference, direction, overrides = {}) => generateDeterministicPredictions({
+    ...reference,
+    direction,
+    wallets: APPROVED_SEED_WALLETS,
+    seed: V3_SEED,
+    poolKey: POOL_KEY,
+    ...overrides,
+  });
+
+  // 6. Different risk profiles spread across the projected extension rather
+  //    than clustering: on a normal BTC day the nine predictions cover at
+  //    least half of the observed range, never two within 0.01% of mark.
+  const normalBtc = {
+    markPriceCents: '6500000',
+    observedHighCents: '6600000',
+    observedLowCents: '6400000',
+    elapsedSeconds: '36000',
+    remainingSeconds: '36000',
+  };
+  for (const direction of ['HIGH', 'LOW']) {
+    const sorted = assertPoolPredictionSafety(`normal BTC ${direction}`, Object.values(predict(normalBtc, direction)), {
+      direction,
+      ...normalBtc,
+    });
+    assert.equal(sorted[8] - sorted[0] >= 100_000n, true, `normal BTC ${direction}: spread covers at least half the observed range`);
+  }
+
+  // 7. The time projection clamp is preserved: sqrt(remaining / elapsed) is
+  //    held to [0.25x, 2.5x]. Ratios past either bound produce predictions
+  //    identical to the bound itself, and the two bounds differ.
+  const atRatio = (elapsedSeconds, remainingSeconds) => ({ ...normalBtc, elapsedSeconds, remainingSeconds });
+  for (const direction of ['HIGH', 'LOW']) {
+    const upperBound = predict(atRatio('3600', '22500'), direction); // ratio 6.25, scale exactly 2.5x
+    assert.deepEqual(predict(atRatio('60', '72000'), direction), upperBound, `${direction}: scale above 2.5x is clamped to 2.5x`);
+    assert.deepEqual(predict(atRatio('1', '1000000000'), direction), upperBound, `${direction}: extreme early ratio is clamped to 2.5x`);
+
+    const lowerBound = predict(atRatio('36000', '2250'), direction); // ratio 0.0625, scale exactly 0.25x
+    assert.deepEqual(predict(atRatio('72000', '60'), direction), lowerBound, `${direction}: scale below 0.25x is clamped to 0.25x`);
+    assert.deepEqual(predict(atRatio('60', '0'), direction), lowerBound, `${direction}: no remaining time uses the 0.25x floor`);
+
+    const middle = predict(atRatio('36000', '36000'), direction); // scale 1.0x
+    const outermost = (predictions) => {
+      const values = Object.values(predictions).map((value) => BigInt(value)).sort(compareBigInt);
+      return direction === 'HIGH' ? values[8] : values[0];
+    };
+    const distance = (predictions) => {
+      const edge = outermost(predictions);
+      return direction === 'HIGH' ? edge - BigInt(normalBtc.observedHighCents) : BigInt(normalBtc.observedLowCents) - edge;
+    };
+    assert.equal(distance(lowerBound) < distance(middle), true, `${direction}: 0.25x projects less than 1.0x`);
+    assert.equal(distance(middle) < distance(upperBound), true, `${direction}: 1.0x projects less than 2.5x`);
+  }
+
+  // 8. Pathological fixtures keep positive prices and the observed extreme
+  //    invariants in both directions.
+  const pathological = {
+    'nearly flat first hour': {
+      markPriceCents: '6500000', observedHighCents: '6500100', observedLowCents: '6499900',
+      elapsedSeconds: '3600', remainingSeconds: '68400',
+    },
+    'unusually volatile first hour': {
+      markPriceCents: '6500000', observedHighCents: '6800000', observedLowCents: '6200000',
+      elapsedSeconds: '3600', remainingSeconds: '68400',
+    },
+    'very early round': {
+      markPriceCents: '6500000', observedHighCents: '6501000', observedLowCents: '6499000',
+      elapsedSeconds: '60', remainingSeconds: '71940',
+    },
+    'late round': {
+      markPriceCents: '6500000', observedHighCents: '6575000', observedLowCents: '6425000',
+      elapsedSeconds: '71000', remainingSeconds: '60',
+    },
+    'low priced asset': {
+      markPriceCents: '125', observedHighCents: '127', observedLowCents: '123',
+      elapsedSeconds: '36000', remainingSeconds: '36000',
+    },
+  };
+  for (const [name, reference] of Object.entries(pathological)) {
+    for (const direction of ['HIGH', 'LOW']) {
+      const predictions = predict(reference, direction);
+      assert.deepEqual(Object.keys(predictions).sort(), approvedKeys, `${name} ${direction}: one prediction per approved wallet`);
+      assertPoolPredictionSafety(`${name} ${direction}`, Object.values(predictions), { direction, ...reference });
+      assert.deepEqual(predict(reference, direction), predictions, `${name} ${direction}: deterministic replay`);
+    }
+  }
+
+  // 10. A taken prediction slot only ever moves outward: HIGH to a higher
+  //     price, LOW to a lower price, and never onto another taken slot.
+  const slot = (predictionPriceCents, direction, blockedPriceCents) => resolveDeterministicPredictionSlot({
+    predictionPriceCents,
+    markPriceCents: '6500000',
+    direction,
+    wallet: APPROVED_SEED_WALLETS[0],
+    seed: V3_SEED,
+    poolKey: POOL_KEY,
+    blockedPriceCents,
+  });
+  assert.equal(slot('6700000', 'HIGH', []), '6700000', 'an untaken slot is kept as is');
+  assert.equal(slot('6300000', 'LOW', ['6300001']), '6300000', 'an unrelated taken slot changes nothing');
+  assert.equal(slot('6700000', 'HIGH', ['6700000', '6700001']), '6700002');
+  assert.equal(slot('6300000', 'LOW', ['6300000', '6299999']), '6299998');
+  for (const blockedCount of [1, 2, 5, 17]) {
+    const highBlocked = Array.from({ length: blockedCount }, (_, index) => String(6_700_000n + BigInt(index)));
+    const lowBlocked = Array.from({ length: blockedCount }, (_, index) => String(6_300_000n - BigInt(index)));
+    // Slots on the inward side are taken too; they must never be chosen.
+    highBlocked.push('6699999');
+    lowBlocked.push('6300001');
+    const highSlot = BigInt(slot('6700000', 'HIGH', highBlocked));
+    const lowSlot = BigInt(slot('6300000', 'LOW', lowBlocked));
+    assert.equal(highSlot > 6_700_000n, true, 'HIGH collision moves higher');
+    assert.equal(lowSlot < 6_300_000n, true, 'LOW collision moves lower');
+    assert.equal(highBlocked.includes(String(highSlot)), false);
+    assert.equal(lowBlocked.includes(String(lowSlot)), false);
+  }
 
   assert.equal(/Math\.random|random\s*\(/.test(require('node:fs').readFileSync(require.resolve('../src/services/seedBotCore'), 'utf8')), false, 'no runtime randomness');
   console.log('seed-bot-core: PASS');
