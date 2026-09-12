@@ -163,6 +163,17 @@ export async function confirmGatewayBurnSignature(
     clearExternalGatewayFundingRecovery();
     throw new Error(GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION);
   }
+  if (started.recovery === "CONFLICT") {
+    recovery = {
+      requestId,
+      actionId: started.actionId,
+      destinationDomain: started.destinationDomain,
+      valueRaw: started.valueRaw,
+      expiresAtMs: Date.parse(started.expiresAt),
+    };
+    storeExternalGatewayFundingRecovery(recovery);
+    return started;
+  }
   if (started.terminal) throw new Error("gateway_signature_challenge_uncertain");
   if (started.readyToBroadcast) {
     // Keep the same durable action recoverable through submission and finality.

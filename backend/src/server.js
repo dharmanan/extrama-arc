@@ -174,6 +174,8 @@ app.use((error, req, res, next) => {
     'gateway_request_id_conflict',
     'gateway_funding_not_found',
     'gateway_funding_expired',
+    'gateway_funding_multiple_active',
+    'gateway_funding_discard_not_allowed',
     'gateway_source_domain_invalid',
     'gateway_source_domain_is_destination',
     'gateway_source_domain_unsupported',

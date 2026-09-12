@@ -33,6 +33,8 @@ import {
   storeCircleTabAuth,
   clearCircleGatewayFundingRecovery,
   clearExternalGatewayFundingRecovery,
+  storeCircleGatewayFundingRecovery,
+  storeExternalGatewayFundingRecovery,
   readCircleSourceWalletRecovery,
   storeCircleSourceWalletRecovery,
   clearCircleSourceWalletRecovery,
@@ -61,6 +63,11 @@ import { readBinanceLiveMarket } from "../lib/live-market";
 // wallet. "choice" is the connected wallet's single login signature.
 type Step = "owner" | "choice" | "ready";
 type GatewayReadState = "idle" | "loading" | "ready" | "error";
+type GatewayFundingAuthorityState = "loading" | "none" | "active" | "duplicate" | "error";
+
+const GATEWAY_FUNDING_DISCARD_STATES = [
+  "PREPARING", "SIGN_CHALLENGE_CREATING", "SIGNATURE_PENDING", "READY_TO_BROADCAST",
+] as const;
 
 // The wallet UI is driven entirely by the canonical network lists the server
 // sends (labels and Gateway domains). No token address, no contract address
@@ -201,6 +208,13 @@ function gatewayTransactionExplorerUrl(action: GatewayFundingResponse) {
   return explorer ? `${explorer.replace(/\/+$/, "")}/tx/${action.transactionHash}` : null;
 }
 
+function canDiscardGatewayFunding(action: GatewayFundingResponse) {
+  return GATEWAY_FUNDING_DISCARD_STATES.includes(action.state as typeof GATEWAY_FUNDING_DISCARD_STATES[number]) &&
+    action.broadcast === "NOT_SUBMITTED" &&
+    action.transferId === null &&
+    action.transactionHash === null;
+}
+
 function WalletLiveMarket() {
   const { locale } = useLocale();
   const [prices, setPrices] = useState<Record<string, WalletMarketPrice>>({});
@@ -332,6 +346,7 @@ export default function WalletPage() {
     CircleGatewayFundingRecovery | ExternalGatewayFundingRecovery | null
   >(null);
   const [gatewayFundingStatus, setGatewayFundingStatus] = useState<GatewayFundingResponse | null>(null);
+  const [gatewayFundingAuthorityState, setGatewayFundingAuthorityState] = useState<GatewayFundingAuthorityState>("loading");
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
   const [walletNotice, setWalletNotice] = useState("");
@@ -569,8 +584,52 @@ export default function WalletPage() {
     setGatewayAmount(formatGatewayUsdcRaw(recovery.valueRaw));
   }
 
+  function restoreGatewayFundingRecoveryFromAction(action: GatewayFundingResponse) {
+    setGatewayFundingRecovery(action.executionMode === "CIRCLE_USER_WALLET"
+      ? {
+        requestId: action.requestId,
+        actionId: action.actionId,
+        payloadHash: action.payloadHash,
+        destinationDomain: action.destinationDomain,
+        valueRaw: action.valueRaw,
+        signatureIndex: action.signatureIndex,
+        challengeId: action.challengeId,
+        expiresAtMs: Date.parse(action.expiresAt),
+      }
+      : {
+        requestId: action.requestId,
+        actionId: action.actionId,
+        destinationDomain: action.destinationDomain,
+        valueRaw: action.valueRaw,
+        expiresAtMs: Date.parse(action.expiresAt),
+      });
+    if (action.executionMode === "CIRCLE_USER_WALLET") {
+      storeCircleGatewayFundingRecovery({
+        requestId: action.requestId,
+        actionId: action.actionId,
+        payloadHash: action.payloadHash,
+        destinationDomain: action.destinationDomain,
+        valueRaw: action.valueRaw,
+        signatureIndex: action.signatureIndex,
+        challengeId: action.challengeId,
+        expiresAtMs: Date.parse(action.expiresAt),
+      });
+    } else {
+      storeExternalGatewayFundingRecovery({
+        requestId: action.requestId,
+        actionId: action.actionId,
+        destinationDomain: action.destinationDomain,
+        valueRaw: action.valueRaw,
+        expiresAtMs: Date.parse(action.expiresAt),
+      });
+    }
+    setGatewayDestinationDomain(String(action.destinationDomain));
+    setGatewayAmount(formatGatewayUsdcRaw(action.valueRaw));
+  }
+
   function finishCompletedGatewayFunding(action: GatewayFundingResponse) {
     clearGatewayFundingRecovery();
+    setGatewayFundingAuthorityState("none");
     setGatewayFundingStatus(null);
     setGatewayAmount("");
     setGatewayFundingBusy(false);
@@ -605,26 +664,86 @@ export default function WalletPage() {
     setGatewayReadState("idle");
   }, [step, walletStatus, walletAddress, executionMode]);
 
-  // A reload restores the destination and the amount the user chose and
-  // resumes the SAME action. The source plan is never restored from here: it
-  // belongs to the server and the action reports it back.
+  // The server is authoritative for the current outbound action. Local
+  // sessionStorage is only a pointer used for a read-only compatibility probe
+  // when the server says there is no unresolved row.
   useEffect(() => {
-    if (executionMode !== "CIRCLE_USER_WALLET" && executionMode !== "EXTERNAL_WALLET") {
-      setGatewayFundingRecovery(null);
-      setGatewayFundingStatus(null);
+    const humanMode = executionMode === "CIRCLE_USER_WALLET" || executionMode === "EXTERNAL_WALLET";
+    if (!humanMode || walletStatus !== "ready" || !walletAddress) {
+      if (!humanMode) {
+        setGatewayFundingRecovery(null);
+        setGatewayFundingStatus(null);
+        setGatewayFundingAuthorityState("none");
+      } else {
+        setGatewayFundingAuthorityState("loading");
+      }
       return;
     }
-    const recovery = executionMode === "CIRCLE_USER_WALLET"
+    let cancelled = false;
+    const localRecovery = executionMode === "CIRCLE_USER_WALLET"
       ? readCircleGatewayFundingRecovery()
       : readExternalGatewayFundingRecovery();
-    if (!recovery) {
-      setGatewayFundingStatus(null);
-      return;
+
+    async function loadAuthoritativeGatewayFunding() {
+      setGatewayFundingAuthorityState("loading");
+      try {
+        const current = await backendApi.wallet.currentGatewayFunding();
+        if (cancelled) return;
+        if (current.status === "DUPLICATE") {
+          clearGatewayFundingRecovery();
+          setGatewayFundingStatus(null);
+          setGatewayFundingAuthorityState("duplicate");
+          setGatewayFundingError(t.wallet.gatewayMultipleActive);
+          return;
+        }
+        if (current.status === "ACTIVE" && current.action) {
+          restoreGatewayFundingRecoveryFromAction(current.action);
+          setGatewayFundingStatus(current.action);
+          setGatewayFundingError("");
+          setGatewayFundingAuthorityState("active");
+          return;
+        }
+
+        if (localRecovery) {
+          // A status probe is retained for completed cleanup and for a narrow
+          // race where the current read saw NONE just before an action became
+          // visible. It never starts, signs or submits anything.
+          const recovered = await backendApi.wallet.gatewayFunding(localRecovery.actionId);
+          if (cancelled) return;
+          if (recovered.state === "COMPLETED") {
+            finishCompletedGatewayFunding(recovered);
+            return;
+          }
+          if (isGatewayFundingTerminalWithoutSubmission(recovered)) {
+            clearGatewayFundingRecovery();
+            setGatewayFundingStatus(null);
+            setGatewayFundingAuthorityState("none");
+            return;
+          }
+          if (GATEWAY_FUNDING_DISCARD_STATES.includes(recovered.state as typeof GATEWAY_FUNDING_DISCARD_STATES[number]) ||
+            ["SUBMITTING", "SUBMITTED", "RECONCILIATION_REQUIRED"].includes(recovered.state)) {
+            restoreGatewayFundingRecoveryFromAction(recovered);
+            setGatewayFundingStatus(recovered);
+            setGatewayFundingError("");
+            setGatewayFundingAuthorityState("active");
+            return;
+          }
+        }
+
+        clearGatewayFundingRecovery();
+        setGatewayFundingStatus(null);
+        setGatewayFundingAuthorityState("none");
+      } catch {
+        if (cancelled) return;
+        // Unknown authority must fail closed: keep any local pointer and do
+        // not expose a fresh financial action until the read succeeds.
+        setGatewayFundingAuthorityState("error");
+        setGatewayFundingError(t.wallet.gatewayCurrentUnavailable);
+      }
     }
-    setGatewayFundingRecovery(recovery);
-    setGatewayDestinationDomain(String(recovery.destinationDomain));
-    setGatewayAmount(formatGatewayUsdcRaw(recovery.valueRaw));
-  }, [executionMode]);
+    void loadAuthoritativeGatewayFunding();
+    return () => { cancelled = true; };
+  }, [executionMode, walletAddress, walletStatus]);
 
   useEffect(() => {
     const actionId = gatewayFundingRecovery?.actionId;
@@ -650,6 +769,7 @@ export default function WalletPage() {
           setGatewayFundingNotice("");
           setGatewayFundingTransactionUrl(null);
           setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
+          setGatewayFundingAuthorityState("none");
           return;
         }
         if (["SUBMITTING", "SUBMITTED", "RECONCILIATION_REQUIRED"].includes(current.state)) {
@@ -1356,7 +1476,8 @@ export default function WalletPage() {
   // actually burn from. One number: the product model is one balance, so the
   // UI never breaks it down per source.
   const gatewaySpendableRaw = gateway?.transferableTotalRaw || "0";
-  const gatewayCanPrepare = Boolean(gatewayFundingRecovery) || (
+  const gatewayCanPrepare = gatewayFundingAuthorityState === "active" || (
+    gatewayFundingAuthorityState === "none" &&
     gatewayReadState === "ready" && hasPositiveRawAmount(gatewaySpendableRaw)
   );
 
@@ -1383,6 +1504,7 @@ export default function WalletPage() {
       if (isGatewayFundingTerminalWithoutSubmission(result)) {
         clearGatewayFundingRecovery();
         setGatewayFundingStatus(null);
+        setGatewayFundingAuthorityState("none");
         setGatewayAmount("");
         setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
         return;
@@ -1398,10 +1520,55 @@ export default function WalletPage() {
           finishCompletedGatewayFunding(reconciled);
           return;
         }
+        if (isGatewayFundingTerminalWithoutSubmission(reconciled)) {
+          clearGatewayFundingRecovery();
+          setGatewayFundingStatus(null);
+          setGatewayFundingAuthorityState("none");
+          setGatewayAmount("");
+          setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
+          return;
+        }
         setGatewayFundingStatus(reconciled);
       } catch {
         setGatewayFundingError(t.wallet.gatewayReconciliationRequired);
       }
+    } finally {
+      setGatewayFundingBusy(false);
+    }
+  }
+
+  async function handleGatewayFundingDiscard() {
+    const prepared = gatewayFundingStatus;
+    if (!prepared || !canDiscardGatewayFunding(prepared)) return;
+
+    setGatewayFundingBusy(true);
+    setGatewayFundingError("");
+    try {
+      await backendApi.wallet.discardGatewayFunding(prepared.actionId);
+      clearGatewayFundingRecovery();
+      setGatewayFundingStatus(null);
+      setGatewayFundingAuthorityState("none");
+      setGatewayAmount("");
+      setGatewayFundingTransactionUrl(null);
+      setGatewayFundingNotice(t.wallet.gatewayDiscarded);
+    } catch {
+      // Discard is conditional and may race with a submission/reconciliation
+      // transition. Re-read the same action and leave it locked if evidence
+      // appeared; never retry a financial operation from this path.
+      try {
+        const current = await backendApi.wallet.gatewayFunding(prepared.actionId);
+        if (current.state === "COMPLETED") {
+          finishCompletedGatewayFunding(current);
+          return;
+        }
+        setGatewayFundingStatus(current);
+        setGatewayFundingAuthorityState("active");
+      } catch {
+        // Preserve the current recovery pointer when neither the discard nor
+        // the status read can authoritatively classify the action.
+        setGatewayFundingAuthorityState("error");
+      }
+      setGatewayFundingError(t.wallet.gatewayDiscardNotAllowed);
     } finally {
       setGatewayFundingBusy(false);
     }
@@ -1472,6 +1639,11 @@ export default function WalletPage() {
       // READY action is locked to its same destination and amount immediately.
       restoreGatewayFundingRecoveryFromStorage();
       setGatewayFundingStatus(result);
+      if (result.recovery === "CONFLICT") {
+        setGatewayFundingAuthorityState("active");
+        setGatewayFundingNotice(t.wallet.gatewayExistingAction);
+        return;
+      }
       if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
         throw new Error("gateway_signature_challenge_unavailable");
       }
@@ -1485,6 +1657,7 @@ export default function WalletPage() {
       } else if (cause instanceof Error && cause.message === GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION) {
         clearGatewayFundingRecovery();
         setGatewayFundingStatus(null);
+        setGatewayFundingAuthorityState("none");
         setGatewayAmount("");
         setGatewayFundingNotice("");
         setGatewayFundingTransactionUrl(null);
@@ -1659,7 +1832,7 @@ export default function WalletPage() {
                       </p>
                     )}
                     <h3>{t.wallet.gatewayPrepareTitle}</h3>
-                    {gatewayReadState === "loading" || gatewayReadState === "idle" ? (
+                    {gatewayReadState === "loading" || gatewayReadState === "idle" || gatewayFundingAuthorityState === "loading" ? (
                       <p>{t.wallet.gatewayReading}</p>
                     ) : gatewayReadState === "error" ? (
                       <>
@@ -1674,6 +1847,14 @@ export default function WalletPage() {
                           {t.wallet.gatewayRetry}
                         </button>
                       </>
+                    ) : gatewayFundingAuthorityState === "duplicate" ? (
+                      <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                        {t.wallet.gatewayMultipleActive}
+                      </p>
+                    ) : gatewayFundingAuthorityState === "error" ? (
+                      <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                        {t.wallet.gatewayCurrentUnavailable}
+                      </p>
                     ) : gatewayCanPrepare ? (
                       <p>{t.wallet.gatewayPrepareBody}</p>
                     ) : (
@@ -1750,6 +1931,16 @@ export default function WalletPage() {
                             ? t.wallet.gatewayResumeSignature
                             : t.wallet.gatewayPrepareSignature}
                       </button>
+                      {gatewayFundingStatus && canDiscardGatewayFunding(gatewayFundingStatus) && (
+                        <button
+                          className="ex-btn ex-btn--ghost"
+                          type="button"
+                          onClick={() => void handleGatewayFundingDiscard()}
+                          disabled={gatewayFundingBusy}
+                        >
+                          {t.wallet.gatewayDiscardPrepared}
+                        </button>
+                      )}
                     </div>
                   )}
                   {gatewayFundingStatus?.state === "READY_TO_BROADCAST" && (

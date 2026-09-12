@@ -26,6 +26,13 @@ const FUNDING_TTL_MS = 30 * 60 * 1000;
 const TERMINAL_FUNDING_STATES = new Set([
   'COMPLETED', 'FAILED', 'SIGNATURE_FAILED', 'EXPIRED',
 ]);
+const ACTIVE_FUNDING_STATES = Object.freeze([
+  'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING',
+  'READY_TO_BROADCAST', 'SUBMITTING', 'SUBMITTED', 'RECONCILIATION_REQUIRED',
+]);
+const PRE_SUBMISSION_DISCARD_STATES = Object.freeze([
+  'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING', 'READY_TO_BROADCAST',
+]);
 
 function canonicalJson(value) {
   if (value === null) return 'null';
@@ -200,6 +207,7 @@ function publicAction(row, options = {}) {
     // sessions sign each through its own hosted challenge.
     typedDataList,
     state: row.state,
+    recovery: options.recovery || null,
     terminal: TERMINAL_FUNDING_STATES.has(row.state),
     pending: options.pending === true,
     readyToBroadcast: row.state === 'READY_TO_BROADCAST',
@@ -230,14 +238,26 @@ function createGatewayFundingService({
     });
   }
 
-  async function findByRequest(auth, requestId) {
-    const result = await database.query(
+  async function findByRequest(auth, requestId, executor = database) {
+    const result = await executor.query(
       `SELECT * FROM gateway_funding_actions
         WHERE user_id = $1 AND request_id = $2
         LIMIT 1`,
       [auth.userId, requestId],
     );
     return result.rows[0] || null;
+  }
+
+  async function findUnresolved(auth, executor = database) {
+    const result = await executor.query(
+      `SELECT * FROM gateway_funding_actions
+        WHERE user_id = $1 AND execution_mode = $2
+          AND lower(wallet_address) = lower($3)
+          AND state = ANY($4::varchar[])
+        ORDER BY created_at ASC, id ASC`,
+      [auth.userId, auth.executionMode, auth.walletAddress, ACTIVE_FUNDING_STATES],
+    );
+    return result.rows;
   }
 
   async function findById(auth, actionId) {
@@ -269,23 +289,62 @@ function createGatewayFundingService({
   }
 
   async function createOrGet(auth, input) {
-    const actionId = crypto.randomUUID();
-    const expiresAt = new Date(now() + FUNDING_TTL_MS);
-    const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
-    await database.query(
-      `INSERT INTO gateway_funding_actions
-        (id, user_id, execution_mode, circle_wallet_id, wallet_address, request_id,
-         destination_domain, value_raw, circle_sign_request_id, state, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PREPARING', $10)
-       ON CONFLICT (user_id, request_id) DO NOTHING`,
-      [
-        actionId, auth.userId, auth.executionMode,
-        isCircle ? auth.circleWalletId : null, ethers.getAddress(auth.walletAddress),
-        input.requestId, input.destinationDomain, input.valueRaw,
-        isCircle ? crypto.randomUUID() : null, expiresAt,
-      ],
-    );
-    return findByRequest(auth, input.requestId);
+    // The same-wallet guard must cover the read and insert as one critical
+    // section. A PostgreSQL transaction-scoped advisory lock closes the race
+    // where two fresh request ids arrive at the same time; the in-memory
+    // verifier below intentionally uses its injected database without this
+    // optional client path.
+    const client = typeof database.getClient === 'function'
+      ? await database.getClient()
+      : null;
+    const executor = client || database;
+    let inTransaction = false;
+    try {
+      if (client) {
+        await client.query('BEGIN');
+        inTransaction = true;
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [`gateway-funding:${auth.userId}:${auth.executionMode}:${auth.walletAddress.toLowerCase()}`],
+        );
+      }
+
+      const unresolved = await findUnresolved(auth, executor);
+      if (unresolved.length > 1) throw new Error('gateway_funding_multiple_active');
+      if (unresolved.length === 1) {
+        const result = {
+          row: unresolved[0],
+          disposition: unresolved[0].request_id === input.requestId ? 'EXISTING' : 'CONFLICT',
+        };
+        if (inTransaction) await client.query('COMMIT');
+        return result;
+      }
+
+      const actionId = crypto.randomUUID();
+      const expiresAt = new Date(now() + FUNDING_TTL_MS);
+      const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
+      await executor.query(
+        `INSERT INTO gateway_funding_actions
+          (id, user_id, execution_mode, circle_wallet_id, wallet_address, request_id,
+           destination_domain, value_raw, circle_sign_request_id, state, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PREPARING', $10)
+         ON CONFLICT (user_id, request_id) DO NOTHING`,
+        [
+          actionId, auth.userId, auth.executionMode,
+          isCircle ? auth.circleWalletId : null, ethers.getAddress(auth.walletAddress),
+          input.requestId, input.destinationDomain, input.valueRaw,
+          isCircle ? crypto.randomUUID() : null, expiresAt,
+        ],
+      );
+      const result = { row: await findByRequest(auth, input.requestId, executor), disposition: 'NEW' };
+      if (inTransaction) await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      if (inTransaction) await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      if (client) client.release();
+    }
   }
 
   /**
@@ -719,6 +778,29 @@ function createGatewayFundingService({
     }
   }
 
+  async function discard({ auth, actionId }) {
+    assertHumanGatewaySession(auth);
+    const row = await findById(auth, actionId);
+    if (
+      !PRE_SUBMISSION_DISCARD_STATES.includes(row.state) ||
+      row.gateway_transfer_id !== null || row.gateway_transaction_hash !== null
+    ) {
+      throw new Error('gateway_funding_discard_not_allowed');
+    }
+    const result = await database.query(
+      `UPDATE gateway_funding_actions
+          SET state = 'EXPIRED', last_error = 'gateway_funding_cancelled_before_submission', updated_at = NOW()
+        WHERE id = $1
+          AND state = ANY($2::varchar[])
+          AND gateway_transfer_id IS NULL
+          AND gateway_transaction_hash IS NULL
+        RETURNING *`,
+      [actionId, PRE_SUBMISSION_DISCARD_STATES],
+    );
+    if (!result.rows[0]) throw new Error('gateway_funding_discard_not_allowed');
+    return expose(result.rows[0]);
+  }
+
   async function status({ auth, actionId }) {
     assertHumanGatewaySession(auth);
     let row = await markExpired(await findById(auth, actionId));
@@ -730,6 +812,27 @@ function createGatewayFundingService({
     });
   }
 
+  async function current({ auth }) {
+    assertHumanGatewaySession(auth);
+    const active = [];
+    for (const candidate of await findUnresolved(auth)) {
+      const row = await markExpired(candidate);
+      if (ACTIVE_FUNDING_STATES.includes(row.state)) active.push(row);
+    }
+    if (active.length > 1) {
+      return {
+        status: 'DUPLICATE',
+        action: null,
+        actions: active.map((row) => expose(row)),
+      };
+    }
+    if (active.length === 1) {
+      const action = expose(active[0]);
+      return { status: 'ACTIVE', action, actions: [action] };
+    }
+    return { status: 'NONE', action: null, actions: [] };
+  }
+
   async function start({ auth, userToken = null, requestId, destinationDomain, valueRaw }) {
     assertHumanGatewaySession(auth);
     assertInput({ requestId, destinationDomain, valueRaw });
@@ -738,11 +841,23 @@ function createGatewayFundingService({
       throw new Error('circle_request_invalid');
     }
 
-    let row = await createOrGet(auth, { requestId, destinationDomain, valueRaw });
+    const created = await createOrGet(auth, { requestId, destinationDomain, valueRaw });
+    let row = created.row;
+    if (!row) throw new Error('gateway_funding_not_found');
     // A replayed request id must describe the same financial intent, or it is
-    // a different operation wearing the same name.
-    if (destinationDomainOf(row) !== destinationDomain || row.value_raw !== valueRaw) {
+    // a different operation wearing the same name. A fresh request id that
+    // collides with another unresolved action is handled by the same-wallet
+    // conflict below; its destination and amount must not bypass that guard.
+    if (created.disposition !== 'CONFLICT' &&
+      (destinationDomainOf(row) !== destinationDomain || row.value_raw !== valueRaw)) {
       throw new Error('gateway_request_id_conflict');
+    }
+    if (created.disposition === 'CONFLICT') {
+      return expose(row, {
+        pending: ['SIGNATURE_PENDING', 'SUBMITTING', 'SUBMITTED', 'RECONCILIATION_REQUIRED']
+          .includes(row.state),
+        recovery: 'CONFLICT',
+      });
     }
     row = await markExpired(row);
     if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
@@ -755,7 +870,10 @@ function createGatewayFundingService({
         row = await createSignatureChallenge(auth, row, userToken);
       }
     }
-    return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    return expose(row, {
+      pending: row.state === 'SIGNATURE_PENDING',
+      recovery: created.disposition,
+    });
   }
 
   async function get({ auth, actionId }) {
@@ -892,7 +1010,7 @@ function createGatewayFundingService({
     return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
-  return { start, get, verifySignature, submit, status };
+  return { start, get, verifySignature, submit, discard, status, current };
 }
 
 const gatewayFundingService = createGatewayFundingService();
@@ -901,6 +1019,8 @@ module.exports = {
   FUNDING_TTL_MS,
   canonicalJson,
   hashPayload,
+  ACTIVE_FUNDING_STATES,
+  PRE_SUBMISSION_DISCARD_STATES,
   createGatewayFundingService,
   ...gatewayFundingService,
 };

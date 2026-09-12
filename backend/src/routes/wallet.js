@@ -175,6 +175,15 @@ router.post('/gateway-funding/start', gatewayFundingStartLimiter, async (req, re
   } catch (error) { next(error); }
 });
 
+// Read-only server authority for the current same-wallet outbound action.
+// This route must precede /:actionId so the literal "current" is not treated
+// as an action id. It never creates, signs or submits anything.
+router.get('/gateway-funding/current', async (req, res, next) => {
+  try {
+    res.json(await gatewayFundingService.current({ auth: req.auth }));
+  } catch (error) { next(error); }
+});
+
 router.get('/gateway-funding/:actionId', async (req, res, next) => {
   try {
     res.json(await gatewayFundingService.status({ auth: req.auth, actionId: req.params.actionId }));
@@ -187,6 +196,15 @@ router.get('/gateway-funding/:actionId', async (req, res, next) => {
 router.post('/gateway-funding/:actionId/submit', gatewayFundingStartLimiter, async (req, res, next) => {
   try {
     res.json(await gatewayFundingService.submit({ auth: req.auth, actionId: req.params.actionId }));
+  } catch (error) { next(error); }
+});
+
+// Explicitly abandons only a pre-submission, evidence-free preparation. The
+// service preserves the durable plan and all evidence columns, and refuses
+// submitted, reconciling or evidence-bearing rows.
+router.post('/gateway-funding/:actionId/discard', gatewayFundingStartLimiter, async (req, res, next) => {
+  try {
+    res.json(await gatewayFundingService.discard({ auth: req.auth, actionId: req.params.actionId }));
   } catch (error) { next(error); }
 });
 

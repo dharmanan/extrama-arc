@@ -79,6 +79,16 @@ const fakeDb = {
       return out(null);
     }
     if (text.startsWith('SELECT * FROM gateway_funding_actions')) {
+      if (text.includes('state = ANY')) {
+        const activeStates = new Set(params[3]);
+        const matches = [...rows.values()].filter((candidate) => (
+          candidate.user_id === params[0] &&
+          candidate.execution_mode === params[1] &&
+          candidate.wallet_address.toLowerCase() === params[2].toLowerCase() &&
+          activeStates.has(candidate.state)
+        ));
+        return { rows: matches.map(copy), rowCount: matches.length };
+      }
       const row = [...rows.values()].find((candidate) => {
         if (params.length === 2) return candidate.user_id === params[0] && candidate.request_id === params[1];
         return candidate.id === params[0] && candidate.user_id === params[1] &&
@@ -89,6 +99,16 @@ const fakeDb = {
     }
     const row = rows.get(params[0]);
     if (!row) return out(null);
+    if (text.includes('gateway_funding_cancelled_before_submission')) {
+      if (
+        !['PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING', 'READY_TO_BROADCAST']
+          .includes(row.state) ||
+        row.gateway_transfer_id !== null || row.gateway_transaction_hash !== null
+      ) return out(null);
+      row.state = 'EXPIRED';
+      row.last_error = 'gateway_funding_cancelled_before_submission';
+      return out(row);
+    }
     if (text.includes("state = 'EXPIRED'")) {
       if (row.state !== 'READY_TO_BROADCAST') row.state = 'EXPIRED';
       return out(row);
@@ -292,6 +312,24 @@ function verifyPreparingSchemaLifecycle() {
   assert.deepEqual(replay.sourcePlan, started.sourcePlan, 'plan replay is identical');
   assert.equal(challengeCreates, 1, 'same request never creates a second challenge');
 
+  // A fresh browser request id cannot evade the same-wallet guard by changing
+  // amount or destination. The server returns the existing action pointer and
+  // does not prepare a second plan or create a second Circle challenge.
+  const challengeCreatesBeforeConflict = challengeCreates;
+  const conflict = await service.start({
+    auth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: '99999999-9999-4999-8999-999999999998',
+    destinationDomain: 0,
+    valueRaw: '2000000',
+  });
+  assert.equal(conflict.actionId, started.actionId);
+  assert.equal(conflict.recovery, 'CONFLICT');
+  assert.equal(challengeCreates, challengeCreatesBeforeConflict);
+  console.log('GATEWAY_FUNDING_SINGLE_ACTIVE_GUARD=PASS');
+  console.log('GATEWAY_FUNDING_FRESH_REQUEST_RETURNS_EXISTING=PASS');
+  console.log('GATEWAY_FUNDING_NO_SECOND_SIGNATURE_ACTION=PASS');
+
   await rejectsCode(
     () => service.start({
       auth,
@@ -345,6 +383,18 @@ function verifyPreparingSchemaLifecycle() {
   assert.equal(ready.signatureIndex, -1);
   assert.deepEqual(rows.get(started.actionId).signatures_json, [signature]);
 
+  const readyConflict = await service.start({
+    auth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: '99999999-9999-4999-8999-999999999997',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  assert.equal(readyConflict.actionId, started.actionId);
+  assert.equal(readyConflict.recovery, 'CONFLICT');
+  assert.equal(readyConflict.readyToBroadcast, true);
+  assert.equal(challengeCreates, challengeCreatesBeforeConflict);
+
   const submitted = await service.submit({ auth, actionId: started.actionId });
   assert.equal(submitted.state, 'SUBMITTED');
   assert.equal(submitted.transferId, '55555555-5555-4555-8555-555555555555');
@@ -367,6 +417,83 @@ function verifyPreparingSchemaLifecycle() {
   assert.equal(completed.terminal, true);
   assert.equal(completed.submissionEnabled, true);
   assert.equal(completed.transactionHash, `0x${'ab'.repeat(32)}`);
+
+  const completedCurrent = await service.current({ auth });
+  assert.equal(completedCurrent.status, 'NONE');
+  assert.equal(completedCurrent.action, null);
+  console.log('GATEWAY_FUNDING_COMPLETED_NOT_RECOVERED=PASS');
+
+  // Historical duplicate unresolved rows are surfaced together and block both
+  // a fresh action and any choice of which row to submit. They are cleaned in
+  // this deterministic verifier only; production rows are never mutated here.
+  const duplicateBase = rows.get(started.actionId);
+  const duplicateIds = [
+    '12121212-1212-4121-8121-121212121212',
+    '13131313-1313-4131-8131-131313131313',
+  ];
+  duplicateIds.forEach((id, index) => rows.set(id, {
+    ...copy(duplicateBase),
+    id,
+    request_id: `14141414-1414-414${index + 1}-814${index + 1}-14141414141${index + 1}`,
+    state: 'READY_TO_BROADCAST',
+    gateway_transfer_id: null,
+    gateway_transaction_hash: null,
+    last_error: null,
+  }));
+  const duplicateCurrent = await service.current({ auth });
+  assert.equal(duplicateCurrent.status, 'DUPLICATE');
+  assert.equal(duplicateCurrent.action, null);
+  assert.equal(duplicateCurrent.actions.length, 2);
+  const challengeCreatesBeforeDuplicate = challengeCreates;
+  await rejectsCode(
+    () => service.start({
+      auth,
+      userToken: 'circle_user_token_long_enough',
+      requestId: '15151515-1515-4151-8151-151515151515',
+      destinationDomain: ARC_DOMAIN,
+      valueRaw: '1000000',
+    }),
+    'gateway_funding_multiple_active',
+  );
+  assert.equal(challengeCreates, challengeCreatesBeforeDuplicate);
+  duplicateIds.forEach((id) => { rows.get(id).state = 'COMPLETED'; });
+  console.log('GATEWAY_FUNDING_DUPLICATE_ACTIVE_FAILS_CLOSED=PASS');
+
+  // A prepared action can be explicitly discarded before submission. The
+  // update changes only disposition/error; every plan, challenge and payload
+  // evidence field remains byte-for-byte durable.
+  challengeStatus = 'PENDING';
+  const discardStart = await service.start({
+    auth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: '16161616-1616-4161-8161-161616161616',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  const discardRowBefore = copy(rows.get(discardStart.actionId));
+  const discardEvidence = {
+    sourcePlan: discardRowBefore.source_plan_json,
+    typedData: discardRowBefore.typed_data_list_json,
+    signature: discardRowBefore.signatures_json,
+    challenge: discardRowBefore.circle_sign_challenges_json,
+    payloadHash: discardRowBefore.payload_hash,
+  };
+  const challengeCreatesBeforeDiscard = challengeCreates;
+  const submitCallsBeforeDiscard = submitCalls;
+  const discarded = await service.discard({ auth, actionId: discardStart.actionId });
+  const discardRowAfter = rows.get(discardStart.actionId);
+  assert.equal(discarded.state, 'EXPIRED');
+  assert.equal(discarded.lastError, 'gateway_funding_cancelled_before_submission');
+  assert.deepEqual(discardRowAfter.source_plan_json, discardEvidence.sourcePlan);
+  assert.deepEqual(discardRowAfter.typed_data_list_json, discardEvidence.typedData);
+  assert.deepEqual(discardRowAfter.signatures_json, discardEvidence.signature);
+  assert.deepEqual(discardRowAfter.circle_sign_challenges_json, discardEvidence.challenge);
+  assert.equal(discardRowAfter.payload_hash, discardEvidence.payloadHash);
+  assert.equal(challengeCreates, challengeCreatesBeforeDiscard);
+  assert.equal(submitCalls, submitCallsBeforeDiscard);
+  console.log('GATEWAY_FUNDING_PRE_SUBMISSION_DISCARD=PASS');
+  console.log('GATEWAY_FUNDING_DISCARD_PRESERVES_EVIDENCE=PASS');
+  console.log('GATEWAY_FUNDING_DISCARD_NO_FINANCIAL_SIDE_EFFECT=PASS');
 
   // A failed hosted signature challenge is a durable terminal state. It is
   // returned by verify/get, never retried, and carries no submission evidence.
@@ -462,6 +589,25 @@ function verifyPreparingSchemaLifecycle() {
   console.log('GATEWAY_FUNDING_FRESH_REQUEST_AFTER_TERMINAL=PASS');
   challengeStatus = 'COMPLETE';
 
+  const freshRow = rows.get(fresh.actionId);
+  const freshTypedData = freshRow.typed_data_list_json[0];
+  const freshSignature = await wallet.signTypedData(
+    freshTypedData.domain, freshTypedData.types, freshTypedData.message,
+  );
+  const freshReady = await service.verifySignature({
+    auth, actionId: fresh.actionId, userToken: 'circle_user_token_long_enough', signature: freshSignature,
+  });
+  assert.equal(freshReady.state, 'READY_TO_BROADCAST');
+  const freshSubmitted = await service.submit({ auth, actionId: fresh.actionId });
+  assert.equal(freshSubmitted.state, 'SUBMITTED');
+  await rejectsCode(
+    () => service.discard({ auth, actionId: fresh.actionId }),
+    'gateway_funding_discard_not_allowed',
+  );
+  console.log('GATEWAY_FUNDING_SUBMITTED_CANNOT_DISCARD=PASS');
+  const freshCompleted = await service.status({ auth, actionId: fresh.actionId });
+  assert.equal(freshCompleted.state, 'COMPLETED');
+
   const other = new ethers.Wallet(`0x${'22'.repeat(32)}`);
   const badSignature = await other.signTypedData(
     typedData.domain, typedData.types, typedData.message,
@@ -481,6 +627,7 @@ function verifyPreparingSchemaLifecycle() {
     }),
     'gateway_signature_wallet_mismatch',
   );
+  await service.discard({ auth, actionId: second.actionId });
 
   async function readyAction(requestId) {
     const startedAction = await service.start({
@@ -527,6 +674,7 @@ function verifyPreparingSchemaLifecycle() {
       () => service.submit({ auth, actionId }),
       'gateway_funding_payload_mismatch',
     );
+    await service.discard({ auth, actionId });
   }
 
   // Total unified balance below the requested value fails closed, even though
@@ -548,9 +696,10 @@ function verifyPreparingSchemaLifecycle() {
     circle: fakeCircle,
     runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: true },
   });
+  const thinAuth = { ...auth, userId: '17171717-1717-4171-8171-171717171717' };
   await rejectsCode(
     () => thinService.start({
-      auth,
+      auth: thinAuth,
       userToken: 'circle_user_token_long_enough',
       requestId: '99999999-9999-4999-8999-999999999999',
       destinationDomain: ARC_DOMAIN,
@@ -597,6 +746,10 @@ function verifyPreparingSchemaLifecycle() {
   assert.equal(ambiguousSubmitCalls, 1);
   const recovered = await ambiguousService.status({ auth, actionId: ambiguousStart.actionId });
   assert.equal(recovered.state, 'RECONCILIATION_REQUIRED');
+  await rejectsCode(
+    () => ambiguousService.discard({ auth, actionId: ambiguousStart.actionId }),
+    'gateway_funding_discard_not_allowed',
+  );
 
   // Explicit server gate remains closed by default, independent of browser
   // retries or refreshes.
@@ -762,6 +915,8 @@ function verifyPreparingSchemaLifecycle() {
   const circleActions = fs.readFileSync(path.join(__dirname, '../../app/lib/circle-actions.ts'), 'utf8');
   const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
   const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
+  const backendApi = fs.readFileSync(path.join(__dirname, '../../app/lib/backend-api.ts'), 'utf8');
+  const walletRoutes = fs.readFileSync(path.join(__dirname, '../src/routes/wallet.js'), 'utf8');
   assert.match(circleActions, /backendApi\.wallet\.gatewayFunding\(recovery!\.actionId\)/);
   assert.match(circleActions, /clearCircleGatewayFundingRecovery\(\)/);
   assert.match(circleActions, /isGatewayFundingTerminalWithoutSubmission/);
@@ -812,6 +967,20 @@ function verifyPreparingSchemaLifecycle() {
   console.log('GATEWAY_FUNDING_NO_DUPLICATE_SUBMIT=PASS');
   console.log('GATEWAY_FUNDING_READY_NOT_BROADCAST=PASS');
 
+  // The current-action read is server-backed and duplicate-safe. The discard
+  // control is explicit and available only for pre-submission, evidence-free
+  // states; the UI never guesses from a local recovery record alone.
+  assert.match(walletPage, /backendApi\.wallet\.currentGatewayFunding\(\)/);
+  assert.match(walletPage, /setGatewayFundingAuthorityState\("duplicate"\)/);
+  assert.match(walletPage, /gatewayFundingAuthorityState === "none"/);
+  assert.match(walletPage, /canDiscardGatewayFunding\(gatewayFundingStatus\)/);
+  assert.match(walletPage, /backendApi\.wallet\.discardGatewayFunding\(prepared\.actionId\)/);
+  assert.match(walletPage, /gatewayDiscarded/);
+  assert.match(walletPage, /gatewayExistingAction/);
+  assert.match(walletPage, /gatewayMultipleActive/);
+  console.log('GATEWAY_FUNDING_SERVER_BACKED_RECOVERY=PASS');
+  console.log('GATEWAY_FUNDING_DISCARD_GATED_BY_EVIDENCE=PASS');
+
   // Reload hydration always reads the same durable action and the pending
   // states remain read-only. COMPLETED exits that recovery into idle form;
   // reconciliation never creates a second submit path.
@@ -823,6 +992,16 @@ function verifyPreparingSchemaLifecycle() {
   console.log('GATEWAY_FUNDING_RELOAD_SUBMITTED=PASS');
   console.log('GATEWAY_FUNDING_RELOAD_COMPLETED=PASS');
   console.log('GATEWAY_FUNDING_RECONCILIATION_FAIL_CLOSED=PASS');
+
+  assert.match(backendApi, /currentGatewayFunding\(\)/);
+  assert.match(backendApi, /discardGatewayFunding\(actionId: string\)/);
+  assert.match(walletRoutes, /router\.get\('\/gateway-funding\/current'/);
+  assert.match(walletRoutes, /router\.post\('\/gateway-funding\/:actionId\/discard'/);
+  assert.ok(
+    walletRoutes.indexOf("router.get('/gateway-funding/current'") <
+      walletRoutes.indexOf("router.get('/gateway-funding/:actionId'") ,
+    'current route must precede the action-id route',
+  );
 
   const checklist = fs.readFileSync(
     path.join(__dirname, '../../EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md'), 'utf8',

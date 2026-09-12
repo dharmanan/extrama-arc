@@ -687,6 +687,7 @@ export type GatewayFundingResponse = {
   // signs each through its own hosted challenge.
   typedDataList: GatewayTypedData[];
   state: "PREPARING" | "SIGN_CHALLENGE_CREATING" | "SIGNATURE_PENDING" | "READY_TO_BROADCAST" | "SUBMITTING" | "SUBMITTED" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "SIGNATURE_FAILED" | "EXPIRED";
+  recovery: "NEW" | "EXISTING" | "CONFLICT" | null;
   terminal: boolean;
   pending: boolean;
   readyToBroadcast: boolean;
@@ -696,6 +697,12 @@ export type GatewayFundingResponse = {
   transactionHash: string | null;
   lastError: string | null;
   expiresAt: string;
+};
+
+export type GatewayFundingCurrentResponse = {
+  status: "NONE" | "ACTIVE" | "DUPLICATE";
+  action: GatewayFundingResponse | null;
+  actions: GatewayFundingResponse[];
 };
 
 export type GatewayDepositResponse = {
@@ -1517,8 +1524,14 @@ export const backendApi = {
     gatewayFunding(actionId: string) {
       return request<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}`);
     },
+    currentGatewayFunding() {
+      return request<GatewayFundingCurrentResponse>('/wallet/gateway-funding/current');
+    },
     submitGatewayFunding(actionId: string) {
       return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/submit`, {});
+    },
+    discardGatewayFunding(actionId: string) {
+      return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/discard`, {});
     },
     verifyGatewayFunding(actionId: string, input: {
       circleUserToken?: string;

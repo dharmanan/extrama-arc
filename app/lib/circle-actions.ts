@@ -593,6 +593,14 @@ export async function confirmCircleGatewayFunding(
   if (isGatewayFundingTerminalWithoutSubmission(current)) {
     releaseCircleGatewayFundingRecovery(current);
   }
+  if (current.recovery === "CONFLICT") {
+    // The server found another unresolved same-wallet action. Persist only a
+    // pointer to that authoritative action so the Wallet can recover it; do
+    // not create a challenge or sign anything for the fresh request.
+    recovery = gatewayRecoveryFrom(input, current);
+    storeCircleGatewayFundingRecovery(recovery);
+    return current;
+  }
   if (current.terminal) {
     throw new Error("gateway_signature_challenge_uncertain");
   }

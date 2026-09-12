@@ -766,7 +766,7 @@ function verifyGatewaySecurityBoundaries() {
   // source's balance: that is the whole point of a unified balance.
   assert.match(
     walletPage,
-    /gatewayFundingRecovery\) \|\| \(\s*gatewayReadState === "ready" && hasPositiveRawAmount\(gatewaySpendableRaw\)/,
+    /gatewayFundingAuthorityState === "none" &&\s*gatewayReadState === "ready" && hasPositiveRawAmount\(gatewaySpendableRaw\)/,
   );
   assert.match(walletPage, /const gatewaySpendableRaw = gateway\?\.transferableTotalRaw/);
   assert.match(walletPage, /t\.wallet\.gatewayNoTransferableBalance/);
