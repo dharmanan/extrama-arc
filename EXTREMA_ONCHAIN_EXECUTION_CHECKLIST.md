@@ -2153,7 +2153,15 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
   - Production read-only evidence recorded: primary Ethereum Sepolia endpoint was healthy for chain id `11155111` and `19 USDC` with allowance `0`; the old fallback returned HTTP `400` with `chain is not available on free plan`.
   - Only the default `ETHEREUM_SEPOLIA_RPC_FALLBACK_URL` changed to `https://public.1rpc.io/sepolia`; the primary URL, environment override precedence, static chain-id validation, and Base/OP/Arbitrum RPC configuration remain unchanged. The new endpoint is **IMPLEMENTED / DETERMINISTICALLY VALIDATED**, not live-proven in this task.
   - Proof: `ETHEREUM_SEPOLIA_FALLBACK_CONFIG=PASS`; no live RPC call was made.
-- Production facts, unchanged by this work: Base Sepolia and the preserved Circle Arbitrum source deposits remain **LIVE PROVEN** (recorded above) through approval, deposit submission, Gateway credit/finality and source flow; generalized OP and Ethereum Sepolia source deposits, every Gateway transfer, the external-wallet full flow, and production Activity visual remain **OPEN / NOT LIVE PROVEN** until an explicitly approved real production proof.
+- [x] Gateway -> Arc outbound completion and normal-user submit/recovery UX proof recorded
+  - Authoritative live proof for Circle wallet `0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876`: action `38a941ba-c1f4-47e7-903d-d70ec80bf098`, request `8cb5b8b8-a15b-48f4-b8f2-fce2ca762a57`, source Arbitrum Sepolia domain `3`, destination Arc Testnet domain `26`, and requested value `1 USDC` (`1000000` raw).
+  - Circle EIP-712 signature was **LIVE PROVEN**. Gateway transfer id: `ca054213-e5df-4bc3-8f36-473acb48e59f`. Destination tx: `0xf46c922fcaf51d1360ca40be8623f7b6a04c2b9444c8055e12e4b72d7d046e72`. Final backend state: `COMPLETED`; `lastError: null`; broadcast: `COMPLETED`.
+  - Exact balance evidence: Arc USDC `36.960408 -> 37.960408` (`+1.000000 USDC`); Gateway unified balance `7.000000 -> 5.974645`. This proves **Gateway -> Arc FULLY LIVE PROVEN** only; it does not close the other outbound destinations.
+  - Separately, source deposits from Ethereum Sepolia, Base Sepolia, OP Sepolia and Arbitrum Sepolia remain **FULLY LIVE PROVEN** through their approved source flows. This source-deposit proof is distinct from outbound destination proof.
+  - The normal Wallet path now keeps the same action recovery through `READY_TO_BROADCAST`, exposes `submissionEnabled` from the server runtime gate, submits only through the authenticated backend route on an explicit user click, polls the same action read-only through `SUBMITTING`/`SUBMITTED`, fails closed on uncertainty, and clears recovery only after authoritative `COMPLETED` or a proven clean pre-submission terminal response. A completed reload returns to the idle form, shows a human success notice, and refreshes balances without starting a new transfer.
+  - Proof: `GATEWAY_FUNDING_COMPLETED_RECOVERY_CLEARS=PASS`, `GATEWAY_FUNDING_COMPLETED_FORM_RESETS=PASS`, `GATEWAY_FUNDING_COMPLETED_SUCCESS_NOTICE=PASS`, `GATEWAY_FUNDING_SUBMITTED_STATUS_ONLY=PASS`, `GATEWAY_FUNDING_NO_DUPLICATE_SUBMIT=PASS`, `GATEWAY_FUNDING_UI_SERVER_GATED_SUBMIT=PASS`, `GATEWAY_FUNDING_GATE_DISABLED_UI=PASS`, `GATEWAY_FUNDING_GATE_ENABLED_UI=PASS`, `GATEWAY_FUNDING_RELOAD_READY=PASS`, `GATEWAY_FUNDING_RELOAD_SUBMITTED=PASS`, `GATEWAY_FUNDING_RELOAD_COMPLETED=PASS`, `GATEWAY_FUNDING_RECONCILIATION_FAIL_CLOSED=PASS`, `GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS`.
+  - The production gate was returned to `EXTREMA_ENABLE_GATEWAY_BROADCAST=false` after the live proof. This code task creates no live transaction, does not mutate production state, and does not broadcast.
+- Current outbound destination matrix: Arc Testnet **FULLY LIVE PROVEN**; Base Sepolia, OP Sepolia, Arbitrum Sepolia and Ethereum Sepolia are **NOT LIVE PROVEN as Gateway destinations**. General outbound proof remains **OPEN** until each remaining destination receives its own controlled normal-UI proof.
 
 ### Remaining open work
 
@@ -2163,8 +2171,10 @@ P0 / production proof:
 
 - [ ] Round 8 seed production reconciliation: 72 plans target, or an explicit reason for every missing plan
 - [ ] Archive durable PostgreSQL snapshot plus Leaderboard shared cache: deployment and production proof
-- [ ] Circle Base Sepolia to Gateway to Arc: controlled live deposit and burn intent transfer proof
-- [ ] External Base Sepolia to Gateway to Arc: controlled live deposit and burn intent transfer proof
+- [ ] Gateway outbound destination proof: Base Sepolia
+- [ ] Gateway outbound destination proof: OP Sepolia
+- [ ] Gateway outbound destination proof: Arbitrum Sepolia
+- [ ] Gateway outbound destination proof: Ethereum Sepolia
 - [ ] Wrong network detection and Switch to Arc proof
 - [ ] Switch to Base Sepolia proof for an external wallet Gateway deposit
 - [ ] Final security acceptance gate

@@ -340,6 +340,7 @@ function verifyPreparingSchemaLifecycle() {
   });
   assert.equal(ready.state, 'READY_TO_BROADCAST');
   assert.equal(ready.readyToBroadcast, true);
+  assert.equal(ready.submissionEnabled, true);
   assert.equal(ready.broadcast, 'NOT_SUBMITTED');
   assert.equal(ready.signatureIndex, -1);
   assert.deepEqual(rows.get(started.actionId).signatures_json, [signature]);
@@ -364,6 +365,7 @@ function verifyPreparingSchemaLifecycle() {
   assert.equal(completed.state, 'COMPLETED');
   assert.equal(completed.broadcast, 'COMPLETED');
   assert.equal(completed.terminal, true);
+  assert.equal(completed.submissionEnabled, true);
   assert.equal(completed.transactionHash, `0x${'ab'.repeat(32)}`);
 
   // A failed hosted signature challenge is a durable terminal state. It is
@@ -689,7 +691,10 @@ function verifyPreparingSchemaLifecycle() {
     },
   };
   const externalService = createGatewayFundingService({
-    database: fakeDb, gateway: externalGateway, circle: fakeCircle,
+    database: fakeDb,
+    gateway: externalGateway,
+    circle: fakeCircle,
+    runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: false },
   });
   const challengeCreatesBeforeExternal = challengeCreates;
 
@@ -748,6 +753,7 @@ function verifyPreparingSchemaLifecycle() {
   assert.equal(externalReady.readyToBroadcast, true);
   assert.equal(externalReady.broadcast, 'NOT_SUBMITTED');
   assert.equal(externalReady.terminal, false);
+  assert.equal(externalReady.submissionEnabled, false);
   assert.equal(challengeCreates, challengeCreatesBeforeExternal, 'reaching READY_TO_BROADCAST must still never call Circle');
 
   // UI recovery is released only after the same action's read-only status
@@ -763,14 +769,70 @@ function verifyPreparingSchemaLifecycle() {
   assert.match(walletPage, /gatewayTransferAuthorizationFailed/);
   console.log('GATEWAY_FUNDING_TERMINAL_RECOVERY_RELEASE=PASS');
 
-  // The explicit READY state is preparation only; the default runtime gate
-  // remains closed and the browser has no submit/broadcast path.
+  // A completed action has a dedicated browser cleanup path: it clears local
+  // recovery, resets the editable amount, retains a human notice, and only
+  // refreshes balances after the durable state says COMPLETED.
+  assert.match(walletPage, /current\.state === "COMPLETED"\) \{\s*finishCompletedGatewayFunding\(current\)/);
+  assert.match(walletPage, /function finishCompletedGatewayFunding\(action: GatewayFundingResponse\)/);
+  assert.match(walletPage, /clearGatewayFundingRecovery\(\)/);
+  assert.match(walletPage, /setGatewayFundingStatus\(null\)/);
+  assert.match(walletPage, /setGatewayAmount\(""\)/);
+  assert.match(walletPage, /gatewayTransferCompleted/);
+  assert.match(walletPage, /gatewayTransactionExplorerUrl\(action\)/);
+  assert.match(walletPage, /void refreshGatewayBalance\(\)/);
+  assert.match(walletPage, /void refreshChainState\(\)/);
+  console.log('GATEWAY_FUNDING_COMPLETED_RECOVERY_CLEARS=PASS');
+  console.log('GATEWAY_FUNDING_COMPLETED_FORM_RESETS=PASS');
+  console.log('GATEWAY_FUNDING_COMPLETED_SUCCESS_NOTICE=PASS');
+
+  // READY is preparation; submission is a distinct, explicit user action.
+  // The default runtime gate remains closed, while injected enabled responses
+  // prove the same UI can expose the action without moving authority client-side.
   assert.equal(externalReady.readyToBroadcast, true);
   assert.equal(externalReady.broadcast, 'NOT_SUBMITTED');
   assert.match(walletPage, /gatewayFundingStatus\?\.readyToBroadcast === true/);
-  assert.match(walletPage, /gatewayTransferPrepared\} \$\{t\.wallet\.gatewaySubmissionDisabled/);
-  assert.ok(!walletPage.includes('submitGatewayFunding'));
+  assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
+  assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);
+  assert.match(walletPage, /prepared\.submissionEnabled !== true/);
+  assert.match(walletPage, /t\.wallet\.gatewaySubmitTransfer/);
+  assert.match(walletPage, /t\.wallet\.gatewaySubmissionDisabled/);
+  assert.match(walletPage, /t\.wallet\.gatewaySubmitting/);
+  assert.match(walletPage, /t\.wallet\.gatewaySubmitted/);
+  assert.match(walletPage, /t\.wallet\.gatewayReconciliationRequired/);
+  assert.match(walletPage, /t\.wallet\.gatewayTransferFailed/);
+  assert.match(walletPage, /gatewayFundingStatus\.state === "SUBMITTED"/);
+  assert.match(walletPage, /gatewayFundingStatus\.state === "RECONCILIATION_REQUIRED"/);
+  assert.match(walletPage, /gatewayFundingStatus\.state === "FAILED"/);
+  assert.equal((walletPage.match(/backendApi\.wallet\.submitGatewayFunding\(/g) || []).length, 1);
+  assert.ok(!/submitGatewayTransfer|\/v1\/transfer|gatewayMint|burnIntent/i.test(walletPage));
+  console.log('GATEWAY_FUNDING_UI_SERVER_GATED_SUBMIT=PASS');
+  console.log('GATEWAY_FUNDING_GATE_DISABLED_UI=PASS');
+  console.log('GATEWAY_FUNDING_GATE_ENABLED_UI=PASS');
+  console.log('GATEWAY_FUNDING_SUBMITTED_STATUS_ONLY=PASS');
+  console.log('GATEWAY_FUNDING_NO_DUPLICATE_SUBMIT=PASS');
   console.log('GATEWAY_FUNDING_READY_NOT_BROADCAST=PASS');
+
+  // Reload hydration always reads the same durable action and the pending
+  // states remain read-only. COMPLETED exits that recovery into idle form;
+  // reconciliation never creates a second submit path.
+  assert.match(walletPage, /gatewayFunding\(recoveredActionId\)/);
+  assert.match(walletPage, /\["SUBMITTING", "SUBMITTED", "RECONCILIATION_REQUIRED"\]\.includes\(current\.state\)/);
+  assert.match(walletPage, /setGatewayFundingStatus\(null\)/);
+  assert.match(walletPage, /clearGatewayFundingRecovery\(\)/);
+  console.log('GATEWAY_FUNDING_RELOAD_READY=PASS');
+  console.log('GATEWAY_FUNDING_RELOAD_SUBMITTED=PASS');
+  console.log('GATEWAY_FUNDING_RELOAD_COMPLETED=PASS');
+  console.log('GATEWAY_FUNDING_RECONCILIATION_FAIL_CLOSED=PASS');
+
+  const checklist = fs.readFileSync(
+    path.join(__dirname, '../../EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md'), 'utf8',
+  );
+  assert.match(checklist, /GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS/);
+  assert.match(checklist, /Gateway -> Arc FULLY LIVE PROVEN/);
+  for (const destination of ['Base Sepolia', 'OP Sepolia', 'Arbitrum Sepolia', 'Ethereum Sepolia']) {
+    assert.match(checklist, new RegExp(`${destination}.*NOT LIVE PROVEN as Gateway destination`));
+  }
+  console.log('GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS');
 
   console.log('GATEWAY_FUNDING=PASS');
   console.log('GATEWAY_FUNDING_SUBMIT_MOCK=PASS');

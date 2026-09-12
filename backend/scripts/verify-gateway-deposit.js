@@ -2564,14 +2564,13 @@ function verifyWalletPageDepositRecoveryWiringLegacy() {
   // Preparation success is an authoritative backend invariant. Failed or
   // expired/reconciling statuses must stay on the human error path and can
   // never borrow the success copy merely because a response exists.
-  assert.match(
-    fundingMarkup,
-    /gatewayFundingStatus\?\.readyToBroadcast === true\s*\?\s*t\.wallet\.gatewayTransferPrepared/,
-  );
-  assert.doesNotMatch(
-    fundingMarkup,
-    /gatewayFundingStatus && gatewayFundingStatus\.state !== "SIGNATURE_PENDING"[\s\S]{0,180}gatewayTransferPrepared/,
-  );
+  assert.match(fundingMarkup, /gatewayFundingStatus\?\.readyToBroadcast === true/);
+  assert.match(fundingMarkup, /gatewayFundingStatus\.submissionEnabled === true/);
+  assert.match(fundingMarkup, /t\.wallet\.gatewaySubmitTransfer/);
+  assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
+  assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);
+  assert.match(walletPage, /prepared\.submissionEnabled !== true/);
+  assert.ok(!/submitGatewayTransfer|\/v1\/transfer|gatewayMint|burnIntent/i.test(walletPage));
   for (const state of [
     'READY_TO_BROADCAST', 'FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED',
     'SIGNATURE_FAILED', 'SUBMITTING', 'SUBMITTED', 'COMPLETED',
@@ -2969,7 +2968,7 @@ function verifyWalletPageDepositRecoveryWiringLegacy() {
   // -------------------------------------------------------------------
   // G. Unaffected surfaces
   // -------------------------------------------------------------------
-  assert.ok(!walletPage.includes('submitGatewayFunding'), 'the wallet UI must never expose a broadcast control');
+  assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
   const summaryStart = walletPage.indexOf('className="ex-wallet-summary"');
   const summaryEnd = walletPage.indexOf('<section className="ex-wallet-gateway"', summaryStart);
   assert.ok(summaryStart > -1 && summaryEnd > summaryStart);
@@ -3111,8 +3110,13 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.equal([...fundingMarkup.matchAll(/<select/g)].length, 1);
   assert.match(fundingMarkup, /t\.wallet\.gatewayDestination/);
   assert.match(fundingMarkup, /gatewayDestinations\.map\(\(item\) => \(/);
-  assert.match(fundingMarkup, /gatewayFundingStatus\?\.readyToBroadcast === true\s*\?\s*t\.wallet\.gatewayTransferPrepared/);
-  assert.doesNotMatch(fundingMarkup, /gatewayFundingStatus && gatewayFundingStatus\.state !== "SIGNATURE_PENDING"[\s\S]{0,180}gatewayTransferPrepared/);
+  assert.match(fundingMarkup, /gatewayFundingStatus\?\.readyToBroadcast === true/);
+  assert.match(fundingMarkup, /gatewayFundingStatus\.submissionEnabled === true/);
+  assert.match(fundingMarkup, /t\.wallet\.gatewaySubmitTransfer/);
+  assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
+  assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);
+  assert.match(walletPage, /prepared\.submissionEnabled !== true/);
+  assert.ok(!/submitGatewayTransfer|\/v1\/transfer|gatewayMint|burnIntent/i.test(walletPage));
   assert.match(walletPage, /confirmGatewayBurnSignature\(\s*\{ destinationDomain, valueRaw \},/);
   assert.ok(!/startGatewayFunding\([\s\S]{0,200}sourceDomain/.test(walletPage));
   for (const state of ['FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED']) {
@@ -3504,7 +3508,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(copy, /gatewaySource: "Kaynak"/);
   assert.match(copy, /endSession: "End session"/);
   assert.match(copy, /disconnectWallet: "Disconnect wallet"/);
-  assert.ok(!walletPage.includes('submitGatewayFunding'));
+  assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
 
   console.log('GATEWAY_SOURCE_FORM_UI=PASS');
   console.log('GATEWAY_SELECTED_SOURCE_BALANCE_UI=PASS');

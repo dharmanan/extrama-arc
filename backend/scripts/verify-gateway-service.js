@@ -770,7 +770,13 @@ function verifyGatewaySecurityBoundaries() {
   );
   assert.match(walletPage, /const gatewaySpendableRaw = gateway\?\.transferableTotalRaw/);
   assert.match(walletPage, /t\.wallet\.gatewayNoTransferableBalance/);
-  assert.equal(walletPage.includes('submitGatewayFunding'), false, 'wallet UI must not expose live broadcast control');
+  // The normal user may request submission only through the authenticated
+  // backend route. The server gate and durable READY CAS remain authoritative;
+  // no browser-side Gateway transfer API is present.
+  assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
+  assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);
+  assert.match(walletPage, /prepared\.submissionEnabled !== true/);
+  assert.equal(/submitGatewayTransfer|\/v1\/transfer|gatewayMint|burnIntent/i.test(walletPage), false);
 
   // Source deposit and transfer surfaces, for both modes, driven by the
   // canonical server-side network config rather than page-local constants.

@@ -203,6 +203,9 @@ function publicAction(row, options = {}) {
     terminal: TERMINAL_FUNDING_STATES.has(row.state),
     pending: options.pending === true,
     readyToBroadcast: row.state === 'READY_TO_BROADCAST',
+    // Submission capability is a server decision. The browser may render
+    // this boolean, but it cannot enable or override the submit route.
+    submissionEnabled: options.submissionEnabled === true,
     broadcast: row.state === 'COMPLETED'
       ? 'COMPLETED'
       : row.gateway_transfer_id ? 'SUBMITTED' : 'NOT_SUBMITTED',
@@ -220,6 +223,13 @@ function createGatewayFundingService({
   runtimeConfig = config,
   now = () => Date.now(),
 } = {}) {
+  function expose(row, options = {}) {
+    return publicAction(row, {
+      ...options,
+      submissionEnabled: runtimeConfig.EXTREMA_ENABLE_GATEWAY_BROADCAST === true,
+    });
+  }
+
   async function findByRequest(auth, requestId) {
     const result = await database.query(
       `SELECT * FROM gateway_funding_actions
@@ -664,7 +674,7 @@ function createGatewayFundingService({
     }
     let row = await markExpired(await findById(auth, actionId));
     if (['SUBMITTED', 'COMPLETED', 'FAILED', 'RECONCILIATION_REQUIRED'].includes(row.state)) {
-      return publicAction(row, { pending: row.state === 'SUBMITTED' || row.state === 'RECONCILIATION_REQUIRED' });
+      return expose(row, { pending: row.state === 'SUBMITTED' || row.state === 'RECONCILIATION_REQUIRED' });
     }
     if (row.state !== 'READY_TO_BROADCAST') {
       throw new Error('gateway_funding_not_ready');
@@ -682,7 +692,7 @@ function createGatewayFundingService({
     );
     if (!reserved.rows[0]) {
       row = await findById(auth, actionId);
-      return publicAction(row, { pending: true });
+      return expose(row, { pending: true });
     }
     row = reserved.rows[0];
 
@@ -698,14 +708,14 @@ function createGatewayFundingService({
         requestId: row.request_id,
       });
       row = await updateState(row, 'SUBMITTED', { transferId: submitted.transferId });
-      return publicAction(row, { pending: true });
+      return expose(row, { pending: true });
     } catch (error) {
       if (error?.message === 'gateway_transfer_rejected') {
         row = await updateState(row, 'FAILED', { lastError: 'gateway_transfer_rejected' });
-        return publicAction(row);
+        return expose(row);
       }
       row = await updateState(row, 'RECONCILIATION_REQUIRED', { lastError: 'gateway_transfer_submit_unknown' });
-      return publicAction(row, { pending: true });
+      return expose(row, { pending: true });
     }
   }
 
@@ -715,7 +725,7 @@ function createGatewayFundingService({
     if (['SUBMITTED', 'SUBMITTING', 'RECONCILIATION_REQUIRED'].includes(row.state)) {
       row = await reconcileRemote(auth, row);
     }
-    return publicAction(row, {
+    return expose(row, {
       pending: ['SUBMITTED', 'SUBMITTING', 'RECONCILIATION_REQUIRED'].includes(row.state),
     });
   }
@@ -745,13 +755,13 @@ function createGatewayFundingService({
         row = await createSignatureChallenge(auth, row, userToken);
       }
     }
-    return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
   async function get({ auth, actionId }) {
     assertHumanGatewaySession(auth);
     const row = await markExpired(await findById(auth, actionId));
-    return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
   /**
@@ -798,8 +808,8 @@ function createGatewayFundingService({
   }) {
     assertHumanGatewaySession(auth);
     let row = await markExpired(await findById(auth, actionId));
-    if (TERMINAL_FUNDING_STATES.has(row.state)) return publicAction(row);
-    if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
+    if (TERMINAL_FUNDING_STATES.has(row.state)) return expose(row);
+    if (row.state === 'READY_TO_BROADCAST') return expose(row);
     if (row.state !== 'SIGNATURE_PENDING') {
       throw new Error('gateway_signature_challenge_unavailable');
     }
@@ -836,7 +846,7 @@ function createGatewayFundingService({
         if (!challengeId) throw new Error('gateway_signature_challenge_unavailable');
         const challenge = await circle.getTypedDataChallenge({ userToken, challengeId });
         if (!challenge || challenge.status === 'PENDING' || challenge.status === 'IN_PROGRESS') {
-          return publicAction(row, { pending: true });
+          return expose(row, { pending: true });
         }
         if (challenge.status !== 'COMPLETE') {
           const failure = challenge.errorCode === 156026
@@ -850,7 +860,7 @@ function createGatewayFundingService({
             [row.id, failure],
           );
           row = failedResult.rows[0] || await findById(auth, row.id);
-          return publicAction(row);
+          return expose(row);
         }
       }
 
@@ -865,21 +875,21 @@ function createGatewayFundingService({
       row = await storeSignature(auth, row, index, value);
       if (batch) batchCursor += 1;
 
-      if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
+      if (row.state === 'READY_TO_BROADCAST') return expose(row);
       if (!batch && !isCircle) {
         // One signature per call for a single-signature external submission:
         // report the next allocation instead of looping on the same value.
-        return publicAction(row, { pending: true });
+        return expose(row, { pending: true });
       }
       if (isCircle) {
         // Issue the next allocation's challenge and hand it back so the
         // browser can run it. No further signature exists yet.
         row = await createSignatureChallenge(auth, row, userToken);
-        return publicAction(row, { pending: true });
+        return expose(row, { pending: true });
       }
     }
 
-    return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
   return { start, get, verifySignature, submit, status };

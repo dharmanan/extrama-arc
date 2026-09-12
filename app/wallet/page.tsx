@@ -186,6 +186,21 @@ function withGatewayStep(template: string, step: number, total: number) {
   return template.replace("{step}", String(step)).replace("{total}", String(total));
 }
 
+// The server supplies the destination label. Match that canonical label to
+// the existing local chain registry only to build a safe explorer link; the
+// browser never derives a financial destination or submits a transaction.
+function gatewayDestinationChain(action: GatewayFundingResponse) {
+  return [arcTestnet, ...gatewaySourceChains].find(
+    (candidate) => candidate.name === action.destinationLabel,
+  ) || null;
+}
+
+function gatewayTransactionExplorerUrl(action: GatewayFundingResponse) {
+  if (!action.transactionHash || !/^0x[0-9a-fA-F]{64}$/.test(action.transactionHash)) return null;
+  const explorer = gatewayDestinationChain(action)?.blockExplorers?.default?.url;
+  return explorer ? `${explorer.replace(/\/+$/, "")}/tx/${action.transactionHash}` : null;
+}
+
 function WalletLiveMarket() {
   const { locale } = useLocale();
   const [prices, setPrices] = useState<Record<string, WalletMarketPrice>>({});
@@ -311,6 +326,7 @@ export default function WalletPage() {
   const [gatewayFundingBusy, setGatewayFundingBusy] = useState(false);
   const [gatewaySignStep, setGatewaySignStep] = useState<{ step: number; total: number } | null>(null);
   const [gatewayFundingNotice, setGatewayFundingNotice] = useState("");
+  const [gatewayFundingTransactionUrl, setGatewayFundingTransactionUrl] = useState<string | null>(null);
   const [gatewayFundingError, setGatewayFundingError] = useState("");
   const [gatewayFundingRecovery, setGatewayFundingRecovery] = useState<
     CircleGatewayFundingRecovery | ExternalGatewayFundingRecovery | null
@@ -537,6 +553,43 @@ export default function WalletPage() {
     }
   }
 
+  function clearGatewayFundingRecovery() {
+    if (executionMode === "CIRCLE_USER_WALLET") clearCircleGatewayFundingRecovery();
+    else if (executionMode === "EXTERNAL_WALLET") clearExternalGatewayFundingRecovery();
+    setGatewayFundingRecovery(null);
+  }
+
+  function restoreGatewayFundingRecoveryFromStorage() {
+    const recovery = executionMode === "CIRCLE_USER_WALLET"
+      ? readCircleGatewayFundingRecovery()
+      : readExternalGatewayFundingRecovery();
+    if (!recovery) return;
+    setGatewayFundingRecovery(recovery);
+    setGatewayDestinationDomain(String(recovery.destinationDomain));
+    setGatewayAmount(formatGatewayUsdcRaw(recovery.valueRaw));
+  }
+
+  function finishCompletedGatewayFunding(action: GatewayFundingResponse) {
+    clearGatewayFundingRecovery();
+    setGatewayFundingStatus(null);
+    setGatewayAmount("");
+    setGatewayFundingBusy(false);
+    setGatewaySignStep(null);
+    setGatewayFundingError("");
+    setGatewayFundingNotice(
+      withGatewayNetwork(
+        withGatewayAmount(
+          t.wallet.gatewayTransferCompleted,
+          formatGatewayUsdcDisplay(formatGatewayUsdcRaw(action.valueRaw), locale),
+        ),
+        action.destinationLabel || t.wallet.gatewayDestination,
+      ),
+    );
+    setGatewayFundingTransactionUrl(gatewayTransactionExplorerUrl(action));
+    void refreshGatewayBalance();
+    if (gatewayDestinationChain(action)?.id === arcTestnet.id) void refreshChainState();
+  }
+
   useEffect(() => {
     if (
       step === "ready" &&
@@ -564,7 +617,10 @@ export default function WalletPage() {
     const recovery = executionMode === "CIRCLE_USER_WALLET"
       ? readCircleGatewayFundingRecovery()
       : readExternalGatewayFundingRecovery();
-    if (!recovery) return;
+    if (!recovery) {
+      setGatewayFundingStatus(null);
+      return;
+    }
     setGatewayFundingRecovery(recovery);
     setGatewayDestinationDomain(String(recovery.destinationDomain));
     setGatewayAmount(formatGatewayUsdcRaw(recovery.valueRaw));
@@ -580,6 +636,10 @@ export default function WalletPage() {
       try {
         const current = await backendApi.wallet.gatewayFunding(recoveredActionId);
         if (cancelled) return;
+        if (current.state === "COMPLETED") {
+          finishCompletedGatewayFunding(current);
+          return;
+        }
         setGatewayFundingStatus(current);
         if (isGatewayFundingTerminalWithoutSubmission(current)) {
           if (executionMode === "CIRCLE_USER_WALLET") clearCircleGatewayFundingRecovery();
@@ -588,6 +648,7 @@ export default function WalletPage() {
           setGatewayFundingStatus(null);
           setGatewayAmount("");
           setGatewayFundingNotice("");
+          setGatewayFundingTransactionUrl(null);
           setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
           return;
         }
@@ -604,7 +665,7 @@ export default function WalletPage() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [executionMode, gatewayFundingRecovery?.actionId, t.wallet]);
+  }, [executionMode, gatewayFundingRecovery?.actionId, gatewayFundingStatus?.state, t.wallet]);
 
   // Every funding chain's SOURCE WALLET balance in one server-side read. Each
   // chain is read independently there, so one unreachable endpoint degrades
@@ -1299,7 +1360,62 @@ export default function WalletPage() {
     gatewayReadState === "ready" && hasPositiveRawAmount(gatewaySpendableRaw)
   );
 
+  async function handleGatewayFundingSubmit() {
+    const prepared = gatewayFundingStatus;
+    if (
+      !prepared ||
+      prepared.state !== "READY_TO_BROADCAST" ||
+      prepared.submissionEnabled !== true
+    ) return;
+
+    setGatewayFundingBusy(true);
+    setGatewayFundingError("");
+    setGatewayFundingNotice("");
+    setGatewayFundingTransactionUrl(null);
+    try {
+      // This is the only browser submit call. It is authenticated and the
+      // server re-checks the runtime broadcast gate plus the durable CAS.
+      const result = await backendApi.wallet.submitGatewayFunding(prepared.actionId);
+      if (result.state === "COMPLETED") {
+        finishCompletedGatewayFunding(result);
+        return;
+      }
+      if (isGatewayFundingTerminalWithoutSubmission(result)) {
+        clearGatewayFundingRecovery();
+        setGatewayFundingStatus(null);
+        setGatewayAmount("");
+        setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
+        return;
+      }
+      setGatewayFundingStatus(result);
+    } catch {
+      // A submit response can be lost after the server has accepted the
+      // request. Reconcile this SAME action read-only before showing any
+      // retry affordance; never submit again from this catch path.
+      try {
+        const reconciled = await backendApi.wallet.gatewayFunding(prepared.actionId);
+        if (reconciled.state === "COMPLETED") {
+          finishCompletedGatewayFunding(reconciled);
+          return;
+        }
+        setGatewayFundingStatus(reconciled);
+      } catch {
+        setGatewayFundingError(t.wallet.gatewayReconciliationRequired);
+      }
+    } finally {
+      setGatewayFundingBusy(false);
+    }
+  }
+
   async function handleGatewayTransfer() {
+    if (gatewayFundingStatus?.state === "READY_TO_BROADCAST") {
+      await handleGatewayFundingSubmit();
+      return;
+    }
+    if (
+      gatewayFundingStatus &&
+      !["PREPARING", "SIGN_CHALLENGE_CREATING", "SIGNATURE_PENDING"].includes(gatewayFundingStatus.state)
+    ) return;
     if (!selectedDestination && !gatewayFundingRecovery) return;
     // A live recovery is the authoritative intent, exactly as for a deposit:
     // the inputs are disabled while it exists, so both the amount and the
@@ -1338,6 +1454,7 @@ export default function WalletPage() {
     setGatewaySignStep(null);
     setGatewayFundingError("");
     setGatewayFundingNotice("");
+    setGatewayFundingTransactionUrl(null);
     try {
       const result = await confirmGatewayBurnSignature(
         { destinationDomain, valueRaw },
@@ -1346,14 +1463,19 @@ export default function WalletPage() {
         // progress honestly rather than showing one indeterminate spinner.
         (signed, total) => setGatewaySignStep({ step: signed + 1, total }),
       );
+      if (result.state === "COMPLETED") {
+        finishCompletedGatewayFunding(result);
+        return;
+      }
+      // The action helper stores recovery as soon as the durable action is
+      // created. Mirror that record into React state so a freshly prepared
+      // READY action is locked to its same destination and amount immediately.
+      restoreGatewayFundingRecoveryFromStorage();
       setGatewayFundingStatus(result);
       if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
         throw new Error("gateway_signature_challenge_unavailable");
       }
-      setGatewayFundingRecovery(null);
-      setGatewayFundingNotice(
-        `${t.wallet.gatewayTransferPrepared} ${t.wallet.gatewaySubmissionDisabled}`,
-      );
+      setGatewayFundingNotice(result.submissionEnabled ? "" : t.wallet.gatewaySubmissionDisabled);
     } catch (cause) {
       // Same rule as the source deposit path: a Circle auth restore failure
       // is not a transfer preparation failure at all, and no financial start
@@ -1361,10 +1483,11 @@ export default function WalletPage() {
       if (cause instanceof Error && cause.message === "circle_reauthentication_required") {
         setCircleReauthRequired(true);
       } else if (cause instanceof Error && cause.message === GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION) {
-        setGatewayFundingRecovery(null);
+        clearGatewayFundingRecovery();
         setGatewayFundingStatus(null);
         setGatewayAmount("");
         setGatewayFundingNotice("");
+        setGatewayFundingTransactionUrl(null);
         setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
       } else {
         setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
@@ -1596,21 +1719,72 @@ export default function WalletPage() {
                         className="ex-btn ex-btn--ink"
                         type="button"
                         onClick={handleGatewayTransfer}
-                        disabled={gatewayFundingBusy || Boolean(gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING")}
+                        disabled={gatewayFundingBusy || Boolean(
+                          gatewayFundingStatus && (
+                            gatewayFundingStatus.state === "SUBMITTING" ||
+                            gatewayFundingStatus.state === "SUBMITTED" ||
+                            gatewayFundingStatus.state === "FAILED" ||
+                            gatewayFundingStatus.state === "RECONCILIATION_REQUIRED" ||
+                            (gatewayFundingStatus.state === "READY_TO_BROADCAST" &&
+                              gatewayFundingStatus.submissionEnabled !== true)
+                          ),
+                        )}
                       >
                         {gatewayFundingBusy
                           ? (gatewaySignStep && gatewaySignStep.total > 1
                             ? withGatewayStep(t.wallet.gatewaySigningStep, gatewaySignStep.step, gatewaySignStep.total)
                             : t.wallet.gatewayPreparingSignature)
                           : gatewayFundingStatus?.readyToBroadcast === true
-                            ? t.wallet.gatewayTransferPrepared
+                            ? gatewayFundingStatus.submissionEnabled === true
+                              ? t.wallet.gatewaySubmitTransfer
+                              : t.wallet.gatewayTransferPrepared
+                          : gatewayFundingStatus?.state === "SUBMITTING"
+                            ? t.wallet.gatewaySubmitting
+                          : gatewayFundingStatus?.state === "SUBMITTED"
+                            ? t.wallet.gatewaySubmitted
+                          : gatewayFundingStatus?.state === "RECONCILIATION_REQUIRED"
+                            ? t.wallet.gatewayReconciliationRequired
+                          : gatewayFundingStatus?.state === "FAILED"
+                            ? t.wallet.gatewayTransferFailed
                           : gatewayFundingRecovery
                             ? t.wallet.gatewayResumeSignature
                             : t.wallet.gatewayPrepareSignature}
                       </button>
                     </div>
                   )}
+                  {gatewayFundingStatus?.state === "READY_TO_BROADCAST" && (
+                    <p className="ex-entry__msg" data-tone="ok" aria-live="polite">
+                      {t.wallet.gatewayTransferPrepared}
+                      {gatewayFundingStatus.submissionEnabled !== true && ` ${t.wallet.gatewaySubmissionDisabled}`}
+                    </p>
+                  )}
+                  {gatewayFundingStatus?.state === "SUBMITTING" && (
+                    <p className="ex-entry__msg" aria-live="polite">{t.wallet.gatewaySubmitting}</p>
+                  )}
+                  {gatewayFundingStatus?.state === "SUBMITTED" && (
+                    <p className="ex-entry__msg" aria-live="polite">{t.wallet.gatewaySubmitted}</p>
+                  )}
+                  {gatewayFundingStatus?.state === "RECONCILIATION_REQUIRED" && (
+                    <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                      {t.wallet.gatewayReconciliationRequired}
+                    </p>
+                  )}
+                  {gatewayFundingStatus?.state === "FAILED" && (
+                    <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                      {t.wallet.gatewayTransferFailed}
+                    </p>
+                  )}
                   {gatewayFundingNotice && <p className="ex-entry__msg" data-tone="ok">{gatewayFundingNotice}</p>}
+                  {gatewayFundingTransactionUrl && (
+                    <a
+                      className="ex-btn ex-btn--ghost"
+                      href={gatewayFundingTransactionUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {t.wallet.gatewayViewTransaction}
+                    </a>
+                  )}
                   {gatewayFundingError && <p className="ex-entry__msg" data-tone="error">{gatewayFundingError}</p>}
                 </section>
 

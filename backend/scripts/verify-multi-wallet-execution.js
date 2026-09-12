@@ -424,7 +424,10 @@ assert.ok(walletPage.includes('confirmGatewayBurnSignature'));
 assert.ok(walletPage.includes('confirmGatewaySourceDeposit'));
 assert.ok(gatewayActions.includes('confirmCircleGatewayFunding'), 'Circle Gateway funding support must be preserved');
 assert.ok(!/gatewayMint|burnIntent|\/v1\/transfer|encodeFunctionData/i.test(walletPage));
-assert.ok(!walletPage.includes('submitGatewayFunding'), 'the wallet page must not expose direct Gateway broadcast');
+assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
+assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);
+assert.match(walletPage, /prepared\.submissionEnabled !== true/);
+assert.ok(!/submitGatewayTransfer|\/v1\/transfer|gatewayMint|burnIntent/i.test(walletPage));
 
 console.log('multi wallet execution: PASS');
 }

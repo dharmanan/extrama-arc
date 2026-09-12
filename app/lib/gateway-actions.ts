@@ -165,7 +165,9 @@ export async function confirmGatewayBurnSignature(
   }
   if (started.terminal) throw new Error("gateway_signature_challenge_uncertain");
   if (started.readyToBroadcast) {
-    clearExternalGatewayFundingRecovery();
+    // Keep the same durable action recoverable through submission and finality.
+    // The Wallet clears this record only after COMPLETED or a proven clean
+    // pre-submission terminal response.
     return started;
   }
   if (started.executionMode !== "EXTERNAL_WALLET" || !started.typedDataList.length) {
@@ -193,7 +195,6 @@ export async function confirmGatewayBurnSignature(
 
   const verified = await backendApi.wallet.verifyGatewayFunding(started.actionId, { signatures });
   if (!verified.readyToBroadcast) throw new Error("gateway_signature_challenge_unavailable");
-  clearExternalGatewayFundingRecovery();
   return verified;
 }
 

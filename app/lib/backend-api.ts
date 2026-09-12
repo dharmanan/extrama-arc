@@ -690,6 +690,7 @@ export type GatewayFundingResponse = {
   terminal: boolean;
   pending: boolean;
   readyToBroadcast: boolean;
+  submissionEnabled: boolean;
   broadcast: "NOT_SUBMITTED" | "SUBMITTED" | "COMPLETED";
   transferId: string | null;
   transactionHash: string | null;

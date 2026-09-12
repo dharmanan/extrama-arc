@@ -601,7 +601,9 @@ export async function confirmCircleGatewayFunding(
   // misbehaving response can never spin here.
   for (let pass = 0; pass <= 16; pass += 1) {
     if (current.readyToBroadcast) {
-      clearCircleGatewayFundingRecovery();
+      // Keep the same durable action recoverable through submission and finality.
+      // The Wallet clears this record only after COMPLETED or a proven clean
+      // pre-submission terminal response.
       return current;
     }
     if (!current.pending || current.signatureIndex < 0 || !current.challengeId) {
