@@ -38,6 +38,7 @@ import {
   storeCircleGatewayDepositRecovery,
   storeExternalGatewayDepositRecovery,
   storeExternalGatewayFundingRecovery,
+  type CircleGatewayDepositRecovery,
   type CircleGatewayDepositPhase,
   type ExternalGatewayDepositPhase,
 } from "./circle-auth";
@@ -66,15 +67,17 @@ function requireMode(context: GatewayContext): HumanExecutionMode {
 
 async function pollDeposit(
   read: () => Promise<GatewayDepositResponse>,
+  shouldReturn: (result: GatewayDepositResponse) => boolean = (result) =>
+    !result.pending || result.state === "RECONCILING",
   maxAttempts = 45,
   intervalMs = 4000,
 ): Promise<GatewayDepositResponse> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await read();
-    // RECONCILING is not an unobserved financial action. The deposit has
-    // already been submitted, so hand it back to the wallet's persistent,
-    // read-only finality rail instead of applying the pre-submit retry budget.
-    if (!result.pending || result.state === "RECONCILING") return result;
+    // The caller owns the phase boundary. A backend response may advance to
+    // the next financial phase while pending remains true, so polling must
+    // return that response to the outer state machine immediately.
+    if (shouldReturn(result)) return result;
     await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
   }
   throw new Error("gateway_deposit_pending_timeout");
@@ -277,6 +280,38 @@ async function runCircleDeposit(
     storeCircleGatewayDepositRecovery(recovery);
   }
 
+  function syncCircleRecoveryToBackendPhase(next: GatewayDepositResponse) {
+    const currentRecovery = recovery;
+    if (!currentRecovery) {
+      throw new Error("gateway_deposit_recovery_missing");
+    }
+    if (
+      next.state === "DEPOSIT_CHALLENGE" &&
+      (currentRecovery.phase === "APPROVAL_CHALLENGE" || currentRecovery.phase === "APPROVAL_PENDING")
+    ) {
+      const nextRecovery: CircleGatewayDepositRecovery = {
+        ...currentRecovery,
+        phase: "DEPOSIT_CHALLENGE",
+        challengeId: next.depositChallengeId,
+      };
+      recovery = nextRecovery;
+      storeCircleGatewayDepositRecovery(nextRecovery);
+    } else if (next.state === "RECONCILING" && currentRecovery.phase !== "RECONCILING") {
+      const nextRecovery: CircleGatewayDepositRecovery = {
+        ...currentRecovery,
+        phase: "RECONCILING",
+        challengeId: next.depositChallengeId || currentRecovery.challengeId,
+      };
+      recovery = nextRecovery;
+      storeCircleGatewayDepositRecovery(nextRecovery);
+    }
+  }
+
+  // A reload can retain APPROVAL_PENDING after the server has already
+  // advanced this same action to DEPOSIT_CHALLENGE. Align the browser record
+  // before the loop can execute the existing deposit challenge.
+  syncCircleRecoveryToBackendPhase(current);
+
   while (!isDepositTerminal(current.state)) {
     if (current.state === "RECONCILING") {
       onStatus?.("RECONCILING");
@@ -292,7 +327,9 @@ async function runCircleDeposit(
       onStatus?.("APPROVAL_PENDING");
       current = await pollDeposit(
         () => backendApi.wallet.verifyGatewayDepositApproval(recovery!.actionId, { circleUserToken: auth.userToken }),
+        (result) => !result.pending || result.state !== "APPROVAL_CHALLENGE",
       );
+      syncCircleRecoveryToBackendPhase(current);
       continue;
     }
     if (current.state === "DEPOSIT_CHALLENGE") {
@@ -305,10 +342,13 @@ async function runCircleDeposit(
       onStatus?.("DEPOSIT_PENDING");
       current = await pollDeposit(
         () => backendApi.wallet.verifyGatewayDeposit(recovery!.actionId, { circleUserToken: auth.userToken }),
+        (result) => !result.pending || result.state !== "DEPOSIT_CHALLENGE",
       );
+      syncCircleRecoveryToBackendPhase(current);
       continue;
     }
     current = await pollDeposit(() => backendApi.wallet.gatewayDeposit(recovery!.actionId));
+    syncCircleRecoveryToBackendPhase(current);
   }
 
   if (current.state === "COMPLETED") clearCircleGatewayDepositRecovery();

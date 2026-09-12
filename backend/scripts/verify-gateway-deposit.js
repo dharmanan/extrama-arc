@@ -9,7 +9,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { webcrypto } = require('node:crypto');
 const { ethers } = require('ethers');
+const ts = require('typescript');
 
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL ||= 'postgresql://verify:verify@127.0.0.1:1/verify';
@@ -43,6 +45,39 @@ const USDC_INTERFACE = new ethers.Interface([
 const GATEWAY_INTERFACE = new ethers.Interface([
   'function deposit(address token,uint256 value)',
 ]);
+
+const GATEWAY_ACTIONS_SOURCE_PATH = path.resolve(__dirname, '../../app/lib/gateway-actions.ts');
+
+function transpileGatewayActions() {
+  const source = fs.readFileSync(GATEWAY_ACTIONS_SOURCE_PATH, 'utf8');
+  return ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2020,
+      esModuleInterop: true,
+    },
+    fileName: 'gateway-actions.ts',
+  }).outputText;
+}
+
+const GATEWAY_ACTIONS_CODE = transpileGatewayActions();
+
+function loadGatewayActionsForBehavior({ backend, circleActions, circleAuth, window }) {
+  const moduleObject = { exports: {} };
+  const requireMap = {
+    './backend-api': { backendApi: backend.module },
+    './circle-actions': circleActions.module,
+    './circle-auth': circleAuth.module,
+  };
+  function fakeRequire(id) {
+    if (Object.prototype.hasOwnProperty.call(requireMap, id)) return requireMap[id];
+    throw new Error(`gateway deposit behavior harness: unmocked require("${id}")`);
+  }
+  new Function('module', 'exports', 'require', 'window', 'crypto', GATEWAY_ACTIONS_CODE)(
+    moduleObject, moduleObject.exports, fakeRequire, window, webcrypto,
+  );
+  return moduleObject.exports;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal generic fake Postgres: real WHERE/SET evaluation over an in-memory
@@ -1039,6 +1074,230 @@ async function verifyReconcilingFinalitySurvivesTtl() {
   console.log('GATEWAY_DEPOSIT_RECONCILING_FINALITY=PASS');
   console.log('GATEWAY_DEPOSIT_RECONCILIATION_REQUIRED_PRESERVED=PASS');
   console.log('GATEWAY_CLEAN_TERMINAL_RECOVERY_RELEASE=PASS');
+}
+
+// ---------------------------------------------------------------------------
+// Behavioral proof for the shipped Circle Gateway deposit client. The real
+// gateway-actions.ts module is transpiled and executed against fakes for the
+// backend, Circle auth storage, hosted challenge executor and timer. This is
+// intentionally separate from the backend state-machine tests above: it
+// proves the browser returns from each phase's poll when the backend advances
+// to the next phase, even while pending remains true.
+// ---------------------------------------------------------------------------
+
+function circleDepositClientResponse(state, overrides = {}) {
+  const recoveryDisposition = state === 'COMPLETED' || state === 'FAILED' || state === 'EXPIRED'
+    ? 'CLEAR'
+    : 'RECONCILE';
+  return {
+    actionId: 'circle-client-action-1',
+    requestId: 'circle-client-request-1',
+    executionMode: 'CIRCLE_USER_WALLET',
+    sourceDomain: 3,
+    sourceChainId: 421614,
+    amountRaw: AMOUNT,
+    state,
+    recoveryDisposition,
+    approvalTxHash: null,
+    approvalChallengeId: null,
+    depositTxHash: null,
+    depositChallengeId: null,
+    pending: true,
+    transactionObserved: false,
+    transactionRequest: null,
+    lastError: null,
+    expiresAt: new Date(Date.UTC(2026, 8, 12, 13, 0, 0)).toISOString(),
+    ...overrides,
+  };
+}
+
+function createCircleGatewayActionsBehavior({ initialRecovery = null, startGatewayDeposit, approvalResponses, depositResponses }) {
+  let recovery = initialRecovery ? { ...initialRecovery } : null;
+  const recoveryHistory = [];
+  const startCalls = [];
+  const approvalCalls = [];
+  const depositCalls = [];
+  const gatewayStatusCalls = [];
+  const executeCalls = [];
+  const window = {
+    delays: [],
+    setTimeout(callback, milliseconds) {
+      this.delays.push(milliseconds);
+      return setImmediate(callback);
+    },
+  };
+  let approvalIndex = 0;
+  let depositIndex = 0;
+
+  const circleAuth = {
+    module: {
+      clearCircleGatewayDepositRecovery: () => { recovery = null; },
+      clearExternalGatewayDepositRecovery: () => {},
+      clearExternalGatewayFundingRecovery: () => {},
+      readCircleGatewayDepositRecovery: () => (recovery ? { ...recovery } : null),
+      readExternalGatewayDepositRecovery: () => null,
+      readExternalGatewayFundingRecovery: () => null,
+      storeCircleGatewayDepositRecovery: (next) => {
+        recovery = { ...next };
+        recoveryHistory.push({ ...next });
+      },
+      storeExternalGatewayDepositRecovery: () => {},
+      storeExternalGatewayFundingRecovery: () => {},
+    },
+  };
+  const circleActions = {
+    module: {
+      confirmCircleGatewayFunding: async () => { throw new Error('Gateway transfer is not part of this harness'); },
+      ensureCircleFinancialAuth: async () => ({
+        userToken: 'circle-client-user-token', encryptionKey: 'circle-client-encryption-key',
+      }),
+      executeHostedChallenge: async (challengeId) => {
+        executeCalls.push(challengeId);
+        return { status: 'COMPLETE' };
+      },
+    },
+  };
+  const backend = {
+    module: {
+      wallet: {
+        startGatewayDeposit: async (input) => {
+          startCalls.push({ ...input });
+          return startGatewayDeposit(input);
+        },
+        verifyGatewayDepositApproval: async (actionId, input) => {
+          approvalCalls.push({ actionId, ...input });
+          const response = approvalResponses[approvalIndex];
+          approvalIndex += 1;
+          if (!response) throw new Error(`approval response sequence exhausted after ${approvalCalls.length} calls`);
+          return response;
+        },
+        verifyGatewayDeposit: async (actionId, input) => {
+          depositCalls.push({ actionId, ...input });
+          const response = depositResponses[depositIndex];
+          depositIndex += 1;
+          if (!response) throw new Error(`deposit response sequence exhausted after ${depositCalls.length} calls`);
+          return response;
+        },
+        gatewayDeposit: async (actionId) => {
+          gatewayStatusCalls.push(actionId);
+          throw new Error('phase-aware harness must not fall back to generic status polling');
+        },
+      },
+    },
+  };
+  const runner = loadGatewayActionsForBehavior({ backend, circleActions, circleAuth, window });
+  return {
+    runner,
+    window,
+    recovery: () => (recovery ? { ...recovery } : null),
+    recoveryHistory,
+    startCalls,
+    approvalCalls,
+    depositCalls,
+    gatewayStatusCalls,
+    executeCalls,
+  };
+}
+
+async function verifyCircleClientTwoChallengeFlow() {
+  const actionId = 'circle-client-action-1';
+  const requestId = 'circle-client-request-1';
+  const approvalChallengeId = 'approval-challenge-live';
+  const depositChallengeId = 'deposit-challenge-live';
+  const progress = [];
+  const responses = (state, overrides = {}) => circleDepositClientResponse(state, {
+    actionId, requestId, ...overrides,
+  });
+  const behavior = createCircleGatewayActionsBehavior({
+    startGatewayDeposit: (input) => responses('APPROVAL_CHALLENGE', {
+      requestId: input.requestId,
+      approvalChallengeId,
+    }),
+    approvalResponses: [
+      responses('APPROVAL_CHALLENGE', { approvalChallengeId }),
+      responses('DEPOSIT_CHALLENGE', { approvalChallengeId, depositChallengeId }),
+    ],
+    depositResponses: [
+      responses('DEPOSIT_CHALLENGE', { approvalChallengeId, depositChallengeId }),
+      responses('RECONCILING', { approvalChallengeId, depositChallengeId }),
+    ],
+  });
+
+  const result = await behavior.runner.confirmGatewaySourceDeposit(
+    { sourceDomain: 3, amountRaw: AMOUNT },
+    { executionMode: 'CIRCLE_USER_WALLET' },
+    (phase) => progress.push(phase),
+  );
+
+  assert.equal(result.state, 'RECONCILING');
+  assert.deepEqual(
+    progress,
+    ['APPROVAL_CHALLENGE', 'APPROVAL_PENDING', 'DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING', 'RECONCILING'],
+    'Circle phases must progress in order without getting stuck in approval polling',
+  );
+  assert.deepEqual(behavior.executeCalls, [approvalChallengeId, depositChallengeId]);
+  assert.equal(behavior.startCalls.length, 1, 'one request id/action only');
+  assert.equal(behavior.approvalCalls.length, 2, 'approval polling returns at DEPOSIT_CHALLENGE');
+  assert.equal(behavior.depositCalls.length, 2, 'deposit polling returns at RECONCILING');
+  assert.equal(behavior.gatewayStatusCalls.length, 0, 'phase polling must not fall back to generic status');
+  assert.ok(behavior.approvalCalls.every((call) => call.actionId === actionId));
+  assert.ok(behavior.depositCalls.every((call) => call.actionId === actionId));
+  assert.deepEqual(
+    behavior.recoveryHistory.map((entry) => entry.phase),
+    ['APPROVAL_CHALLENGE', 'APPROVAL_PENDING', 'DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING', 'RECONCILING'],
+    'browser recovery must follow every financial phase boundary',
+  );
+  assert.equal(behavior.recovery().requestId, behavior.startCalls[0].requestId);
+  assert.equal(behavior.recovery().actionId, actionId);
+  assert.equal(behavior.recovery().phase, 'RECONCILING');
+  console.log('GATEWAY_CIRCLE_TWO_CHALLENGE_FLOW=PASS');
+}
+
+async function verifyCircleClientApprovalPendingResume() {
+  const actionId = 'circle-client-resume-action';
+  const requestId = 'circle-client-resume-request';
+  const depositChallengeId = 'deposit-challenge-existing';
+  const initialRecovery = {
+    actionId,
+    requestId,
+    sourceDomain: 3,
+    amountRaw: AMOUNT,
+    phase: 'APPROVAL_PENDING',
+    challengeId: null,
+    expiresAtMs: Date.UTC(2026, 8, 12, 13, 0, 0),
+  };
+  const progress = [];
+  const responses = (state, overrides = {}) => circleDepositClientResponse(state, {
+    actionId, requestId, ...overrides,
+  });
+  const behavior = createCircleGatewayActionsBehavior({
+    initialRecovery,
+    startGatewayDeposit: () => { throw new Error('resume must not call startGatewayDeposit'); },
+    approvalResponses: [responses('DEPOSIT_CHALLENGE', { depositChallengeId })],
+    depositResponses: [responses('RECONCILING', { depositChallengeId })],
+  });
+
+  const result = await behavior.runner.confirmGatewaySourceDeposit(
+    { sourceDomain: 3, amountRaw: AMOUNT },
+    { executionMode: 'CIRCLE_USER_WALLET' },
+    (phase) => progress.push(phase),
+  );
+
+  assert.equal(result.state, 'RECONCILING');
+  assert.deepEqual(progress, ['DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING', 'RECONCILING']);
+  assert.equal(behavior.startCalls.length, 0, 'resume must not create a new action/request');
+  assert.equal(behavior.approvalCalls.length, 1, 'resume probes the existing approval phase once');
+  assert.equal(behavior.executeCalls.length, 1, 'only the existing deposit challenge executes');
+  assert.deepEqual(behavior.executeCalls, [depositChallengeId]);
+  assert.equal(behavior.depositCalls.length, 1);
+  assert.equal(behavior.gatewayStatusCalls.length, 0);
+  assert.deepEqual(
+    behavior.recoveryHistory.map((entry) => entry.phase),
+    ['DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING', 'RECONCILING'],
+  );
+  assert.equal(behavior.recovery().requestId, requestId);
+  assert.equal(behavior.recovery().actionId, actionId);
+  console.log('GATEWAY_CIRCLE_RESUME_PHASE_SYNC=PASS');
 }
 
 // ---------------------------------------------------------------------------
@@ -2105,7 +2364,12 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.doesNotMatch(handler, /gateway_deposit_expired[\s\S]{0,300}clearTerminalBrowserRecovery\(\)/);
   assert.ok(!handler.includes('deleteGatewayDeposit') && !handler.includes('crypto.randomUUID()'));
   assert.match(handler, /else if \(result\.state === "RECONCILING"\) \{\s+restoreBrowserRecovery\(\)/);
+  assert.match(handler, /phase === "DEPOSIT_CHALLENGE"\) setDepositPhase\("confirmDeposit"\)/);
+  assert.match(handler, /phase === "DEPOSIT_PENDING"\) setDepositPhase\("depositSubmitted"\)/);
+  assert.match(handler, /phase === "RECONCILING"\) setDepositPhase\("waitingFinality"\)/);
   assert.match(depositMarkup, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\) \|\| depositAwaitingFinality\}/);
+  assert.match(depositMarkup, /depositAwaitingFinality && \(/);
+  assert.match(depositMarkup, /data-state="active"/);
   assert.match(depositMarkup, /onClick=\{\(\) => void handleGatewaySourceDeposit\(selectedGatewaySource\.domain\)\}/);
   assert.ok(!walletPage.includes('Status: ${result.state}') && !walletPage.includes('Durum: ${result.state}'));
 
@@ -2305,6 +2569,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_SOURCE_FORM_UI=PASS');
   console.log('GATEWAY_SELECTED_SOURCE_BALANCE_UI=PASS');
   console.log('GATEWAY_UNCERTAIN_RECOVERY_FAILS_CLOSED=PASS');
+  console.log('GATEWAY_CIRCLE_FINALITY_RAIL=PASS');
   console.log('GATEWAY_HEADER_ACCOUNT_FOOTPRINT=PASS');
   console.log('GATEWAY_SESSION_CONTROLS=PASS');
   console.log('GATEWAY_WALLET_UI=PASS');
@@ -2347,6 +2612,8 @@ function verifyPoolRefreshWiring() {
   await verifyExternalBranch();
   await verifyMultiChainDeposit();
   await verifyReconcilingFinalitySurvivesTtl();
+  await verifyCircleClientTwoChallengeFlow();
+  await verifyCircleClientApprovalPendingResume();
   await verifyCircleBranch();
   await verifyMultiChainCircleBranch();
   await verifySameSourceReviewGuard();
