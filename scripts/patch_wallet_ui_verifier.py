@@ -2,6 +2,7 @@ from pathlib import Path
 
 path = Path('backend/scripts/verify-gateway-deposit.js')
 text = path.read_text()
+
 old = r'''  assert.match(
     fundingMarkup,
     /onChange=\{\(event\) => setGatewayDestinationDomain\(event\.target\.value\)\}/,
@@ -12,4 +13,22 @@ new = r'''  assert.match(fundingMarkup, /onChange=\{\(event\) => \{/);
 if old not in text:
     raise SystemExit('destination selector assertion anchor missing')
 text = text.replace(old, new, 1)
+
+old = r'''  assert.match(
+    depositMarkup,
+    /disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/,
+    'the amount field stays disabled while a durable recovery exists',
+  );'''
+new = r'''  const amountValueIndex = depositMarkup.indexOf('value={depositAmount}');
+  const amountInputEnd = depositMarkup.indexOf('/>', amountValueIndex);
+  assert.ok(amountValueIndex > -1 && amountInputEnd > amountValueIndex, 'the funding amount input must exist');
+  const amountInputMarkup = depositMarkup.slice(amountValueIndex, amountInputEnd);
+  assert.ok(
+    amountInputMarkup.includes('Boolean(depositRecovery)'),
+    'the amount field stays disabled while a durable recovery exists',
+  );'''
+if old not in text:
+    raise SystemExit('amount recovery assertion anchor missing')
+text = text.replace(old, new, 1)
+
 path.write_text(text)
