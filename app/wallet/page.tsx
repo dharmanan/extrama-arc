@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type PointerEvent } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type PointerEvent } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
 import {
@@ -409,13 +409,48 @@ export default function WalletPage() {
     }
   }
 
-  // Pointer users should not retain a focus ring after choosing an option.
-  // Keyboard interaction never enters this handler, so the global
-  // :focus-visible treatment remains available for accessible navigation.
-  function clearPointerSelectFocus(event: PointerEvent<HTMLSelectElement>) {
+  // Native <select> focus handling for pointer users.
+  //
+  // A native select owns its own option list, and pointer-up can fire while
+  // that list is still open, BEFORE the user has committed a choice. Blurring
+  // on pointer-up therefore closes the dropdown out from under them and no
+  // other option can ever be picked, which is exactly the regression this
+  // replaces. Pointer-down is worse still for the same reason.
+  //
+  // The only safe lifecycle is: remember that this interaction began with a
+  // pointer, then drop focus after a real selection change has been committed.
+  // Keyboard interaction never sets the flag, so Tab focus, arrow-key
+  // selection and the :focus-visible ring are all left untouched.
+  //
+  // Each select carries its own flag, so one select's interaction can never
+  // blur the other.
+  const destinationPointerIntent = useRef(false);
+  const sourcePointerIntent = useRef(false);
+
+  function markSelectPointerIntent(
+    intent: MutableRefObject<boolean>,
+    event: PointerEvent<HTMLSelectElement>,
+  ) {
     if (event.pointerType !== "mouse" && event.pointerType !== "touch" && event.pointerType !== "pen") return;
-    const select = event.currentTarget;
+    intent.current = true;
+  }
+
+  // Called only from a change handler, and only after that handler has already
+  // applied its own state. Never bound to a pointer event.
+  function blurAfterPointerSelectChange(
+    intent: MutableRefObject<boolean>,
+    select: HTMLSelectElement,
+  ) {
+    if (!intent.current) return;
+    intent.current = false;
     window.requestAnimationFrame(() => select.blur());
+  }
+
+  // A dropdown dismissed without a choice (Escape, click away), or an
+  // interaction that continues on the keyboard, must not leave a stale flag
+  // that would later blur a keyboard-driven change.
+  function clearSelectPointerIntent(intent: MutableRefObject<boolean>) {
+    intent.current = false;
   }
 
   async function refreshChainState() {
@@ -1402,7 +1437,16 @@ export default function WalletPage() {
                         <span>{t.wallet.gatewayDestination}</span>
                         <select
                           value={selectedDestination ? String(selectedDestination.domain) : ""}
-                          onChange={(event) => setGatewayDestinationDomain(event.target.value)}
+                          onPointerDown={(event) => markSelectPointerIntent(destinationPointerIntent, event)}
+                          onKeyDown={() => clearSelectPointerIntent(destinationPointerIntent)}
+                          onChange={(event) => {
+                            const select = event.currentTarget;
+                            // Product state first; focus handling never
+                            // precedes or replaces the destination update.
+                            setGatewayDestinationDomain(event.target.value);
+                            blurAfterPointerSelectChange(destinationPointerIntent, select);
+                          }}
+                          onBlur={() => clearSelectPointerIntent(destinationPointerIntent)}
                           disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
                         >
                           {gatewayDestinations.map((item) => (
@@ -1473,15 +1517,24 @@ export default function WalletPage() {
                         <span>{t.wallet.gatewaySource}</span>
                         <select
                           value={selectedGatewaySource ? String(selectedGatewaySource.domain) : ""}
+                          onPointerDown={(event) => markSelectPointerIntent(sourcePointerIntent, event)}
+                          onKeyDown={() => clearSelectPointerIntent(sourcePointerIntent)}
                           onChange={(event) => {
+                            const select = event.currentTarget;
+                            // Funding state first, unchanged: switch source,
+                            // then clear the editable amount and the local
+                            // deposit status so nothing carries across chains.
                             setSelectedSourceDomain(event.target.value);
                             setDepositAmount("");
                             setDepositStatus(null);
                             setDepositStatusWarning("");
                             setDepositError("");
                             setDepositNotice("");
+                            // Focus handling last, and only for a committed
+                            // pointer selection.
+                            blurAfterPointerSelectChange(sourcePointerIntent, select);
                           }}
-                          onPointerUp={clearPointerSelectFocus}
+                          onBlur={() => clearSelectPointerIntent(sourcePointerIntent)}
                           disabled={depositBusy || Boolean(depositRecovery) || depositAwaitingFinality}
                         >
                           {sourceState.sources.map((source) => (

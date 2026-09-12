@@ -1783,12 +1783,183 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(depositMarkup, /onClick=\{\(\) => void handleGatewaySourceDeposit\(selectedGatewaySource\.domain\)\}/);
   assert.ok(!walletPage.includes('Status: ${result.state}') && !walletPage.includes('Durum: ${result.state}'));
 
-  // Pointer selection explicitly clears focus after the native choice closes,
-  // while keyboard focus keeps the shared focus-visible outline.
-  assert.match(depositMarkup, /onPointerUp=\{clearPointerSelectFocus\}/);
-  assert.match(walletPage, /const select = event\.currentTarget;\s+window\.requestAnimationFrame\(\(\) => select\.blur\(\)\)/);
-  assert.match(walletPage, /event\.pointerType !== "mouse" && event\.pointerType !== "touch" && event\.pointerType !== "pen"/);
+  // -------------------------------------------------------------------
+  // Native select pointer focus, proved for EACH select independently.
+  //
+  // A native <select> owns its option list. Pointer-up can fire while that
+  // list is still open, so blurring there closes the dropdown before a choice
+  // can be committed, which is exactly the production regression this guards.
+  // Each select is located by its own label and verified on its own; a shared
+  // helper name appearing twice in the file proves nothing about either one.
+  // -------------------------------------------------------------------
+
+  function selectBlockFor(markup, labelKey, what) {
+    const labelIndex = markup.indexOf(`<span>{t.wallet.${labelKey}}</span>`);
+    assert.ok(labelIndex > -1, `${what} must be labelled with t.wallet.${labelKey}`);
+    const openIndex = markup.indexOf('<select', labelIndex);
+    const closeIndex = markup.indexOf('</select>', openIndex);
+    assert.ok(openIndex > labelIndex && closeIndex > openIndex, `${what} must be a native select`);
+    return markup.slice(openIndex, closeIndex);
+  }
+
+  // No select anywhere in the page may blur from a pointer event. Both
+  // pointer-up (the shipped bug) and pointer-down (worse, same cause) are
+  // forbidden, in the JSX and in any handler bound to them.
+  assert.ok(
+    !/onPointerUp/.test(walletPage),
+    'no select may blur on pointer-up: the native dropdown is still open then',
+  );
+  assert.ok(
+    !/onPointerDown=\{[^}]*blur/.test(walletPage) && !/onPointerUp=\{[^}]*blur/.test(walletPage),
+    'blur must never be bound directly to a pointer event',
+  );
+  // Pointer-down may only record intent. It must not touch focus or state.
+  const pointerDownHandlers = [...walletPage.matchAll(/onPointerDown=\{([^}]*)\}/g)].map((match) => match[1]);
+  assert.equal(pointerDownHandlers.length, 2, 'exactly the two Gateway selects record pointer intent');
+  for (const body of pointerDownHandlers) {
+    assert.match(body, /markSelectPointerIntent\(/, 'pointer-down may only mark intent');
+    assert.ok(!/blur|setState|set[A-Z]/.test(body), 'pointer-down must not blur or mutate product state');
+  }
+
+  // The blur helper is only ever reachable from a change handler, and it is
+  // a no-op unless a pointer actually started the interaction.
+  const blurHelperStart = walletPage.indexOf('function blurAfterPointerSelectChange(');
+  assert.ok(blurHelperStart > -1, 'a change-time blur helper must exist');
+  const blurHelper = walletPage.slice(blurHelperStart, walletPage.indexOf('\n  }', blurHelperStart));
+  assert.match(blurHelper, /if \(!intent\.current\) return;/, 'keyboard-originated change must never blur');
+  assert.match(blurHelper, /intent\.current = false;/, 'the intent flag is consumed exactly once');
+  assert.match(blurHelper, /window\.requestAnimationFrame\(\(\) => select\.blur\(\)\)/);
+  // Pointer TYPE is still gated, so a synthetic or unknown source cannot blur.
+  assert.match(
+    walletPage,
+    /event\.pointerType !== "mouse" && event\.pointerType !== "touch" && event\.pointerType !== "pen"/,
+  );
+  // Each select owns its own flag, so one select can never blur the other.
+  assert.match(walletPage, /const destinationPointerIntent = useRef\(false\);/);
+  assert.match(walletPage, /const sourcePointerIntent = useRef\(false\);/);
+
+  function verifySelectPointerFocus({ markup, labelKey, what, intentRef, stateCalls }) {
+    const block = selectBlockFor(markup, labelKey, what);
+
+    // Pointer intent is recorded on pointer-down, for THIS select's own flag.
+    assert.match(
+      block,
+      new RegExp(`onPointerDown=\\{\\(event\\) => markSelectPointerIntent\\(${intentRef}, event\\)\\}`),
+      `${what} must record its own pointer intent on pointer-down`,
+    );
+    // And this select never blurs from a pointer event.
+    assert.ok(!/onPointerUp/.test(block), `${what} must not handle pointer-up at all`);
+    assert.ok(
+      !/onPointerDown=\{[^}]*blur/.test(block),
+      `${what} must not blur on pointer-down`,
+    );
+
+    // The change handler does its product work FIRST, then blurs.
+    const changeIndex = block.indexOf('onChange={(event) => {');
+    assert.ok(changeIndex > -1, `${what} must have a block-bodied change handler`);
+    const changeBody = block.slice(changeIndex, block.indexOf('}}', changeIndex));
+    const blurIndex = changeBody.indexOf(`blurAfterPointerSelectChange(${intentRef}`);
+    assert.ok(blurIndex > -1, `${what} must blur through the change-time helper`);
+    for (const call of stateCalls) {
+      const callIndex = changeBody.indexOf(call);
+      assert.ok(callIndex > -1, `${what} must still perform ${call}`);
+      assert.ok(
+        callIndex < blurIndex,
+        `${what} must apply ${call} BEFORE any focus handling`,
+      );
+    }
+    // The element is captured synchronously, not read inside the callback.
+    assert.match(changeBody, /const select = event\.currentTarget;/);
+
+    // Stale intent is cleared when the interaction ends without a committed
+    // pointer choice, or continues on the keyboard.
+    assert.match(
+      block,
+      new RegExp(`onBlur=\\{\\(\\) => clearSelectPointerIntent\\(${intentRef}\\)\\}`),
+      `${what} must clear stale pointer intent on blur`,
+    );
+    assert.match(
+      block,
+      new RegExp(`onKeyDown=\\{\\(\\) => clearSelectPointerIntent\\(${intentRef}\\)\\}`),
+      `${what} must clear pointer intent once the keyboard takes over`,
+    );
+
+    return block;
+  }
+
+  // A: SEND USDC destination select. Financial behavior unchanged.
+  const destinationSelect = verifySelectPointerFocus({
+    markup: fundingMarkup,
+    labelKey: 'gatewayDestination',
+    what: 'the destination select',
+    intentRef: 'destinationPointerIntent',
+    stateCalls: ['setGatewayDestinationDomain(event.target.value)'],
+  });
+  assert.match(destinationSelect, /disabled=\{gatewayFundingBusy \|\| Boolean\(gatewayFundingRecovery\)\}/,
+    'transfer recovery must still disable the destination select');
+  assert.match(destinationSelect, /value=\{selectedDestination \? String\(selectedDestination\.domain\) : ""\}/);
+  console.log('GATEWAY_DESTINATION_POINTER_FOCUS=PASS');
+
+  // B: ADD USDC TO GATEWAY source select. Funding behavior unchanged.
+  const sourceSelect = verifySelectPointerFocus({
+    markup: depositMarkup,
+    labelKey: 'gatewaySource',
+    what: 'the source select',
+    intentRef: 'sourcePointerIntent',
+    stateCalls: [
+      'setSelectedSourceDomain(event.target.value)',
+      'setDepositAmount("")',
+      'setDepositStatus(null)',
+      'setDepositStatusWarning("")',
+      'setDepositError("")',
+      'setDepositNotice("")',
+    ],
+  });
+  assert.match(sourceSelect, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\) \|\| depositAwaitingFinality\}/,
+    'deposit recovery must still disable the source select');
+  console.log('GATEWAY_SOURCE_POINTER_FOCUS=PASS');
+
+  // The regression itself: nothing in the source select's own handlers may
+  // close or blur the native dropdown before a choice is committed, so all
+  // four funding networks stay selectable.
+  assert.ok(
+    !/onPointerUp|onPointerCancel|onMouseUp|onClick=\{[^}]*blur|preventDefault\(\)/.test(sourceSelect),
+    'the source select must not interfere with the native dropdown lifecycle',
+  );
+  assert.ok(
+    !/blur\(\)/.test(sourceSelect),
+    'the source select JSX must never call blur() directly; only the change-time helper may',
+  );
+  assert.match(
+    depositMarkup,
+    /\{sourceState\.sources\.map\(\(source\) => \(\s*<option key=\{source\.domain\} value=\{source\.domain\}>\{source\.label\}<\/option>/,
+    'every configured funding network must remain an option',
+  );
+  // All five destinations and all four funding sources are still rendered.
+  assert.match(
+    fundingMarkup,
+    /\{gatewayDestinations\.map\(\(item\) => \(/,
+    'the destination list still comes from the server-supplied set',
+  );
+  const canonicalNetworks = require('../src/services/gatewayNetworks');
+  assert.equal(
+    canonicalNetworks.DESTINATION_NETWORKS.length, 5,
+    'five destinations remain configured',
+  );
+  assert.equal(
+    canonicalNetworks.DEPOSIT_SOURCE_NETWORKS.length, 4,
+    'four funding sources remain configured',
+  );
+  console.log('GATEWAY_SOURCE_SELECT_REMAINS_INTERACTIVE=PASS');
+
+  // Keyboard accessibility is untouched: the focus-visible ring still exists
+  // and no outline is globally suppressed for keyboard users.
   assert.match(styles, /:focus-visible\{outline:2px solid var\(--ember\)/);
+  assert.ok(
+    !/(^|[^-])\boutline:\s*(none|0)\b/m.test(styles.replace(/:focus-visible\{[^}]*\}/g, '')) ||
+    !/\*\s*\{[^}]*outline:\s*(none|0)/.test(styles),
+    'keyboard focus styling must not be globally removed',
+  );
 
   // Account controls no longer occupy a detached panel. The address owns the
   // end/disconnect action, and the global account footprint is stable before
@@ -1808,7 +1979,6 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_SOURCE_FORM_UI=PASS');
   console.log('GATEWAY_SELECTED_SOURCE_BALANCE_UI=PASS');
   console.log('GATEWAY_UNCERTAIN_RECOVERY_FAILS_CLOSED=PASS');
-  console.log('GATEWAY_POINTER_FOCUS=PASS');
   console.log('GATEWAY_HEADER_ACCOUNT_FOOTPRINT=PASS');
   console.log('GATEWAY_SESSION_CONTROLS=PASS');
   console.log('GATEWAY_WALLET_UI=PASS');
