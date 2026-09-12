@@ -1203,7 +1203,13 @@ async function verifyActivityServerBacked() {
   assert.equal(eth.state, 'RECONCILING', 'a different source domain must not use the Arbitrum balance');
   assert.equal(eth.sourceLabel, 'Ethereum Sepolia');
   assert.equal(eth.phase, 'GATEWAY_FINALITY');
+  assert.equal(eth.stage, 'FINALITY');
+  assert.equal(eth.actionRequired, false, 'RECONCILING is automatic finality, not user attention');
+  assert.equal(eth.interactive, false);
+  assert.equal(eth.terminal, false);
   assert.equal(result.hasBackgroundActivity, true);
+  assert.equal(result.activities.filter((item) => !item.terminal).length, 1,
+    'one RECONCILING row must keep Activity open count at one');
   assert.equal(result.activities.filter((item) => item.terminal).length, 10, 'history is bounded to ten terminal rows');
   assert.ok(reviewExpired, 'a review-resolved EXPIRED action remains in recent Activity history');
   assert.ok(reviewFailed, 'a review-resolved FAILED action remains in recent Activity history');
@@ -1215,8 +1221,8 @@ async function verifyActivityServerBacked() {
   assert.equal(reviewFailed.phase, 'FAILED');
   assert.equal(reviewFailed.terminal, true);
   assert.equal(reviewFailed.actionRequired, false);
-  assert.equal(result.activities.filter((item) => item.actionRequired).length, 1,
-    'review-resolved terminal actions must not count in Activity attention');
+  assert.equal(result.activities.filter((item) => item.actionRequired).length, 0,
+    'RECONCILING and review-resolved terminal actions must not count as user attention');
   assert.ok(!('requestId' in arb) && !('depositChallengeId' in arb) && !('lastError' in arb));
   assert.equal(database.rows.get('recon-eth').state, 'RECONCILING', 'unmatched durable rows remain nonterminal');
   assert.equal(database.rows.get('review-expired').approval_circle_challenge_id, 'reviewed-failed-challenge');
@@ -1255,6 +1261,8 @@ async function verifyActivityServerBacked() {
   console.log('GATEWAY_ACTIVITY_BACKGROUND_RELEASE=PASS');
   console.log('GATEWAY_ACTIVITY_RELOAD_RECOVERY=PASS');
   console.log('GATEWAY_ACTIVITY_NO_FINANCIAL_SIDE_EFFECTS=PASS');
+  console.log('GATEWAY_FINALITY_NO_ACTION_REQUIRED=PASS');
+  console.log('GATEWAY_FINALITY_ACTIVITY_OPEN_COUNT=PASS');
 }
 
 function verifyActivityPostgresTypes() {
@@ -1602,6 +1610,7 @@ function createCircleGatewayActionsBehavior({ initialRecovery = null, startGatew
           const response = approvalResponses[approvalIndex];
           approvalIndex += 1;
           if (!response) throw new Error(`approval response sequence exhausted after ${approvalCalls.length} calls`);
+          if (response instanceof Error) throw response;
           return response;
         },
         verifyGatewayDeposit: async (actionId, input) => {
@@ -1609,6 +1618,7 @@ function createCircleGatewayActionsBehavior({ initialRecovery = null, startGatew
           const response = depositResponses[depositIndex];
           depositIndex += 1;
           if (!response) throw new Error(`deposit response sequence exhausted after ${depositCalls.length} calls`);
+          if (response instanceof Error) throw response;
           return response;
         },
         gatewayDeposit: async (actionId) => {
@@ -1731,6 +1741,94 @@ async function verifyCircleClientApprovalPendingResume() {
   assert.equal(behavior.recovery().requestId, requestId);
   assert.equal(behavior.recovery().actionId, actionId);
   console.log('GATEWAY_CIRCLE_RESUME_PHASE_SYNC=PASS');
+}
+
+async function verifyCircleClientTransientApprovalRead() {
+  const actionId = 'circle-client-transient-read-action';
+  const requestId = 'circle-client-transient-read-request';
+  const approvalChallengeId = 'approval-challenge-transient-read';
+  const depositChallengeId = 'deposit-challenge-after-transient-read';
+  const responses = (state, overrides = {}) => circleDepositClientResponse(state, {
+    actionId, requestId, ...overrides,
+  });
+
+  // A temporary read failure after the hosted approval returns is retried as
+  // a read-only operation, then the same click advances to the existing
+  // deposit challenge. No challenge or action is created a second time.
+  const recovered = createCircleGatewayActionsBehavior({
+    startGatewayDeposit: (input) => responses('APPROVAL_CHALLENGE', {
+      requestId: input.requestId, approvalChallengeId,
+    }),
+    approvalResponses: [
+      new Error('circle_service_unavailable'),
+      responses('DEPOSIT_CHALLENGE', { approvalChallengeId, depositChallengeId }),
+    ],
+    depositResponses: [
+      responses('DEPOSIT_CHALLENGE', { approvalChallengeId, depositChallengeId }),
+      responses('RECONCILING', { approvalChallengeId, depositChallengeId }),
+    ],
+  });
+  const result = await recovered.runner.confirmGatewaySourceDeposit(
+    { sourceDomain: 0, amountRaw: AMOUNT },
+    { executionMode: 'CIRCLE_USER_WALLET' },
+  );
+  assert.equal(result.state, 'RECONCILING');
+  assert.equal(recovered.startCalls.length, 1, 'transient read recovery must keep one action');
+  assert.equal(recovered.approvalCalls.length, 2, 'only the read was retried');
+  assert.deepEqual(recovered.executeCalls, [approvalChallengeId, depositChallengeId]);
+  assert.ok(recovered.window.delays.includes(1000), 'the retry uses a bounded read-only delay');
+  assert.equal(recovered.gatewayStatusCalls.length, 0);
+  assert.equal(recovered.recovery().actionId, actionId);
+
+  // Exhausting the transient read budget preserves APPROVAL_PENDING recovery
+  // and returns a specific status error. It never executes another hosted
+  // challenge and never reaches the deposit phase.
+  const exhausted = createCircleGatewayActionsBehavior({
+    startGatewayDeposit: (input) => responses('APPROVAL_CHALLENGE', {
+      requestId: input.requestId, approvalChallengeId,
+    }),
+    approvalResponses: Array.from(
+      { length: 6 },
+      () => new Error('circle_rate_limited'),
+    ),
+    depositResponses: [],
+  });
+  await assert.rejects(
+    () => exhausted.runner.confirmGatewaySourceDeposit(
+      { sourceDomain: 0, amountRaw: AMOUNT },
+      { executionMode: 'CIRCLE_USER_WALLET' },
+    ),
+    (error) => error instanceof Error && error.message === 'gateway_deposit_approval_status_pending',
+  );
+  assert.equal(exhausted.startCalls.length, 1);
+  assert.equal(exhausted.approvalCalls.length, 6, 'the retry budget is bounded');
+  assert.deepEqual(exhausted.executeCalls, [approvalChallengeId]);
+  assert.equal(exhausted.depositCalls.length, 0);
+  assert.equal(exhausted.recovery().phase, 'APPROVAL_PENDING');
+  assert.equal(exhausted.recovery().actionId, actionId);
+
+  // Security and binding failures are not transient read errors and are not
+  // swallowed or retried.
+  const nonTransient = createCircleGatewayActionsBehavior({
+    startGatewayDeposit: (input) => responses('APPROVAL_CHALLENGE', {
+      requestId: input.requestId, approvalChallengeId,
+    }),
+    approvalResponses: [new Error('circle_transaction_mismatch')],
+    depositResponses: [],
+  });
+  await assert.rejects(
+    () => nonTransient.runner.confirmGatewaySourceDeposit(
+      { sourceDomain: 0, amountRaw: AMOUNT },
+      { executionMode: 'CIRCLE_USER_WALLET' },
+    ),
+    (error) => error instanceof Error && error.message === 'circle_transaction_mismatch',
+  );
+  assert.equal(nonTransient.approvalCalls.length, 1);
+  assert.deepEqual(nonTransient.executeCalls, [approvalChallengeId]);
+
+  console.log('GATEWAY_CIRCLE_TRANSIENT_APPROVAL_READ_RETRY=PASS');
+  console.log('GATEWAY_CIRCLE_NO_SECOND_APPROVAL_PROMPT=PASS');
+  console.log('GATEWAY_CIRCLE_TRANSIENT_READ_PRESERVES_RECOVERY=PASS');
 }
 
 // ---------------------------------------------------------------------------
@@ -2560,6 +2658,12 @@ function verifyWalletPageDepositRecoveryWiringLegacy() {
   assert.match(copy, /gatewayAddMoreUsdc: "Daha fazla USDC ekle"/);
   assert.match(copy, /gatewayFinalityAdvice: "Gateway balance may take up to 20 minutes to update\. Do not submit again\."/);
   assert.match(copy, /gatewayFinalityAdvice: "Gateway bakiyesinin güncellenmesi 20 dakikaya kadar sürebilir\. İşlemi tekrar göndermeyin\."/);
+  assert.ok(copy.includes('gatewayFinalityFormNotice: "{amount} USDC from {network} was submitted. Gateway finality is continuing in Activity. No action is required. You can fund from another network."'));
+  assert.ok(copy.includes('gatewayFinalityFormNotice: "{amount} USDC {network} üzerinden gönderildi. Gateway kesinleşmesi Aktivite bölümünde devam ediyor. İşlem gerekmiyor. Başka bir ağdan fonlayabilirsiniz."'));
+  assert.ok(copy.includes('gatewayFinalitySourceHint: "This source is finalizing in Activity. Choose another source to fund now."'));
+  assert.ok(copy.includes('gatewayFinalitySourceHint: "Bu kaynak Aktivite bölümünde kesinleşiyor. Şimdi fonlamak için başka bir kaynak seç."'));
+  assert.ok(copy.includes('gatewayApprovalStatusPending: "Approval submitted. We’re still checking its status."'));
+  assert.ok(copy.includes('gatewayApprovalStatusPending: "Onay gönderildi. Durumunu kontrol etmeye devam ediyoruz."'));
   assert.ok(!/gatewayPrepareBody:[^\n]*EIP-712/.test(copy), 'primary Gateway copy must not expose EIP-712');
   // Primary product copy is in the i18n tables, not inline locale ternaries.
   for (const literal of [
@@ -2698,6 +2802,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   const styles = fs.readFileSync(path.join(__dirname, '../../app/globals.css'), 'utf8');
   const header = fs.readFileSync(path.join(__dirname, '../../app/product-components.tsx'), 'utf8');
   const copy = fs.readFileSync(path.join(__dirname, '../../app/i18n.tsx'), 'utf8');
+  const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
 
   const fundingStart = walletPage.indexOf(
     '<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>',
@@ -2827,6 +2932,8 @@ function verifyWalletPageDepositRecoveryWiring() {
   // and stage markers, never raw backend state names or a financial action.
   assert.match(walletPage, /className="ex-wallet-activity__panel"/);
   assert.match(walletPage, /activityItems\.map\(\(item\) =>/);
+  assert.match(walletPage, /const activityOpenCount = activityItems\.filter\(\(item\) => !item\.terminal\)\.length/);
+  assert.ok(!walletPage.includes('activityAttentionCount'), 'Activity count must describe open rows, not attention only');
   assert.match(walletPage, /item\.sourceLabel/);
   assert.match(walletPage, /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(item\.amountRaw\), locale\)/);
   assert.match(walletPage, /activityPhaseCopy\(item\.phase\)/);
@@ -2835,8 +2942,62 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(walletPage, /gatewayActivityFinality/);
   assert.match(walletPage, /gatewayActivityCompleted/);
   assert.ok(!/\{item\.state\}/.test(walletPage));
+  const activityPanelStart = walletPage.indexOf('className="ex-wallet-activity__panel"');
+  const activityHeadingStart = walletPage.indexOf('className="ex-wallet-activity__heading"', activityPanelStart);
+  const activityCloseStart = walletPage.indexOf('className="ex-wallet-activity__close"', activityHeadingStart);
+  const activityListStart = walletPage.indexOf('className="ex-wallet-activity__list"', activityPanelStart);
+  assert.ok(
+    activityPanelStart > -1 && activityHeadingStart > activityPanelStart &&
+    activityCloseStart > activityHeadingStart && activityListStart > activityCloseStart,
+    'Activity heading and close control must remain outside the scrolling rows list',
+  );
+  const activityListStyle = /\.ex-wallet-activity__list\{([^}]*)\}/.exec(styles)?.[1] || '';
+  assert.match(activityListStyle, /max-height:440px/);
+  assert.match(activityListStyle, /overflow-y:auto/);
+  assert.match(activityListStyle, /overflow-x:hidden/);
+  assert.doesNotMatch(activityListStyle, /(?:^|;)height:/, 'short Activity lists must not receive a fixed height');
+  assert.match(styles, /@media\(max-width:640px\)[\s\S]{0,700}\.ex-wallet-activity__list\{max-height:55vh\}/);
   assert.match(styles, /\.ex-wallet-activity__stages\{display:grid;grid-template-columns:repeat\(4/);
   assert.match(styles, /@media\(max-width:640px\)[\s\S]{0,700}\.ex-wallet-activity__stages\{grid-template-columns:repeat\(2/);
+
+  // RECONCILING is a server-backed background handoff. It keeps the Activity
+  // row open without claiming user attention, explains the handoff in the
+  // funding form, and only replaces the action for that same source. A
+  // different source remains on the normal Add path.
+  assert.match(walletPage, /const backgroundFinalityItem = activityItems\.find/);
+  assert.match(depositMarkup, /backgroundFinalityItem &&/);
+  assert.match(depositMarkup, /t\.wallet\.gatewayFinalityFormNotice/);
+  assert.match(depositMarkup, /backgroundFinalityItem\.amountRaw/);
+  assert.match(depositMarkup, /backgroundFinalityItem\.sourceLabel/);
+  assert.match(
+    walletPage,
+    /const selectedSourceFinalityItem = selectedSourceDomain[\s\S]{0,180}activityItems\.find/,
+  );
+  const sameSourceFinalityIndex = depositMarkup.indexOf('selectedSourceFinalityItem ?');
+  const sameSourceFinalityBranchEnd = depositMarkup.indexOf(') : executionMode', sameSourceFinalityIndex);
+  const addActionIndex = depositMarkup.indexOf('handleGatewaySourceDeposit(selectedGatewaySource.domain)');
+  assert.ok(
+    sameSourceFinalityIndex > -1 &&
+    sameSourceFinalityBranchEnd > sameSourceFinalityIndex &&
+    addActionIndex > sameSourceFinalityBranchEnd,
+  );
+  const sameSourceFinalityBranch = depositMarkup.slice(
+    sameSourceFinalityIndex,
+    sameSourceFinalityBranchEnd,
+  );
+  assert.match(sameSourceFinalityBranch, /t\.wallet\.gatewayFinalitySourceHint/);
+  assert.ok(!sameSourceFinalityBranch.includes('<button'), 'same-source finality must replace the Add action with a hint');
+  assert.match(depositMarkup, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/);
+  assert.match(gatewayActions, /CIRCLE_GATEWAY_APPROVAL_READ_RETRYABLE_ERRORS/);
+  assert.match(gatewayActions, /circle_service_unavailable/);
+  assert.match(gatewayActions, /circle_rate_limited/);
+  assert.match(gatewayActions, /gateway_deposit_approval_status_pending/);
+  assert.match(handler, /gateway_deposit_approval_status_pending/);
+  assert.match(handler, /restoreBrowserRecovery\(\)/);
+  console.log('GATEWAY_FINALITY_FORM_HANDOFF_NOTICE=PASS');
+  console.log('GATEWAY_FINALITY_SAME_SOURCE_UI_GUARD=PASS');
+  console.log('GATEWAY_FINALITY_DIFFERENT_SOURCE_UI_OPEN=PASS');
+  console.log('GATEWAY_CIRCLE_TRANSIENT_READ_RETRY_WIRING=PASS');
 
   // -------------------------------------------------------------------
   // Native select pointer focus, proved for EACH select independently.
@@ -3087,6 +3248,7 @@ function verifyPoolRefreshWiring() {
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleClientTwoChallengeFlow();
   await verifyCircleClientApprovalPendingResume();
+  await verifyCircleClientTransientApprovalRead();
   await verifyCircleBranch();
   await verifyMultiChainCircleBranch();
   await verifySameSourceReviewGuard();

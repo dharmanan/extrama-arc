@@ -174,9 +174,9 @@ function activityStatusFor(row) {
     case 'RECONCILIATION_REQUIRED':
       return { stage: 'REVIEW', phase: ACTIVITY_PHASES.NEEDS_REVIEW, actionRequired: true };
     case 'FAILED':
-      return { stage: 'FAILED', phase: ACTIVITY_PHASES.FAILED, actionRequired: true };
+      return { stage: 'FAILED', phase: ACTIVITY_PHASES.FAILED, actionRequired: disposition !== RECOVERY_DISPOSITIONS.CLEAR };
     case 'EXPIRED':
-      return { stage: 'EXPIRED', phase: ACTIVITY_PHASES.EXPIRED, actionRequired: true };
+      return { stage: 'EXPIRED', phase: ACTIVITY_PHASES.EXPIRED, actionRequired: disposition !== RECOVERY_DISPOSITIONS.CLEAR };
     default:
       return { stage: 'REVIEW', phase: ACTIVITY_PHASES.NEEDS_REVIEW, actionRequired: true };
   }
@@ -200,9 +200,7 @@ function activityItemFor(row) {
     updatedAt: new Date(row.updated_at || row.created_at).toISOString(),
     stage: status.stage,
     phase: status.phase,
-    actionRequired: disposition !== RECOVERY_DISPOSITIONS.CLEAR && (
-      status.actionRequired || disposition === RECOVERY_DISPOSITIONS.RECONCILE
-    ),
+    actionRequired: status.actionRequired,
     interactive: disposition === RECOVERY_DISPOSITIONS.RESUME,
     terminal: disposition === RECOVERY_DISPOSITIONS.CLEAR,
   };

@@ -71,6 +71,7 @@ async function pollDeposit(
     !result.pending || result.state === "RECONCILING",
   maxAttempts = 45,
   intervalMs = 4000,
+  timeoutError = "gateway_deposit_pending_timeout",
 ): Promise<GatewayDepositResponse> {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const result = await read();
@@ -80,7 +81,38 @@ async function pollDeposit(
     if (shouldReturn(result)) return result;
     await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
   }
-  throw new Error("gateway_deposit_pending_timeout");
+  throw new Error(timeoutError);
+}
+
+// These are the only Circle errors that are safe to retry here: the request
+// only reads the already-created approval challenge/transaction state. Auth,
+// identity, ambiguity, payload and transaction failures remain fail-closed.
+const CIRCLE_GATEWAY_APPROVAL_READ_RETRYABLE_ERRORS = new Set([
+  "circle_service_unavailable",
+  "circle_rate_limited",
+]);
+const CIRCLE_GATEWAY_APPROVAL_READ_RETRY_BUDGET = 5;
+const CIRCLE_GATEWAY_APPROVAL_READ_RETRY_INTERVAL_MS = 1000;
+
+function retryCircleApprovalReadAfterHostedChallenge(
+  read: () => Promise<GatewayDepositResponse>,
+) {
+  let retriesRemaining = CIRCLE_GATEWAY_APPROVAL_READ_RETRY_BUDGET;
+  return async function readWithTransientRetry() {
+    while (true) {
+      try {
+        return await read();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!CIRCLE_GATEWAY_APPROVAL_READ_RETRYABLE_ERRORS.has(message)) throw error;
+        if (retriesRemaining === 0) {
+          throw new Error("gateway_deposit_approval_status_pending");
+        }
+        retriesRemaining -= 1;
+        await new Promise((resolve) => window.setTimeout(resolve, CIRCLE_GATEWAY_APPROVAL_READ_RETRY_INTERVAL_MS));
+      }
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +357,18 @@ async function runCircleDeposit(
       recovery = { ...recovery, phase: "APPROVAL_PENDING", challengeId: current.approvalChallengeId };
       storeCircleGatewayDepositRecovery(recovery);
       onStatus?.("APPROVAL_PENDING");
+      const readApprovalAfterHostedChallenge = retryCircleApprovalReadAfterHostedChallenge(
+        () => backendApi.wallet.verifyGatewayDepositApproval(
+          recovery!.actionId,
+          { circleUserToken: auth.userToken },
+        ),
+      );
       current = await pollDeposit(
-        () => backendApi.wallet.verifyGatewayDepositApproval(recovery!.actionId, { circleUserToken: auth.userToken }),
+        readApprovalAfterHostedChallenge,
         (result) => !result.pending || result.state !== "APPROVAL_CHALLENGE",
+        45,
+        4000,
+        "gateway_deposit_approval_status_pending",
       );
       syncCircleRecoveryToBackendPhase(current);
       continue;

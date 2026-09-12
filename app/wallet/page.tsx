@@ -1133,6 +1133,9 @@ export default function WalletPage() {
         setDepositError(t.wallet.gatewayDepositExpired);
       } else if (message === "gateway_deposit_pending_timeout") {
         setDepositError(t.wallet.gatewayDepositStatusNeedsReview);
+      } else if (message === "gateway_deposit_approval_status_pending") {
+        restoreBrowserRecovery();
+        setDepositError(t.wallet.gatewayApprovalStatusPending);
       } else if (message === "gateway_deposit_source_review_required") {
         // A lost browser recovery must never be read as license to start a
         // second concurrent action for the same source domain: the backend
@@ -1160,6 +1163,15 @@ export default function WalletPage() {
   const selectedGatewaySource = sourceState?.sources.find(
     (source) => String(source.domain) === selectedSourceDomain,
   ) || null;
+  const backgroundFinalityItem = activityItems.find(
+    (item) => item.state === "RECONCILING" && !item.terminal,
+  ) || null;
+  const selectedSourceFinalityItem = selectedSourceDomain
+    ? activityItems.find(
+      (item) => item.state === "RECONCILING" && !item.terminal &&
+        String(item.sourceDomain) === selectedSourceDomain,
+    ) || null
+    : null;
 
   function activityPhaseCopy(phase: GatewayDepositActivityItem["phase"]) {
     switch (phase) {
@@ -1189,7 +1201,7 @@ export default function WalletPage() {
     return "pending";
   }
 
-  const activityAttentionCount = activityItems.filter((item) => !item.terminal).length;
+  const activityOpenCount = activityItems.filter((item) => !item.terminal).length;
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -1379,7 +1391,7 @@ export default function WalletPage() {
                   aria-controls="wallet-activity"
                   onClick={() => setActivityOpen((open) => !open)}
                 >
-                  {t.wallet.gatewayActivity} · {activityAttentionCount}
+                  {t.wallet.gatewayActivity} · {activityOpenCount}
                 </button>
                 {activityOpen && (
                   <section id="wallet-activity" className="ex-wallet-activity__panel" aria-label={t.wallet.gatewayActivityAriaLabel}>
@@ -1585,6 +1597,20 @@ export default function WalletPage() {
                     <p>{t.wallet.gatewayAddBody}</p>
                   </div>
 
+                  {backgroundFinalityItem && (
+                    <p className="ex-entry__msg" data-tone="ok" aria-live="polite">
+                      {withGatewayNetwork(
+                        withGatewayAmount(
+                          t.wallet.gatewayFinalityFormNotice,
+                          formatGatewayUsdcDisplay(
+                            formatGatewayUsdcRaw(backgroundFinalityItem.amountRaw), locale,
+                          ),
+                        ),
+                        backgroundFinalityItem.sourceLabel,
+                      )}
+                    </p>
+                  )}
+
                   {sourceReadState === "error" ? (
                     <div>
                       <p className="ex-entry__msg" data-tone="error" aria-live="polite">
@@ -1667,6 +1693,10 @@ export default function WalletPage() {
                           <button className="ex-btn ex-btn--ghost" type="button" onClick={() => void refreshSourceState()}>
                             {t.wallet.gatewayRetry}
                           </button>
+                        ) : selectedSourceFinalityItem ? (
+                          <p className="ex-gateway-deposit-form__hint">
+                            {t.wallet.gatewayFinalitySourceHint}
+                          </p>
                         ) : executionMode === "CIRCLE_USER_WALLET" && (
                           sourceWalletStatus[selectedGatewaySource.domain] === "idle" ||
                           sourceWalletStatus[selectedGatewaySource.domain] === "checking" ||
