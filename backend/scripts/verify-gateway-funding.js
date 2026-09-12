@@ -26,7 +26,7 @@ const {
   buildGatewayTransferSpec,
   planSourceAllocation,
 } = require('../src/services/gatewayService');
-const { createGatewayFundingService } = require('../src/services/gatewayFundingService');
+const { createGatewayFundingService, FUNDING_TTL_MS } = require('../src/services/gatewayFundingService');
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const CIRCLE_WALLET_ID = '22222222-2222-4222-8222-222222222222';
@@ -259,23 +259,168 @@ function verifyPreparingSchemaLifecycle() {
   assert.match(schema, /DROP CONSTRAINT IF EXISTS gateway_funding_actions_plan_check/);
   assert.match(
     schema,
-    /ADD CONSTRAINT gateway_funding_actions_plan_check CHECK \(\s*state = 'PREPARING' OR source_domain IS NOT NULL OR source_plan_json IS NOT NULL\s*\)/,
+    /ADD CONSTRAINT gateway_funding_actions_plan_check CHECK \(\s*state IN \('PREPARING', 'EXPIRED'\) OR source_domain IS NOT NULL OR source_plan_json IS NOT NULL\s*\)/,
   );
 
   // This mirrors PostgreSQL CHECK semantics explicitly: the durable row may
-  // begin empty, but every later state needs legacy source or complete plan.
-  const accepts = (row) => row.state === 'PREPARING'
+  // begin empty, and may retire straight to EXPIRED still empty (discard()
+  // before submission, or markExpired()'s automatic TTL retirement never
+  // touch source_domain/source_plan_json), but every OTHER state, including
+  // every other terminal state, needs legacy source or complete plan.
+  const accepts = (row) => ['PREPARING', 'EXPIRED'].includes(row.state)
     || row.source_domain !== null
     || row.source_plan_json !== null;
+
+  // 1. planless PREPARING row is valid.
   assert.equal(accepts({ state: 'PREPARING', source_domain: null, source_plan_json: null }), true);
+  // 2 & 3. planless EXPIRED is valid, whichever transition produced it
+  // (explicit discard, or automatic TTL expiry), the row shape is
+  // identical either way, so one check covers both.
+  assert.equal(accepts({ state: 'EXPIRED', source_domain: null, source_plan_json: null }), true);
   assert.equal(accepts({ state: 'SIGNATURE_PENDING', source_domain: null, source_plan_json: [] }), true);
-  assert.equal(accepts({ state: 'READY_TO_BROADCAST', source_domain: null, source_plan_json: null }), false);
+  // 5-10. Every other state, including every OTHER terminal state, still
+  // requires a resolved source: EXPIRED is the only planless exception.
+  for (const state of [
+    'READY_TO_BROADCAST', 'SIGN_CHALLENGE_CREATING', 'SUBMITTING', 'SUBMITTED',
+    'COMPLETED', 'RECONCILIATION_REQUIRED', 'FAILED', 'SIGNATURE_FAILED',
+  ]) {
+    assert.equal(
+      accepts({ state, source_domain: null, source_plan_json: null }), false,
+      `${state} must still require a resolved source or plan`,
+    );
+  }
+  // 11. Historical single-source rows remain valid in any state.
   assert.equal(accepts({ state: 'READY_TO_BROADCAST', source_domain: 6, source_plan_json: null }), true);
+  assert.equal(accepts({ state: 'COMPLETED', source_domain: 6, source_plan_json: null }), true);
+  // 12. Multi-source rows (source_plan_json, no singular source_domain) remain valid.
+  assert.equal(
+    accepts({
+      state: 'COMPLETED', source_domain: null,
+      source_plan_json: [{ sourceDomain: 2, valueRaw: '500000' }, { sourceDomain: 3, valueRaw: '500000' }],
+    }),
+    true,
+  );
   console.log('GATEWAY_DB_PREPARING_ROW_VALID=PASS');
+  console.log('GATEWAY_FUNDING_PLANLESS_EXPIRED_ALLOWED=PASS');
+  console.log('GATEWAY_FUNDING_PLAN_CONSTRAINT_FAIL_CLOSED=PASS');
+
+  return accepts;
+}
+
+// Production evidence: action dc62db8d-64cc-4469-89a9-e26f707a155b was
+// inserted PREPARING and never got past readUnifiedUsdcBalance, leaving
+// source_domain/source_plan_json/circle_sign_challenge_id/signatures_json all
+// NULL. Both an explicit "Discard prepared transfer" click and the automatic
+// TTL sweep then tried to move it straight to EXPIRED and PostgreSQL rejected
+// the update with 23514 on gateway_funding_actions_plan_check, because the
+// old constraint's only planless exception was PREPARING itself.
+//
+// This drives the REAL discard()/markExpired() code (not a reimplementation)
+// through a row that fails preparation for exactly this reason, a rejected
+// readUnifiedUsdcBalance call, before any plan is ever written, and checks
+// the resulting row against the schema mirror above, so the proof is that the
+// application's own row shape now satisfies the constraint, not merely that
+// the constraint text changed.
+async function verifyPreparingPlanlessLifecycle(accepts) {
+  const failingGateway = {
+    ...fakeGateway,
+    async readUnifiedUsdcBalance() {
+      throw new Error('gateway_service_unavailable');
+    },
+  };
+
+  // Explicit discard: "Discard prepared transfer"
+  {
+    const discardWallet = new ethers.Wallet(`0x${'44'.repeat(32)}`);
+    const discardAuth = {
+      userId: '44444444-4444-4444-8444-444444444401',
+      circleWalletId: CIRCLE_WALLET_ID,
+      walletAddress: discardWallet.address,
+      executionMode: 'CIRCLE_USER_WALLET',
+    };
+    const service = createGatewayFundingService({
+      database: fakeDb, gateway: failingGateway, circle: fakeCircle,
+      runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: true },
+    });
+    const requestId = '55555555-0000-4000-8000-000000000001';
+    await rejectsCode(
+      () => service.start({
+        auth: discardAuth, userToken: 'circle_user_token_long_enough',
+        requestId, destinationDomain: ARC_DOMAIN, valueRaw: '1000000',
+      }),
+      'gateway_service_unavailable',
+    );
+    const row = [...rows.values()].find((candidate) => candidate.request_id === requestId);
+    assert.ok(row, 'the durable row must exist even though preparation never completed');
+    assert.equal(row.state, 'PREPARING');
+    assert.equal(row.source_domain, null, 'production evidence: source_domain is null before any plan');
+    assert.equal(row.source_plan_json, null, 'production evidence: source_plan_json is null before any plan');
+
+    // Before the fix this exact call is what PostgreSQL rejected with 23514.
+    const discarded = await service.discard({ auth: discardAuth, actionId: row.id });
+    assert.equal(discarded.state, 'EXPIRED');
+    const finalRow = [...rows.values()].find((candidate) => candidate.id === row.id);
+    assert.equal(finalRow.state, 'EXPIRED');
+    assert.equal(finalRow.last_error, 'gateway_funding_cancelled_before_submission');
+    // 4. EXPIRED preserves the null source_domain/source_plan_json: discard()
+    // never invents a plan merely to satisfy the constraint.
+    assert.equal(finalRow.source_domain, null);
+    assert.equal(finalRow.source_plan_json, null);
+    assert.equal(accepts(finalRow), true, 'the row discard() produces must satisfy the fixed constraint');
+    console.log('GATEWAY_FUNDING_PREPARING_DISCARD_DB_SAFE=PASS');
+  }
+
+  // Automatic TTL sweep: markExpired() via get()
+  {
+    const ttlWallet = new ethers.Wallet(`0x${'55'.repeat(32)}`);
+    const ttlAuth = {
+      userId: '44444444-4444-4444-8444-444444444402',
+      circleWalletId: CIRCLE_WALLET_ID,
+      walletAddress: ttlWallet.address,
+      executionMode: 'CIRCLE_USER_WALLET',
+    };
+    // expiresAt is computed as now() + FUNDING_TTL_MS at insert time. Shifting
+    // now() into the past makes the durable expires_at already past relative
+    // to the real wall clock isExpired() actually checks, deterministically
+    // and without waiting real time. start() itself calls the shared
+    // markExpired() before ever reaching prepareIntents, so this row is
+    // retired to EXPIRED, still completely planless, by start()'s own
+    // call, exactly the automatic TTL sweep Koray will trigger with a hard
+    // refresh once expires_at has passed in production.
+    const pastNow = () => Date.now() - 2 * FUNDING_TTL_MS;
+    const service = createGatewayFundingService({
+      database: fakeDb, gateway: failingGateway, circle: fakeCircle,
+      runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: true }, now: pastNow,
+    });
+    const requestId = '55555555-0000-4000-8000-000000000002';
+    // Before the fix this exact automatic retirement is what PostgreSQL
+    // rejected with 23514, leaving the action stuck PREPARING forever instead
+    // of ever reaching this expiry error.
+    await rejectsCode(
+      () => service.start({
+        auth: ttlAuth, userToken: 'circle_user_token_long_enough',
+        requestId, destinationDomain: ARC_DOMAIN, valueRaw: '1000000',
+      }),
+      'gateway_funding_expired',
+    );
+    const row = [...rows.values()].find((candidate) => candidate.request_id === requestId);
+    assert.equal(row.state, 'EXPIRED', 'markExpired() must have already retired this planless row inside start()');
+    assert.equal(row.source_domain, null);
+    assert.equal(row.source_plan_json, null);
+    assert.equal(accepts(row), true, 'the row markExpired() produces must satisfy the fixed constraint');
+
+    // A subsequent read (the hard refresh Koray will actually perform) must
+    // also succeed against the now-EXPIRED row: markExpired() is a no-op on
+    // an already-terminal state, never a second write attempt.
+    const exposed = await service.get({ auth: ttlAuth, actionId: row.id });
+    assert.equal(exposed.state, 'EXPIRED');
+    console.log('GATEWAY_FUNDING_PREPARING_TTL_DB_SAFE=PASS');
+  }
 }
 
 (async () => {
-  verifyPreparingSchemaLifecycle();
+  const accepts = verifyPreparingSchemaLifecycle();
+  await verifyPreparingPlanlessLifecycle(accepts);
   const service = createGatewayFundingService({
     database: fakeDb,
     gateway: fakeGateway,

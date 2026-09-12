@@ -293,14 +293,21 @@ UPDATE gateway_funding_actions
   SET destination_domain = 26
   WHERE destination_domain IS NULL;
 
--- PREPARING is the one deliberate exception: its source allocation is resolved
--- only after the row is durable. Every later state must carry either the
+-- PREPARING is one deliberate exception: its source allocation is resolved
+-- only after the row is durable, so a fresh row legitimately has neither yet.
+-- EXPIRED is the second: both discard() (an explicit cancel before submission)
+-- and markExpired() (automatic TTL retirement) move a PREPARING row straight
+-- to EXPIRED without ever touching source_domain/source_plan_json, so a row
+-- that expired before its plan was ever resolved carries that same absence
+-- into EXPIRED. The check must allow exactly that transition and no other:
+-- every other state after PREPARING (SIGNATURE_PENDING onward, including
+-- every terminal state that is not EXPIRED) must still carry either the
 -- historical singular source or the new complete source plan.
 ALTER TABLE gateway_funding_actions
   DROP CONSTRAINT IF EXISTS gateway_funding_actions_plan_check;
 ALTER TABLE gateway_funding_actions
   ADD CONSTRAINT gateway_funding_actions_plan_check CHECK (
-    state = 'PREPARING' OR source_domain IS NOT NULL OR source_plan_json IS NOT NULL
+    state IN ('PREPARING', 'EXPIRED') OR source_domain IS NOT NULL OR source_plan_json IS NOT NULL
   );
 
 -- Durable source-side deposit into GatewayWallet on a source chain (currently
