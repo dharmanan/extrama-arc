@@ -27,8 +27,10 @@ global.fetch = async () => {
 const {
   createGatewayDepositService,
   RECOVERY_DISPOSITIONS,
+  REVIEW_RESOLUTION_CODES,
   ACTIVE_RESUMABLE_STATES,
   hasSubmittedFinancialEvidence,
+  hasApprovedReviewResolution,
   recoveryDispositionFor,
 } = require('../src/services/gatewayDepositService');
 const circleExecutionEngine = require('../src/services/circleExecutionEngine');
@@ -219,9 +221,15 @@ function createFakeDatabase() {
         const hasEvidence = (row) => evidenceFields.some((field) => (
           typeof row[field] === 'string' && row[field].trim().length > 0
         ));
+        const hasReviewResolution = (row) => (
+          ['FAILED', 'EXPIRED'].includes(row.state) && [
+            REVIEW_RESOLUTION_CODES.NO_TRANSACTION,
+            REVIEW_RESOLUTION_CODES.APPROVAL_ONLY,
+          ].includes(row.last_error)
+        );
         const isClearTerminal = (row) => (
           row.state === 'COMPLETED' ||
-          (['FAILED', 'EXPIRED'].includes(row.state) && !hasEvidence(row))
+          (['FAILED', 'EXPIRED'].includes(row.state) && (hasReviewResolution(row) || !hasEvidence(row)))
         );
         const unresolved = scoped.filter((row) => !isClearTerminal(row));
         const terminal = scoped
@@ -659,7 +667,7 @@ async function verifySameSourceReviewGuard() {
       deposit_circle_ref_id: null,
       deposit_circle_transaction_id: overrides.deposit_circle_transaction_id ?? null,
       state: overrides.state,
-      last_error: null,
+      last_error: overrides.last_error ?? null,
       expires_at: overrides.expires_at ?? new Date(Date.now() + 30 * 60 * 1000),
       created_at: overrides.created_at ?? new Date(),
     });
@@ -751,6 +759,37 @@ async function verifySameSourceReviewGuard() {
       requestId: 'bbbbbbbb-0000-4000-8000-000000000004', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
     });
     assert.equal(started.state, 'APPROVAL_CHALLENGE', 'a CLEAR FAILED-with-no-evidence row must never block a new one');
+  }
+
+  // A terminal row with preserved approval evidence remains blocked until an
+  // explicit review-resolution marker is durable. The marker releases only
+  // this source's local guard; it never removes the reviewed evidence.
+  {
+    const database = createFakeDatabase();
+    const approvalTxHash = `0x${'14'.repeat(32)}`;
+    seedRow(database, {
+      id: 'existing-op-review-resolved', request_id: 'aaaaaaaa-0000-4000-8000-000000000008',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'FAILED',
+      approval_tx_hash: approvalTxHash,
+      approval_circle_transaction_id: 'reviewed-approval-transaction',
+      last_error: REVIEW_RESOLUTION_CODES.APPROVAL_ONLY,
+    });
+    const service = createGatewayDepositService({ database, gateway, circle: {
+      ...circle,
+      async listEoaForBlockchain() { return { id: 'op-wallet', address: walletAddress, blockchain: 'OP-SEPOLIA', accountType: 'EOA' }; },
+      async createContractExecutionChallenge() { return { challengeId: 'fresh-challenge-after-review' }; },
+    }, sourceChains });
+    const started = await service.start({
+      auth, userToken: 'circle-user-token-long-enough',
+      requestId: 'bbbbbbbb-0000-4000-8000-000000000008', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
+    });
+    assert.equal(started.state, 'APPROVAL_CHALLENGE',
+      'an explicitly review-resolved terminal action must allow a new manual same-source request');
+    assert.equal(database.rows.get('existing-op-review-resolved').approval_tx_hash, approvalTxHash);
+    assert.equal(
+      database.rows.get('existing-op-review-resolved').approval_circle_transaction_id,
+      'reviewed-approval-transaction',
+    );
   }
 
   // E. The unresolved OP review must never block a distinct, intentionally
@@ -999,6 +1038,57 @@ function verifyRecoveryDispositionClassification() {
     'unknown states must fail closed even when their evidence is incomplete',
   );
 
+  const resolvedExpired = {
+    state: 'EXPIRED',
+    approval_circle_challenge_id: 'failed-challenge-reviewed-read-only',
+    last_error: REVIEW_RESOLUTION_CODES.NO_TRANSACTION,
+  };
+  assert.equal(hasApprovedReviewResolution(resolvedExpired), true);
+  assert.equal(
+    recoveryDispositionFor(resolvedExpired),
+    RECOVERY_DISPOSITIONS.CLEAR,
+    'an explicitly reviewed failed challenge may release local recovery',
+  );
+  assert.equal(
+    resolvedExpired.approval_circle_challenge_id,
+    'failed-challenge-reviewed-read-only',
+    'review resolution must preserve the original Circle challenge evidence',
+  );
+
+  const resolvedApprovalOnly = {
+    state: 'FAILED',
+    approval_tx_hash: `0x${'22'.repeat(32)}`,
+    approval_circle_transaction_id: 'approval-transaction-reviewed-read-only',
+    last_error: REVIEW_RESOLUTION_CODES.APPROVAL_ONLY,
+  };
+  assert.equal(hasSubmittedFinancialEvidence(resolvedApprovalOnly), true);
+  assert.equal(hasApprovedReviewResolution(resolvedApprovalOnly), true);
+  assert.equal(
+    recoveryDispositionFor(resolvedApprovalOnly),
+    RECOVERY_DISPOSITIONS.CLEAR,
+    'an explicitly reviewed approval-only action may release local recovery',
+  );
+  assert.equal(resolvedApprovalOnly.approval_tx_hash, `0x${'22'.repeat(32)}`);
+  assert.equal(
+    resolvedApprovalOnly.approval_circle_transaction_id,
+    'approval-transaction-reviewed-read-only',
+    'approval evidence must remain durable after review resolution',
+  );
+
+  assert.equal(
+    recoveryDispositionFor({
+      state: 'EXPIRED',
+      approval_circle_challenge_id: 'unresolved-expired-challenge',
+      last_error: 'gateway_deposit_unknown_review_result',
+    }),
+    RECOVERY_DISPOSITIONS.RECONCILE,
+    'unknown terminal errors must not release evidence-bearing actions',
+  );
+
+  console.log('GATEWAY_REVIEW_RESOLUTION_DURABLE=PASS');
+  console.log('GATEWAY_REVIEW_RESOLUTION_PRESERVES_EVIDENCE=PASS');
+  console.log('GATEWAY_REVIEW_RESOLUTION_RELEASES_SOURCE=PASS');
+
   console.log('GATEWAY_ACTIVE_RECOVERY_RESUMABLE=PASS');
 }
 
@@ -1057,6 +1147,19 @@ async function verifyActivityServerBacked() {
     source_domain: 0, source_chain_id: 11155111, state: 'RECONCILING',
     deposit_tx_hash: `0x${'bb'.repeat(32)}`, order: 2,
   }));
+  database.rows.set('review-expired', activityRow('review-expired', {
+    state: 'EXPIRED',
+    approval_circle_challenge_id: 'reviewed-failed-challenge',
+    last_error: REVIEW_RESOLUTION_CODES.NO_TRANSACTION,
+    order: 3,
+  }));
+  database.rows.set('review-failed', activityRow('review-failed', {
+    state: 'FAILED',
+    approval_tx_hash: `0x${'dd'.repeat(32)}`,
+    approval_circle_transaction_id: 'reviewed-approval-transaction',
+    last_error: REVIEW_RESOLUTION_CODES.APPROVAL_ONLY,
+    order: 4,
+  }));
   for (let index = 0; index < 12; index += 1) {
     database.rows.set(`completed-${index}`, activityRow(`completed-${index}`, {
       state: 'COMPLETED', order: index + 10,
@@ -1090,6 +1193,8 @@ async function verifyActivityServerBacked() {
   const result = await service.activity({ auth });
   const arb = result.activities.find((item) => item.actionId === 'recon-arb');
   const eth = result.activities.find((item) => item.actionId === 'recon-eth');
+  const reviewExpired = result.activities.find((item) => item.actionId === 'review-expired');
+  const reviewFailed = result.activities.find((item) => item.actionId === 'review-failed');
   assert.equal(activityReads, 1, 'Activity must use one bounded DB listing query');
   assert.equal(gatewayReads, 1, 'a batch of reconciling rows must use one Gateway balance read');
   assert.equal(arb.state, 'COMPLETED', 'the matching source domain delta completes its own row');
@@ -1100,8 +1205,24 @@ async function verifyActivityServerBacked() {
   assert.equal(eth.phase, 'GATEWAY_FINALITY');
   assert.equal(result.hasBackgroundActivity, true);
   assert.equal(result.activities.filter((item) => item.terminal).length, 10, 'history is bounded to ten terminal rows');
+  assert.ok(reviewExpired, 'a review-resolved EXPIRED action remains in recent Activity history');
+  assert.ok(reviewFailed, 'a review-resolved FAILED action remains in recent Activity history');
+  assert.equal(reviewExpired.state, 'EXPIRED');
+  assert.equal(reviewExpired.phase, 'EXPIRED');
+  assert.equal(reviewExpired.terminal, true);
+  assert.equal(reviewExpired.actionRequired, false);
+  assert.equal(reviewFailed.state, 'FAILED');
+  assert.equal(reviewFailed.phase, 'FAILED');
+  assert.equal(reviewFailed.terminal, true);
+  assert.equal(reviewFailed.actionRequired, false);
+  assert.equal(result.activities.filter((item) => item.actionRequired).length, 1,
+    'review-resolved terminal actions must not count in Activity attention');
   assert.ok(!('requestId' in arb) && !('depositChallengeId' in arb) && !('lastError' in arb));
   assert.equal(database.rows.get('recon-eth').state, 'RECONCILING', 'unmatched durable rows remain nonterminal');
+  assert.equal(database.rows.get('review-expired').approval_circle_challenge_id, 'reviewed-failed-challenge');
+  assert.equal(database.rows.get('review-failed').approval_tx_hash, `0x${'dd'.repeat(32)}`);
+  assert.equal(database.rows.get('review-failed').approval_circle_transaction_id, 'reviewed-approval-transaction');
+  assert.equal(database.rows.get('review-failed').last_error, REVIEW_RESOLUTION_CODES.APPROVAL_ONLY);
 
   const failedDatabase = createFakeDatabase();
   failedDatabase.rows.set('recon-failed-read', activityRow('recon-failed-read', {
@@ -1169,6 +1290,11 @@ function verifyActivityPostgresTypes() {
   assert.match(activitySql, /NULLIF\(BTRIM\(deposit_circle_challenge_id\), ''\) IS NULL/);
   assert.match(activitySql, /approval_circle_transaction_id IS NULL/);
   assert.match(activitySql, /deposit_circle_transaction_id IS NULL/);
+  assert.match(
+    activitySql,
+    /state IN \('FAILED', 'EXPIRED'\)[\s\S]{0,450}last_error IN \([\s\S]*gateway_deposit_review_resolved_no_transaction[\s\S]*gateway_deposit_review_resolved_approval_only/,
+    'Activity SQL must recognize only the explicit durable review-resolution codes',
+  );
   assert.doesNotMatch(
     activitySql,
     /BTRIM\([^)]*(?:approval_circle_transaction_id|deposit_circle_transaction_id)[^)]*\)/,

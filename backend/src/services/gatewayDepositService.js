@@ -52,6 +52,15 @@ const RECOVERY_DISPOSITIONS = Object.freeze({
   RECONCILE: 'RECONCILE',
 });
 
+// These codes are written only after an explicit, read-only review of a
+// terminal action. They release the local same-source guard without deleting
+// any Circle or onchain evidence from the durable row.
+const REVIEW_RESOLUTION_CODES = Object.freeze({
+  NO_TRANSACTION: 'gateway_deposit_review_resolved_no_transaction',
+  APPROVAL_ONLY: 'gateway_deposit_review_resolved_approval_only',
+});
+const REVIEW_RESOLUTION_CODE_SET = new Set(Object.values(REVIEW_RESOLUTION_CODES));
+
 const ACTIVE_RESUMABLE_STATES = new Set([
   'STARTED',
   'BASELINE_READ',
@@ -99,12 +108,18 @@ function hasSubmittedFinancialEvidence(row) {
   ].some(hasDurableValue);
 }
 
+function hasApprovedReviewResolution(row) {
+  return ['FAILED', 'EXPIRED'].includes(row?.state)
+    && REVIEW_RESOLUTION_CODE_SET.has(row?.last_error);
+}
+
 function recoveryDispositionFor(row) {
   if (!row || typeof row.state !== 'string') return RECOVERY_DISPOSITIONS.RECONCILE;
   if (row.state === 'COMPLETED') return RECOVERY_DISPOSITIONS.CLEAR;
   if (ACTIVE_RESUMABLE_STATES.has(row.state)) return RECOVERY_DISPOSITIONS.RESUME;
   if (RECONCILIATION_STATES.has(row.state)) return RECOVERY_DISPOSITIONS.RECONCILE;
   if (row.state === 'FAILED' || row.state === 'EXPIRED') {
+    if (hasApprovedReviewResolution(row)) return RECOVERY_DISPOSITIONS.CLEAR;
     return hasSubmittedFinancialEvidence(row)
       ? RECOVERY_DISPOSITIONS.RECONCILE
       : RECOVERY_DISPOSITIONS.CLEAR;
@@ -185,7 +200,9 @@ function activityItemFor(row) {
     updatedAt: new Date(row.updated_at || row.created_at).toISOString(),
     stage: status.stage,
     phase: status.phase,
-    actionRequired: status.actionRequired || disposition === RECOVERY_DISPOSITIONS.RECONCILE,
+    actionRequired: disposition !== RECOVERY_DISPOSITIONS.CLEAR && (
+      status.actionRequired || disposition === RECOVERY_DISPOSITIONS.RECONCILE
+    ),
     interactive: disposition === RECOVERY_DISPOSITIONS.RESUME,
     terminal: disposition === RECOVERY_DISPOSITIONS.CLEAR,
   };
@@ -800,12 +817,20 @@ function createGatewayDepositService({
              WHEN state = 'COMPLETED'
                OR (
                  state IN ('FAILED', 'EXPIRED')
-                 AND NULLIF(BTRIM(approval_tx_hash), '') IS NULL
-                 AND NULLIF(BTRIM(deposit_tx_hash), '') IS NULL
-                 AND NULLIF(BTRIM(approval_circle_challenge_id), '') IS NULL
-                 AND NULLIF(BTRIM(deposit_circle_challenge_id), '') IS NULL
-                 AND approval_circle_transaction_id IS NULL
-                 AND deposit_circle_transaction_id IS NULL
+                 AND (
+                   last_error IN (
+                     'gateway_deposit_review_resolved_no_transaction',
+                     'gateway_deposit_review_resolved_approval_only'
+                   )
+                   OR (
+                     NULLIF(BTRIM(approval_tx_hash), '') IS NULL
+                     AND NULLIF(BTRIM(deposit_tx_hash), '') IS NULL
+                     AND NULLIF(BTRIM(approval_circle_challenge_id), '') IS NULL
+                     AND NULLIF(BTRIM(deposit_circle_challenge_id), '') IS NULL
+                     AND approval_circle_transaction_id IS NULL
+                     AND deposit_circle_transaction_id IS NULL
+                   )
+                 )
                )
              THEN TRUE ELSE FALSE
            END AS clear_terminal
@@ -855,10 +880,12 @@ const gatewayDepositService = createGatewayDepositService();
 module.exports = {
   DEPOSIT_TTL_MS,
   RECOVERY_DISPOSITIONS,
+  REVIEW_RESOLUTION_CODES,
   ACTIVE_RESUMABLE_STATES,
   ACTIVITY_PHASES,
   SOURCE_CHAINS,
   hasSubmittedFinancialEvidence,
+  hasApprovedReviewResolution,
   activityStatusFor,
   activityItemFor,
   recoveryDispositionFor,
