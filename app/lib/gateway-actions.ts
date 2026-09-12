@@ -2,18 +2,23 @@
 
 // Gateway financial actions for the two human execution modes.
 //
-//   confirmGatewayBurnSignature  spends an ALREADY existing unified balance
-//                                to Arc: sign the server pinned EIP-712 burn
-//                                intent, never broadcast it.
-//   confirmGatewayBaseDeposit    gets USDC INTO that unified balance in the
-//                                first place: USDC.approve(GatewayWallet,
-//                                amount) then GatewayWallet.deposit(token,
-//                                amount) on Base Sepolia.
+//   confirmGatewayBurnSignature   spends an ALREADY existing unified balance
+//                                 to a chosen destination network: sign the
+//                                 server pinned EIP-712 burn intents, never
+//                                 broadcast them.
+//   confirmGatewaySourceDeposit   gets USDC INTO that unified balance in the
+//                                 first place: USDC.approve(GatewayWallet,
+//                                 amount) then GatewayWallet.deposit(token,
+//                                 amount) on one funding chain.
 //
 // Both mirror the rest of this project's financial actions: the server
 // pins the exact payload, the wallet (connected EOA or Circle hosted
 // challenge) signs exactly that, and the result is checked against what was
 // asked for before it is trusted.
+//
+// Neither entry point takes a Gateway source domain for a transfer. The
+// caller chooses a destination and an amount; the server decides which
+// deposited balances pay for it.
 
 import {
   backendApi,
@@ -26,11 +31,14 @@ import { confirmCircleGatewayFunding, executeHostedChallenge } from "./circle-ac
 import {
   clearCircleGatewayDepositRecovery,
   clearExternalGatewayDepositRecovery,
+  clearExternalGatewayFundingRecovery,
   readCircleGatewayDepositRecovery,
   readCircleTabAuth,
   readExternalGatewayDepositRecovery,
+  readExternalGatewayFundingRecovery,
   storeCircleGatewayDepositRecovery,
   storeExternalGatewayDepositRecovery,
+  storeExternalGatewayFundingRecovery,
   type CircleGatewayDepositPhase,
   type ExternalGatewayDepositPhase,
 } from "./circle-auth";
@@ -74,39 +82,76 @@ async function pollDeposit(
 }
 
 // ---------------------------------------------------------------------------
-// Burn intent signature (spends an existing unified balance to Arc)
+// Burn intent signatures (spend an existing unified balance to a destination)
 // ---------------------------------------------------------------------------
 
 export async function confirmGatewayBurnSignature(
-  input: { sourceDomain: number; valueRaw: string },
+  input: { destinationDomain: number; valueRaw: string },
   context: GatewayContext,
+  onProgress?: (signed: number, total: number) => void,
 ): Promise<GatewayFundingResponse> {
   const mode = requireMode(context);
 
   if (mode === "CIRCLE_USER_WALLET") {
-    return confirmCircleGatewayFunding({ requestId: crypto.randomUUID(), ...input });
+    return confirmCircleGatewayFunding(
+      { requestId: crypto.randomUUID(), ...input }, onProgress,
+    );
   }
 
   if (!context.signTypedData) {
     throw new Error("Connected wallet signing support is unavailable.");
   }
+
+  let recovery = readExternalGatewayFundingRecovery();
+  if (recovery && (
+    recovery.destinationDomain !== input.destinationDomain || recovery.valueRaw !== input.valueRaw
+  )) {
+    throw new Error("gateway_pending_action_for_different_intent");
+  }
+
+  // A reload resumes the SAME action under the same request id. start is
+  // idempotent by request id, so this never creates a second plan.
+  const requestId = recovery?.requestId || crypto.randomUUID();
   const started = await backendApi.wallet.startGatewayFunding({
-    requestId: crypto.randomUUID(),
-    sourceDomain: input.sourceDomain,
+    requestId,
+    destinationDomain: input.destinationDomain,
     valueRaw: input.valueRaw,
   });
-  if (started.readyToBroadcast) return started;
-  if (started.executionMode !== "EXTERNAL_WALLET" || !started.typedData) {
+  if (started.readyToBroadcast) {
+    clearExternalGatewayFundingRecovery();
+    return started;
+  }
+  if (started.executionMode !== "EXTERNAL_WALLET" || !started.typedDataList.length) {
     throw new Error("gateway_signature_challenge_unavailable");
   }
-  const signature = await context.signTypedData(started.typedData);
-  const verified = await backendApi.wallet.verifyGatewayFunding(started.actionId, { signature });
+  recovery = {
+    requestId,
+    actionId: started.actionId,
+    destinationDomain: input.destinationDomain,
+    valueRaw: input.valueRaw,
+    expiresAtMs: Date.parse(started.expiresAt),
+  };
+  storeExternalGatewayFundingRecovery(recovery);
+
+  // A connected wallet signs locally, so the whole plan can be signed in one
+  // pass: one prompt per source allocation, then one verify call. Signing
+  // starts at the allocation the server says is still outstanding, so a
+  // partly signed plan is continued rather than re-signed from the start.
+  const signatures: string[] = [];
+  const firstUnsignedIndex = Math.max(0, started.signatureIndex);
+  for (let index = firstUnsignedIndex; index < started.typedDataList.length; index += 1) {
+    onProgress?.(index, started.typedDataList.length);
+    signatures.push(await context.signTypedData(started.typedDataList[index]));
+  }
+
+  const verified = await backendApi.wallet.verifyGatewayFunding(started.actionId, { signatures });
   if (!verified.readyToBroadcast) throw new Error("gateway_signature_challenge_unavailable");
+  clearExternalGatewayFundingRecovery();
   return verified;
 }
 
 // ---------------------------------------------------------------------------
-// Base Sepolia source deposit (approve then deposit into GatewayWallet)
+// Source chain deposit (approve then deposit into GatewayWallet)
 // ---------------------------------------------------------------------------
 
 function isDepositTerminal(state: GatewayDepositResponse["state"]) {
@@ -267,7 +312,10 @@ async function runCircleDeposit(
   return current;
 }
 
-export async function confirmGatewayBaseDeposit(
+// One deposit entry point for every funding chain. The sourceDomain here is a
+// real user choice ("add USDC from this wallet"), unlike a transfer, where the
+// source allocation is the server's decision.
+export async function confirmGatewaySourceDeposit(
   input: { sourceDomain: number; amountRaw: string },
   context: GatewayContext,
   onStatus?: (phase: ExternalGatewayDepositPhase | CircleGatewayDepositPhase) => void,

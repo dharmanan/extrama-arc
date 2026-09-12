@@ -2411,6 +2411,101 @@ img{max-width:100%}
 .ex-wallet-gateway__controls select:disabled,
 .ex-wallet-gateway__controls input:disabled{opacity:.6}
 
+/* The unified balance: one number, stated once, above the send controls. */
+.ex-wallet-gateway .ex-gateway-unified{
+  display:grid;
+  gap:2px;
+  margin:6px 0 14px;
+  max-width:none;
+}
+.ex-wallet-gateway .ex-gateway-unified strong{
+  color:var(--ink);
+  font-size:clamp(1.6rem,3.4vw,2.1rem);
+  font-weight:400;
+  letter-spacing:-.01em;
+  line-height:1.1;
+}
+.ex-wallet-gateway .ex-gateway-unified span{
+  color:var(--muted);
+  font-size:.68rem;
+  font-weight:600;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+}
+
+/* The four funding source cards. Compact by design: four across on a desktop,
+   two by two at medium widths, one column on a phone. Borders, type and
+   spacing only, never a colored dashboard tile. */
+.ex-gateway-sources{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:12px;
+}
+
+.ex-gateway-source{
+  display:grid;
+  gap:8px;
+  align-content:start;
+  padding:14px;
+  border:1px solid var(--line);
+  min-width:0;
+}
+
+.ex-gateway-source[data-state="read-error"],
+.ex-gateway-source[data-state="error"]{border-color:var(--line-strong)}
+
+.ex-gateway-source__name{
+  margin:0;
+  color:var(--ink);
+  font-size:.68rem;
+  font-weight:600;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+}
+
+.ex-wallet-gateway .ex-gateway-source__balance{
+  margin:0;
+  color:var(--ink);
+  font-size:.92rem;
+}
+
+.ex-wallet-gateway .ex-gateway-source__hint{
+  margin:0;
+  color:var(--muted);
+  font-size:.82rem;
+}
+
+.ex-gateway-source .ex-btn{justify-self:start}
+
+.ex-gateway-source__form{display:grid;gap:8px}
+.ex-gateway-source__form label{display:grid;gap:6px;min-width:0}
+.ex-gateway-source__form label span{
+  color:var(--muted);
+  font-size:.68rem;
+  font-weight:600;
+  letter-spacing:.11em;
+  text-transform:uppercase;
+}
+.ex-gateway-source__form input{
+  width:100%;
+  min-height:38px;
+  border:1px solid var(--line-strong);
+  border-radius:0;
+  background:transparent;
+  color:var(--ink);
+  padding:0 10px;
+  font:inherit;
+}
+.ex-gateway-source__form input:disabled{opacity:.6}
+
+@media (max-width:1024px){
+  .ex-gateway-sources{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
+@media (max-width:560px){
+  .ex-gateway-sources{grid-template-columns:minmax(0,1fr)}
+}
+
 .ex-wallet-gateway--completed{
   grid-template-columns:minmax(150px,.72fr) minmax(0,1.28fr);
   align-items:center;

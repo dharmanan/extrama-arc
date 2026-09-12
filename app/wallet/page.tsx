@@ -12,28 +12,38 @@ import {
   useSignTypedData,
   useSwitchChain,
 } from "wagmi";
-import { arcTestnet, baseSepolia } from "../lib/web3";
+import { arcTestnet, gatewaySourceChains } from "../lib/web3";
 import { shortAddress, useWalletSession } from "../wallet-session";
-import { backendApi, isAuthSessionError, type GatewayDepositResponse, type GatewayFundingResponse, type TransactionRequest } from "../lib/backend-api";
+import {
+  backendApi,
+  isAuthSessionError,
+  type GatewayDepositResponse,
+  type GatewayFundingResponse,
+  type GatewayNetwork,
+  type GatewaySourceStateResponse,
+  type TransactionRequest,
+} from "../lib/backend-api";
 import {
   readCircleGatewayFundingRecovery,
+  readExternalGatewayFundingRecovery,
   readCircleGatewayDepositRecovery,
   readExternalGatewayDepositRecovery,
   readCircleTabAuth,
   storeCircleTabAuth,
-  readCircleBaseWalletRecovery,
-  storeCircleBaseWalletRecovery,
-  clearCircleBaseWalletRecovery,
+  readCircleSourceWalletRecovery,
+  storeCircleSourceWalletRecovery,
+  clearCircleSourceWalletRecovery,
   storeCircleGatewayDepositRecovery,
   storeExternalGatewayDepositRecovery,
   clearCircleGatewayDepositRecovery,
   clearExternalGatewayDepositRecovery,
   type CircleGatewayFundingRecovery,
+  type ExternalGatewayFundingRecovery,
   type CircleGatewayDepositRecovery,
   type ExternalGatewayDepositRecovery,
-  type CircleBaseWalletRecovery,
+  type CircleSourceWalletRecovery,
 } from "../lib/circle-auth";
-import { confirmGatewayBaseDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
+import { confirmGatewaySourceDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
 import { executeHostedChallenge } from "../lib/circle-actions";
 import { getCircleDeviceId } from "../lib/circle-actions";
 import { useCopy, useLocale } from "../i18n";
@@ -47,43 +57,20 @@ import { readBinanceLiveMarket } from "../lib/live-market";
 type Step = "owner" | "choice" | "ready";
 type GatewayReadState = "idle" | "loading" | "ready" | "error";
 
-// Every user-facing Gateway source is named here. Adding a future testnet
-// source is a configuration entry, never a reason to expose its internal
-// Gateway domain number in the wallet UI.
-const GATEWAY_SOURCE_CONFIGS = [
-  {
-    domain: 6,
-    chainId: baseSepolia.id,
-    label: "Base Sepolia",
-    usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    gatewayWallet: "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
-  },
-] as const;
-
-const BASE_SEPOLIA_SOURCE = GATEWAY_SOURCE_CONFIGS[0];
-
-function gatewaySourceNetworkLabel(sourceDomain: number) {
-  return GATEWAY_SOURCE_CONFIGS.find((source) => source.domain === sourceDomain)?.label || "Gateway";
-}
-
-const ERC20_BALANCE_OF_ABI = [
-  {
-    type: "function", name: "balanceOf", stateMutability: "view",
-    inputs: [{ name: "account", type: "address" }], outputs: [{ type: "uint256" }],
-  },
-] as const;
-
-const BASE_WALLET_RECOVERY_TTL_MS = 30 * 60 * 1000;
+// The wallet UI is driven entirely by the canonical network lists the server
+// sends (labels and Gateway domains). No token address, no contract address
+// and no domain number is ever written here or shown to a user.
+const SOURCE_WALLET_RECOVERY_TTL_MS = 30 * 60 * 1000;
 // Circle's own eventual consistency after a completed challenge, not a
 // network retry budget: bounded, read-only, no createWallet call in here.
-const BASE_WALLET_RECONCILE_ATTEMPTS = 5;
-const BASE_WALLET_RECONCILE_INTERVAL_MS = 3000;
+const SOURCE_WALLET_RECONCILE_ATTEMPTS = 5;
+const SOURCE_WALLET_RECONCILE_INTERVAL_MS = 3000;
 
-function isCircleBaseWalletRecoveryExpired(recovery: CircleBaseWalletRecovery) {
+function isCircleSourceWalletRecoveryExpired(recovery: CircleSourceWalletRecovery) {
   return recovery.expiresAtMs <= Date.now();
 }
 
-type BaseWalletStatus = "idle" | "checking" | "ready" | "missing" | "preparing" | "mismatch" | "error";
+type SourceWalletStatus = "idle" | "checking" | "ready" | "missing" | "preparing" | "mismatch" | "error";
 type DepositPhaseLabel =
   | ""
   | "reading"
@@ -187,6 +174,14 @@ function withGatewayAmount(template: string, amount: string) {
   return template.replace("{amount}", amount);
 }
 
+function withGatewayNetwork(template: string, network: string) {
+  return template.replace("{network}", network);
+}
+
+function withGatewayStep(template: string, step: number, total: number) {
+  return template.replace("{step}", String(step)).replace("{total}", String(total));
+}
+
 function WalletLiveMarket() {
   const { locale } = useLocale();
   const [prices, setPrices] = useState<Record<string, WalletMarketPrice>>({});
@@ -286,7 +281,15 @@ export default function WalletPage() {
   const { signTypedDataAsync } = useSignTypedData();
   const { switchChainAsync } = useSwitchChain();
   const { sendTransactionAsync } = useSendTransaction();
-  const baseSepoliaPublicClient = usePublicClient({ chainId: baseSepolia.id });
+  // One read-only client per funding chain, so a source deposit can wait for
+  // its own receipt on its own chain. Fixed hook order: four chains, four
+  // calls, never conditional.
+  const sourcePublicClients = {
+    [gatewaySourceChains[0].id]: usePublicClient({ chainId: gatewaySourceChains[0].id }),
+    [gatewaySourceChains[1].id]: usePublicClient({ chainId: gatewaySourceChains[1].id }),
+    [gatewaySourceChains[2].id]: usePublicClient({ chainId: gatewaySourceChains[2].id }),
+    [gatewaySourceChains[3].id]: usePublicClient({ chainId: gatewaySourceChains[3].id }),
+  };
 
   const [ownerAddress, setOwnerAddress] = useState<string | null>(null);
   const [step, setStep] = useState<Step>(walletStatus === "ready" ? "ready" : "owner");
@@ -297,12 +300,17 @@ export default function WalletPage() {
   const [chainError, setChainError] = useState("");
   const [gateway, setGateway] = useState<Awaited<ReturnType<typeof backendApi.wallet.gatewayBalance>> | null>(null);
   const [gatewayReadState, setGatewayReadState] = useState<GatewayReadState>("idle");
-  const [gatewaySourceDomain, setGatewaySourceDomain] = useState("");
+  // The user's destination choice, as a domain string for the select element.
+  // There is deliberately no source selector: the server allocates sources.
+  const [gatewayDestinationDomain, setGatewayDestinationDomain] = useState("");
   const [gatewayAmount, setGatewayAmount] = useState("");
   const [gatewayFundingBusy, setGatewayFundingBusy] = useState(false);
+  const [gatewaySignStep, setGatewaySignStep] = useState<{ step: number; total: number } | null>(null);
   const [gatewayFundingNotice, setGatewayFundingNotice] = useState("");
   const [gatewayFundingError, setGatewayFundingError] = useState("");
-  const [gatewayFundingRecovery, setGatewayFundingRecovery] = useState<CircleGatewayFundingRecovery | null>(null);
+  const [gatewayFundingRecovery, setGatewayFundingRecovery] = useState<
+    CircleGatewayFundingRecovery | ExternalGatewayFundingRecovery | null
+  >(null);
   const [gatewayFundingStatus, setGatewayFundingStatus] = useState<GatewayFundingResponse | null>(null);
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
@@ -311,13 +319,17 @@ export default function WalletPage() {
   // falls back to the Circle Google or email sign in, never to another method.
   const [circleReauthRequired, setCircleReauthRequired] = useState(false);
 
-  // Base Sepolia source deposit (Circle wallet readiness, source balance, and
-  // the approve/deposit action itself). Distinct from the Gateway funding
-  // signature above: this is what gets USDC into the unified balance.
-  const [baseWalletStatus, setBaseWalletStatus] = useState<BaseWalletStatus>("idle");
-  const [baseUsdcRaw, setBaseUsdcRaw] = useState<string | null>(null);
-  const [baseReadError, setBaseReadError] = useState("");
-  const [baseWalletNotice, setBaseWalletNotice] = useState("");
+  // The four funding source cards: Circle wallet readiness, source wallet USDC
+  // and the approve/deposit action itself, each tracked per Gateway domain.
+  // Distinct from the transfer signature above: this is what gets USDC into the
+  // unified balance in the first place.
+  const [sourceState, setSourceState] = useState<GatewaySourceStateResponse | null>(null);
+  const [sourceReadState, setSourceReadState] = useState<GatewayReadState>("idle");
+  const [sourceWalletStatus, setSourceWalletStatus] = useState<Record<number, SourceWalletStatus>>({});
+  const [sourceWalletNotice, setSourceWalletNotice] = useState<Record<number, string>>({});
+  // Which card has its amount form open. Only one at a time: a deposit is a
+  // financial action and the product asks for one deliberate choice.
+  const [openSourceDomain, setOpenSourceDomain] = useState<number | null>(null);
   const [depositAmount, setDepositAmount] = useState("");
   const [depositBusy, setDepositBusy] = useState(false);
   const [depositPhase, setDepositPhase] = useState<DepositPhaseLabel>("");
@@ -451,22 +463,27 @@ export default function WalletPage() {
     setGatewayReadState("idle");
   }, [step, walletStatus, walletAddress, executionMode]);
 
+  // A reload restores the destination and the amount the user chose and
+  // resumes the SAME action. The source plan is never restored from here: it
+  // belongs to the server and the action reports it back.
   useEffect(() => {
-    if (executionMode !== "CIRCLE_USER_WALLET") {
+    if (executionMode !== "CIRCLE_USER_WALLET" && executionMode !== "EXTERNAL_WALLET") {
       setGatewayFundingRecovery(null);
       setGatewayFundingStatus(null);
       return;
     }
-    const recovery = readCircleGatewayFundingRecovery();
+    const recovery = executionMode === "CIRCLE_USER_WALLET"
+      ? readCircleGatewayFundingRecovery()
+      : readExternalGatewayFundingRecovery();
     if (!recovery) return;
     setGatewayFundingRecovery(recovery);
-    setGatewaySourceDomain(String(recovery.sourceDomain));
+    setGatewayDestinationDomain(String(recovery.destinationDomain));
     setGatewayAmount(formatGatewayUsdcRaw(recovery.valueRaw));
   }, [executionMode]);
 
   useEffect(() => {
     const actionId = gatewayFundingRecovery?.actionId;
-    if (executionMode !== "CIRCLE_USER_WALLET" || !actionId) return;
+    if (!actionId) return;
     const recoveredActionId = actionId;
     let cancelled = false;
     let timer: number | undefined;
@@ -490,48 +507,60 @@ export default function WalletPage() {
     };
   }, [executionMode, gatewayFundingRecovery?.actionId]);
 
-  // Base Sepolia source balance is a public read for the session's own
-  // address, so it works identically for both execution modes and needs no
-  // wallet connection: it uses the read-only Base Sepolia transport wagmi
-  // already carries for this chain.
-  async function refreshBaseSourceState() {
-    if (!walletAddress || !baseSepoliaPublicClient) return;
-    setBaseReadError("");
+  // Every funding chain's SOURCE WALLET balance in one server-side read. Each
+  // chain is read independently there, so one unreachable endpoint degrades
+  // exactly one card. This is never the Gateway unified balance: the two are
+  // separate quantities and are rendered separately.
+  async function refreshSourceState() {
+    if (!walletAddress) return;
+    setSourceReadState("loading");
     try {
-      const balanceRaw = await baseSepoliaPublicClient.readContract({
-        address: BASE_SEPOLIA_SOURCE.usdc as `0x${string}`,
-        abi: ERC20_BALANCE_OF_ABI,
-        functionName: "balanceOf",
-        args: [walletAddress as `0x${string}`],
-      });
-      setBaseUsdcRaw(balanceRaw.toString());
+      const result = await backendApi.wallet.gatewaySourceState();
+      setSourceState(result);
+      setSourceReadState("ready");
     } catch {
-      setBaseUsdcRaw(null);
-      setBaseReadError(t.wallet.gatewayBaseUnavailable);
+      setSourceState(null);
+      setSourceReadState("error");
     }
   }
 
-  // Single read-only check. Safe to call on page load: it never touches
-  // recovery storage and never calls createWallet.
-  async function refreshCircleBaseWalletStatus(userToken: string): Promise<BaseWalletStatus> {
-    setBaseWalletStatus("checking");
+  // A domain is only usable if the server itself listed it as a funding
+  // source. A recovery naming anything else is refused rather than trusted.
+  function isConfiguredSourceDomain(domain: number) {
+    return Boolean(sourceState?.sources.some((source) => source.domain === domain));
+  }
+
+  function setStatusFor(domain: number, status: SourceWalletStatus) {
+    setSourceWalletStatus((current) => ({ ...current, [domain]: status }));
+  }
+
+  function setNoticeFor(domain: number, notice: string) {
+    setSourceWalletNotice((current) => ({ ...current, [domain]: notice }));
+  }
+
+  // Single read-only check for one funding chain. Safe to call on page load:
+  // it never touches recovery storage and never calls createWallet.
+  async function refreshCircleSourceWalletStatus(
+    domain: number, userToken: string,
+  ): Promise<SourceWalletStatus> {
+    setStatusFor(domain, "checking");
     try {
-      const result = await backendApi.circle.baseSepoliaWallet(userToken);
+      const result = await backendApi.circle.sourceWallet(domain, userToken);
       if (!result.wallet) {
-        setBaseWalletStatus("missing");
+        setStatusFor(domain, "missing");
         return "missing";
       }
       if (result.wallet.address.toLowerCase() !== result.arcAddress.toLowerCase()) {
-        setBaseWalletStatus("mismatch");
+        setStatusFor(domain, "mismatch");
         return "mismatch";
       }
-      // The Base EOA already exists and matches the Arc session: any earlier
-      // recovery attempt is stale.
-      clearCircleBaseWalletRecovery();
-      setBaseWalletStatus("ready");
+      // The companion EOA already exists and matches the Arc session: any
+      // earlier recovery attempt for this chain is stale.
+      clearCircleSourceWalletRecovery(domain);
+      setStatusFor(domain, "ready");
       return "ready";
     } catch {
-      setBaseWalletStatus("error");
+      setStatusFor(domain, "error");
       return "error";
     }
   }
@@ -542,13 +571,13 @@ export default function WalletPage() {
   // definitively reported no wallet; "error" if every read attempt failed
   // transiently, so a genuinely uncertain outcome is never treated as a
   // confirmed non-landing.
-  async function reconcileBaseWalletReadOnly(
-    userToken: string,
+  async function reconcileSourceWalletReadOnly(
+    domain: number, userToken: string,
   ): Promise<"ready" | "mismatch" | "missing" | "error"> {
     let sawDefinitiveMissing = false;
-    for (let attempt = 0; attempt < BASE_WALLET_RECONCILE_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < SOURCE_WALLET_RECONCILE_ATTEMPTS; attempt += 1) {
       try {
-        const result = await backendApi.circle.baseSepoliaWallet(userToken);
+        const result = await backendApi.circle.sourceWallet(domain, userToken);
         if (result.wallet) {
           return result.wallet.address.toLowerCase() === result.arcAddress.toLowerCase()
             ? "ready"
@@ -558,8 +587,8 @@ export default function WalletPage() {
       } catch {
         // Transient read failure; keep retrying within the bounded window.
       }
-      if (attempt < BASE_WALLET_RECONCILE_ATTEMPTS - 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, BASE_WALLET_RECONCILE_INTERVAL_MS));
+      if (attempt < SOURCE_WALLET_RECONCILE_ATTEMPTS - 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, SOURCE_WALLET_RECONCILE_INTERVAL_MS));
       }
     }
     return sawDefinitiveMissing ? "missing" : "error";
@@ -568,16 +597,28 @@ export default function WalletPage() {
   useEffect(() => {
     if (step !== "ready" || walletStatus !== "ready" || !walletAddress) return;
     if (executionMode !== "CIRCLE_USER_WALLET" && executionMode !== "EXTERNAL_WALLET") return;
-    void refreshBaseSourceState();
-    if (executionMode === "EXTERNAL_WALLET") setBaseWalletStatus("ready");
+    void refreshSourceState();
   }, [step, walletStatus, walletAddress, executionMode]);
 
+  // A connected wallet needs no companion wallet preparation at all: the same
+  // address already exists on every EVM chain it can switch to.
   useEffect(() => {
-    if (executionMode !== "CIRCLE_USER_WALLET" || baseWalletStatus !== "idle") return;
+    if (executionMode !== "EXTERNAL_WALLET" || !sourceState) return;
+    setSourceWalletStatus(Object.fromEntries(
+      sourceState.sources.map((source) => [source.domain, "ready" as SourceWalletStatus]),
+    ));
+  }, [executionMode, sourceState]);
+
+  // One read-only Circle readiness check per funding chain, once each.
+  useEffect(() => {
+    if (executionMode !== "CIRCLE_USER_WALLET" || !sourceState) return;
     const auth = readCircleTabAuth();
     if (!auth) return;
-    void refreshCircleBaseWalletStatus(auth.userToken);
-  }, [executionMode, baseWalletStatus]);
+    for (const source of sourceState.sources) {
+      if (sourceWalletStatus[source.domain]) continue;
+      void refreshCircleSourceWalletStatus(source.domain, auth.userToken);
+    }
+  }, [executionMode, sourceState, sourceWalletStatus]);
 
   // Durable, idempotent Base Sepolia wallet preparation. Never mints a new
   // Circle idempotency key while a non-expired recovery already has one, and
@@ -587,30 +628,33 @@ export default function WalletPage() {
   // path: resolve (or reuse) a challenge id for the GIVEN recovery, execute
   // it, and reconcile. Never mints an idempotency key itself, so a caller
   // that hands it an existing recovery can never trigger a new one here.
-  async function runBaseWalletChallenge(userToken: string, initialRecovery: CircleBaseWalletRecovery) {
+  async function runSourceWalletChallenge(
+    domain: number, userToken: string, initialRecovery: CircleSourceWalletRecovery,
+  ) {
     let recovery = initialRecovery;
     let challengeId = recovery.challengeId;
     if (!challengeId) {
       // The same idempotencyKey survives a lost HTTP response: a retry
       // reaches the SAME Circle challenge instead of creating another one.
-      const prepared = await backendApi.circle.prepareBaseSepoliaWallet(
+      const prepared = await backendApi.circle.prepareSourceWallet(
+        domain,
         userToken,
         recovery.idempotencyKey,
       );
       if (prepared.status === "EXISTING") {
-        clearCircleBaseWalletRecovery();
-        setBaseWalletStatus("ready");
+        clearCircleSourceWalletRecovery(domain);
+        setStatusFor(domain, "ready");
         return;
       }
       if (typeof prepared.challengeId !== "string" || !prepared.challengeId) {
-        throw new Error("circle_base_sepolia_challenge_missing");
+        throw new Error("circle_source_challenge_missing");
       }
       challengeId = prepared.challengeId;
       // D: persist the challenge id BEFORE executing it, so a page reload
       // between this write and hosted-challenge completion resumes the
       // SAME challenge rather than creating a second one.
       recovery = { ...recovery, challengeId };
-      storeCircleBaseWalletRecovery(recovery);
+      storeCircleSourceWalletRecovery(recovery);
     }
 
     // D: exactly the shared hosted challenge executor; never a second
@@ -620,66 +664,69 @@ export default function WalletPage() {
     } catch (challengeError) {
       // H: a reported failure/expiry might still have landed just before
       // it; check read-only before ever deciding it definitely did not.
-      const reconciled = await reconcileBaseWalletReadOnly(userToken);
+      const reconciled = await reconcileSourceWalletReadOnly(domain, userToken);
       if (reconciled === "ready") {
-        clearCircleBaseWalletRecovery();
-        setBaseWalletStatus("ready");
+        clearCircleSourceWalletRecovery(domain);
+        setStatusFor(domain, "ready");
         return;
       }
       if (reconciled === "mismatch") {
-        clearCircleBaseWalletRecovery();
-        setBaseWalletStatus("mismatch");
+        clearCircleSourceWalletRecovery(domain);
+        setStatusFor(domain, "mismatch");
         return;
       }
       const message = challengeError instanceof Error ? challengeError.message : "";
       if (message === "circle_transaction_failed" && reconciled === "missing") {
         // Definitely did not land: safe to let the user explicitly restart.
-        clearCircleBaseWalletRecovery();
-        setBaseWalletStatus("missing");
-        setBaseWalletNotice(t.wallet.gatewayBasePrepareFailed);
+        clearCircleSourceWalletRecovery(domain);
+        setStatusFor(domain, "missing");
+        setNoticeFor(domain, t.wallet.gatewaySourcePrepareFailed);
         return;
       }
       // Uncertain outcome (transient reads, or a non-terminal SDK error):
       // keep the SAME recovery so the next explicit click resumes it.
-      setBaseWalletStatus("missing");
-      setBaseWalletNotice(t.wallet.gatewayBasePrepareUncertain);
+      setStatusFor(domain, "missing");
+      setNoticeFor(domain, t.wallet.gatewaySourcePrepareUncertain);
       return;
     }
 
     // E: hosted challenge reported success; reconcile read-only, bounded,
     // no additional createWallet call.
-    const reconciled = await reconcileBaseWalletReadOnly(userToken);
+    const reconciled = await reconcileSourceWalletReadOnly(domain, userToken);
     if (reconciled === "ready") {
       // F
-      clearCircleBaseWalletRecovery();
-      setBaseWalletStatus("ready");
+      clearCircleSourceWalletRecovery(domain);
+      setStatusFor(domain, "ready");
+      void refreshSourceState();
       return;
     }
     if (reconciled === "mismatch") {
-      // G: fail closed, never allow Gateway deposit from here.
-      clearCircleBaseWalletRecovery();
-      setBaseWalletStatus("mismatch");
+      // G: fail closed, never allow a Gateway deposit from here.
+      clearCircleSourceWalletRecovery(domain);
+      setStatusFor(domain, "mismatch");
       return;
     }
     // Circle eventual consistency: keep the recovery, let the user retry.
-    setBaseWalletStatus("missing");
-    setBaseWalletNotice(t.wallet.gatewayBasePrepareUncertain);
+    setStatusFor(domain, "missing");
+    setNoticeFor(domain, t.wallet.gatewaySourcePrepareUncertain);
   }
 
-  async function handlePrepareBaseWallet() {
+  // Preparing a companion wallet creates a wallet and nothing else. It never
+  // approves, deposits or transfers, for any chain.
+  async function handlePrepareSourceWallet(domain: number) {
     const auth = readCircleTabAuth();
     if (!auth) {
       setCircleReauthRequired(true);
       return;
     }
     setDepositError("");
-    setBaseWalletNotice("");
-    setBaseWalletStatus("preparing");
+    setNoticeFor(domain, "");
+    setStatusFor(domain, "preparing");
 
     try {
-      // Step 1: read current status. refreshCircleBaseWalletStatus already
+      // Step 1: read current status. refreshCircleSourceWalletStatus already
       // sets the UI state and, on "ready", clears any stale recovery itself.
-      const initial = await refreshCircleBaseWalletStatus(auth.userToken);
+      const initial = await refreshCircleSourceWalletStatus(domain, auth.userToken);
 
       // READY is terminal: nothing left to prepare.
       if (initial === "ready") return;
@@ -691,11 +738,11 @@ export default function WalletPage() {
       // Step 2: read recovery WITHOUT discarding it yet. Whether an expired
       // recovery may ever be cleared depends on what `initial` is, decided
       // in the branches below, never here.
-      const storedRecovery = readCircleBaseWalletRecovery();
-      const recoveryExpired = Boolean(storedRecovery && isCircleBaseWalletRecoveryExpired(storedRecovery));
+      const storedRecovery = readCircleSourceWalletRecovery(domain);
+      const recoveryExpired = Boolean(storedRecovery && isCircleSourceWalletRecoveryExpired(storedRecovery));
 
       // Step 5: ERROR. The prerequisite status read itself failed, so this
-      // branch has NO evidence about whether a Base wallet exists. It must
+      // branch has NO evidence about whether the wallet exists. It must
       // never mint a new idempotency key, never discard an expired recovery,
       // and never start a brand-new prepare call.
       if (initial === "error") {
@@ -703,42 +750,43 @@ export default function WalletPage() {
           // A live recovery survives an unrelated read failure: resume it
           // exactly (same challenge if one exists, same idempotencyKey
           // otherwise), never a new one.
-          await runBaseWalletChallenge(auth.userToken, storedRecovery);
+          await runSourceWalletChallenge(domain, auth.userToken, storedRecovery);
           return;
         }
         // No recovery, or the one that exists is expired: an errored read
         // proves nothing either way, so neither may be treated as safe to
         // start fresh. Surface a retry notice; no mutation of any kind.
-        setBaseWalletStatus("error");
-        setBaseWalletNotice(t.wallet.gatewayBasePrepareUncertain);
+        setStatusFor(domain, "error");
+        setNoticeFor(domain, t.wallet.gatewaySourcePrepareUncertain);
         return;
       }
 
-      // Step 6: MISSING. Only a definitive, successful "no Base wallet
-      // exists" read may ever start a brand-new attempt or discard an
-      // expired recovery.
-      let recovery: CircleBaseWalletRecovery;
+      // Step 6: MISSING. Only a definitive, successful "no wallet exists"
+      // read may ever start a brand-new attempt or discard an expired
+      // recovery.
+      let recovery: CircleSourceWalletRecovery;
       if (storedRecovery && !recoveryExpired) {
         recovery = storedRecovery;
       } else {
         if (storedRecovery && recoveryExpired) {
           // Safe only because `initial === "missing"` just proved, via a
-          // successful read, that no Base wallet exists: the expired
-          // recovery cannot correspond to a wallet that actually landed.
-          clearCircleBaseWalletRecovery();
+          // successful read, that no wallet exists on this chain: the
+          // expired recovery cannot correspond to one that actually landed.
+          clearCircleSourceWalletRecovery(domain);
         }
         recovery = {
+          domain,
           idempotencyKey: crypto.randomUUID(),
           challengeId: null,
-          expiresAtMs: Date.now() + BASE_WALLET_RECOVERY_TTL_MS,
+          expiresAtMs: Date.now() + SOURCE_WALLET_RECOVERY_TTL_MS,
         };
-        storeCircleBaseWalletRecovery(recovery);
+        storeCircleSourceWalletRecovery(recovery);
       }
-      await runBaseWalletChallenge(auth.userToken, recovery);
+      await runSourceWalletChallenge(domain, auth.userToken, recovery);
     } catch {
       // A genuine transport/API error before or during preparation: the
       // recovery (if any) is preserved so a retry resumes the same attempt.
-      setBaseWalletStatus("error");
+      setStatusFor(domain, "error");
     }
   }
 
@@ -809,7 +857,7 @@ export default function WalletPage() {
           setDepositPhase("");
           setDepositNotice("");
           void refreshGatewayBalance();
-          void refreshBaseSourceState();
+          void refreshSourceState();
           return;
         }
 
@@ -852,24 +900,39 @@ export default function WalletPage() {
     setDepositAmount(formatGatewayUsdcRaw(recovery.amountRaw));
   }, [executionMode]);
 
-  async function ensureBaseSepolia() {
-    if (chain?.id === baseSepolia.id) return;
-    await switchChainAsync({ chainId: baseSepolia.id });
-  }
-
-  async function sendBaseSepoliaTransaction(request: TransactionRequest): Promise<string> {
+  // A source transaction must be signed on its OWN chain. The request's chain
+  // id is the authority: the wallet is switched to it and then re-read, so a
+  // refused, ignored or partially applied switch fails closed instead of
+  // signing a Base payload on Arc (or on any other chain).
+  async function sendSourceChainTransaction(request: TransactionRequest): Promise<string> {
     if (!connectedAddress || connectedAddress.toLowerCase() !== request.from.toLowerCase()) {
       throw new Error("Reconnect the wallet bound to this EXTREMA session.");
     }
     if (!connectedConnector) {
       throw new Error("Reconnect the wallet bound to this EXTREMA session.");
     }
-    await ensureBaseSepolia();
+    const target = gatewaySourceChains.find((candidate) => candidate.id === request.chainId);
+    if (!target) throw new Error("gateway_deposit_source_unsupported");
+
+    if (chain?.id !== request.chainId) {
+      await switchChainAsync({ chainId: request.chainId });
+    }
+    // Re-check the live connector, not React state: a chain switch is a wallet
+    // side effect and may not have happened at all.
     const activeChainId = await connectedConnector.getChainId();
     if (activeChainId !== request.chainId) {
-      throw new Error(t.wallet.gatewaySwitchToBaseSepolia);
+      throw new Error(withGatewayNetwork(t.wallet.gatewaySwitchNetwork, target.name));
     }
-    if (!baseSepoliaPublicClient) throw new Error(t.wallet.gatewayBaseUnavailable);
+    // After a switch, the account may also have changed. Re-bind the session
+    // identity before signing anything.
+    const activeAccounts = await connectedConnector.getAccounts();
+    if (!activeAccounts.some((account) => account.toLowerCase() === request.from.toLowerCase())) {
+      throw new Error("Reconnect the wallet bound to this EXTREMA session.");
+    }
+
+    const sourceClient = sourcePublicClients[request.chainId];
+    if (!sourceClient) throw new Error(t.wallet.gatewaySourceUnavailable);
+
     const hash = await sendTransactionAsync({
       account: connectedAddress,
       chainId: request.chainId,
@@ -877,22 +940,34 @@ export default function WalletPage() {
       data: request.data as `0x${string}`,
       value: BigInt(request.value),
     });
-    const receipt = await baseSepoliaPublicClient.waitForTransactionReceipt({ hash });
+    // Wait on the SOURCE chain, not Arc: the backend verifies this receipt.
+    const receipt = await sourceClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") throw new Error("Wallet transaction failed.");
     return hash;
   }
 
-  async function handleGatewayBaseDeposit() {
+  async function handleGatewaySourceDeposit(cardDomain: number) {
     // A live durable recovery is the authoritative financial intent: the
     // input is disabled and may be empty/stale while it exists, so the
     // amount (and source domain) must come from the recovery record itself,
     // never re-derived from the editable field. This also means clicking
-    // "continue" resumes the SAME action (via confirmGatewayBaseDeposit's
+    // "continue" resumes the SAME action (via confirmGatewaySourceDeposit's
     // own recovery lookup) rather than starting a new one.
     let sourceDomain: number;
     let amountRaw: string;
     if (depositRecovery) {
-      if (depositRecovery.sourceDomain !== BASE_SEPOLIA_SOURCE.domain) {
+      // A recovery belongs to exactly one funding chain. Continuing it from a
+      // different card would send the stored amount to the wrong source, so
+      // that fails closed rather than being silently retargeted.
+      if (depositRecovery.sourceDomain !== cardDomain) {
+        setDepositError(
+          locale === "tr"
+            ? "Kayıtlı işlem başka bir ağa ait. Güvenlik nedeniyle devam edilemiyor."
+            : "The stored operation belongs to another network. Refusing to continue for safety.",
+        );
+        return;
+      }
+      if (!isConfiguredSourceDomain(depositRecovery.sourceDomain)) {
         setDepositError(
           locale === "tr"
             ? "Kayıtlı işlem beklenmeyen bir kaynağa ait. Güvenlik nedeniyle devam edilemiyor."
@@ -903,12 +978,16 @@ export default function WalletPage() {
       sourceDomain = depositRecovery.sourceDomain;
       amountRaw = depositRecovery.amountRaw;
     } else {
+      if (!isConfiguredSourceDomain(cardDomain)) {
+        setDepositError(t.wallet.gatewaySourceUnavailable);
+        return;
+      }
       const parsed = parseGatewayUsdcRaw(depositAmount);
       if (!parsed) {
         setDepositError(t.wallet.gatewayAmountInvalid);
         return;
       }
-      sourceDomain = BASE_SEPOLIA_SOURCE.domain;
+      sourceDomain = cardDomain;
       amountRaw = parsed;
     }
 
@@ -918,11 +997,11 @@ export default function WalletPage() {
     setDepositStatus(null);
     setDepositStatusWarning("");
     try {
-      const result = await confirmGatewayBaseDeposit(
+      const result = await confirmGatewaySourceDeposit(
         { sourceDomain, amountRaw },
         {
           executionMode,
-          sendExternalTransaction: sendBaseSepoliaTransaction,
+          sendExternalTransaction: sendSourceChainTransaction,
         },
         (phase) => {
           if (phase === "APPROVAL_REQUIRED" || phase === "APPROVAL_CHALLENGE") setDepositPhase("preparingApproval");
@@ -938,7 +1017,7 @@ export default function WalletPage() {
         setDepositRecovery(null);
         setDepositAmount("");
         void refreshGatewayBalance();
-        void refreshBaseSourceState();
+        void refreshSourceState();
       } else if (result.state === "RECONCILING") {
         const recovery = executionMode === "CIRCLE_USER_WALLET"
           ? readCircleGatewayDepositRecovery()
@@ -981,14 +1060,20 @@ export default function WalletPage() {
     ? depositStatus.state === "RECONCILING"
     : isSubmittedGatewayDepositRecovery(depositRecovery);
   const depositCompleted = depositStatus?.state === "COMPLETED";
+  // Exactly one funding chain owns any in-flight deposit, so only its card
+  // shows a finality rail and only its card can be acted on.
+  const activeDepositDomain = depositRecovery?.sourceDomain
+    ?? (depositBusy || depositAwaitingFinality || depositCompleted
+      ? depositStatus?.sourceDomain ?? null
+      : null);
   const completedDepositAmount = depositCompleted && depositStatus
     ? formatGatewayUsdcDisplay(formatGatewayUsdcRaw(depositStatus.amountRaw), locale)
     : "";
-  const depositFinalityVisible = depositAwaitingFinality;
 
-  function handleAddMoreGatewayUsdc() {
+  function handleAddMoreGatewayUsdc(sourceDomain: number) {
     // This only returns the compact completed view to its idle form. It does
     // not create a request id, call the backend, or open a Circle challenge.
+    setOpenSourceDomain(sourceDomain);
     setDepositStatus(null);
     setDepositNotice("");
     setDepositError("");
@@ -1060,49 +1145,79 @@ export default function WalletPage() {
     setStep("owner");
   }
 
-  const gatewaySources = gateway?.balances.filter(
-    (item) => item.transferable && hasPositiveRawAmount(item.balanceRaw),
-  ) || [];
-  const gatewayCanPrepare = Boolean(gatewayFundingRecovery) || (
-    gatewayReadState === "ready" && gatewaySources.length > 0
-  );
-  const selectedGatewaySource = gatewaySources.find(
-    (item) => String(item.domain) === gatewaySourceDomain,
-  ) || gatewaySources[0] || null;
+  // The destination list is server owned. Until it arrives there is nothing to
+  // choose from, which is also why the UI never hardcodes a network.
+  const gatewayDestinations: GatewayNetwork[] = gateway?.destinations || [];
+  const selectedDestination = gatewayDestinations.find(
+    (item) => String(item.domain) === gatewayDestinationDomain,
+  ) || gatewayDestinations[0] || null;
 
-  async function handleGatewayFunding() {
-    if (!selectedGatewaySource && !gatewayFundingRecovery) return;
+  // Spendable unified balance, summed by the server across every domain it can
+  // actually burn from. One number: the product model is one balance, so the
+  // UI never breaks it down per source.
+  const gatewaySpendableRaw = gateway?.transferableTotalRaw || "0";
+  const gatewayCanPrepare = Boolean(gatewayFundingRecovery) || (
+    gatewayReadState === "ready" && hasPositiveRawAmount(gatewaySpendableRaw)
+  );
+
+  async function handleGatewayTransfer() {
+    if (!selectedDestination && !gatewayFundingRecovery) return;
+    // A live recovery is the authoritative intent, exactly as for a deposit:
+    // the inputs are disabled while it exists, so both the amount and the
+    // destination come from the record rather than the editable fields.
     const valueRaw = gatewayFundingRecovery?.valueRaw || parseGatewayUsdcRaw(gatewayAmount);
     if (!valueRaw) {
       setGatewayFundingError(t.wallet.gatewayAmountInvalid);
       return;
     }
-    const sourceDomain = gatewayFundingRecovery?.sourceDomain ?? selectedGatewaySource!.domain;
+    const destinationDomain = gatewayFundingRecovery?.destinationDomain
+      ?? selectedDestination!.domain;
+    // A restored destination must still be one the server offers, or the
+    // stored intent is not something this session can safely continue.
     if (
-      !gatewayFundingRecovery &&
-      BigInt(valueRaw) > BigInt(selectedGatewaySource!.balanceRaw)
+      gatewayFundingRecovery &&
+      gatewayDestinations.length > 0 &&
+      !gatewayDestinations.some((item) => item.domain === destinationDomain)
     ) {
-      setGatewayFundingError(locale === "tr" ? "Tutar seçili kaynak bakiyesini aşıyor." : "Amount exceeds the selected source balance.");
+      setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
+      return;
+    }
+    // Only the total spendable balance is checked here, because the server
+    // decides which sources are drawn. A local per source check would
+    // reintroduce exactly the single source assumption the unified balance
+    // model removes. The server is the authority either way.
+    if (!gatewayFundingRecovery && BigInt(valueRaw) > BigInt(gatewaySpendableRaw)) {
+      setGatewayFundingError(
+        locale === "tr"
+          ? "Tutar kullanılabilir Gateway bakiyeni aşıyor."
+          : "Amount exceeds your available Gateway balance.",
+      );
       return;
     }
 
     setGatewayFundingBusy(true);
+    setGatewaySignStep(null);
     setGatewayFundingError("");
     setGatewayFundingNotice("");
     try {
       const result = await confirmGatewayBurnSignature(
-        { sourceDomain, valueRaw },
+        { destinationDomain, valueRaw },
         { executionMode, signTypedData: (typedData) => signTypedDataAsync(typedData) },
+        // A multi-source plan asks for one approval per source draw. Report
+        // progress honestly rather than showing one indeterminate spinner.
+        (signed, total) => setGatewaySignStep({ step: signed + 1, total }),
       );
       setGatewayFundingStatus(result);
       if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
         throw new Error("gateway_signature_challenge_unavailable");
       }
+      setGatewayFundingRecovery(null);
       setGatewayFundingNotice(t.wallet.gatewayTransferPrepared);
     } catch {
       setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
     } finally {
       setGatewayFundingBusy(false);
+      setGatewaySignStep(null);
     }
   }
 
@@ -1162,7 +1277,7 @@ export default function WalletPage() {
               ) : chainState ? (
                 <div
                   className="ex-wallet-summary"
-                  data-columns="3"
+                  data-columns="2"
                 >
                   <div className="ex-wallet-summary__item">
                     <span>{t.wallet.chainNetwork}</span>
@@ -1180,16 +1295,6 @@ export default function WalletPage() {
                     </strong>
                   </div>
 
-                  <div className="ex-wallet-summary__item">
-                    <span>{t.wallet.gatewayBalance}</span>
-                    <strong className="ex-num">
-                      {gatewayReadState === "ready" && gateway
-                        ? `${formatGatewayUsdcDisplay(gateway.totalUsdc, locale)} ${gateway.token}`
-                        : gatewayReadState === "loading" || gatewayReadState === "idle"
-                          ? t.wallet.gatewayReading
-                          : t.wallet.gatewayBalanceUnavailable}
-                    </strong>
-                  </div>
                 </div>
               ) : (
                 <p className="ex-wallet-ledger__pending">{chainBusy || t.wallet.balanceNotLoaded}</p>
@@ -1197,9 +1302,21 @@ export default function WalletPage() {
 
               {!sessionNeedsAuth && chainError && <p className="ex-entry__msg" data-tone="error">{chainError}</p>}
 
+              {/* A: the unified balance and where to send it. There is no
+                  source selector here on purpose: Gateway is one balance and
+                  the server decides which deposited balances pay for a
+                  transfer. */}
               <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>
                   <div>
                     <p className="ex-eyebrow">{t.wallet.gateway}</p>
+                    {gatewayReadState === "ready" && gateway && (
+                      <p className="ex-gateway-unified">
+                        <strong className="ex-num">
+                          {formatGatewayUsdcDisplay(gateway.transferableTotalUsdc, locale)} {gateway.token}
+                        </strong>
+                        <span>{t.wallet.gatewayUnifiedBalance}</span>
+                      </p>
+                    )}
                     <h3>{t.wallet.gatewayPrepareTitle}</h3>
                     {gatewayReadState === "loading" || gatewayReadState === "idle" ? (
                       <p>{t.wallet.gatewayReading}</p>
@@ -1225,15 +1342,15 @@ export default function WalletPage() {
                   {gatewayCanPrepare && (
                     <div className="ex-wallet-gateway__controls">
                       <label>
-                        <span>{t.wallet.gatewaySource}</span>
+                        <span>{t.wallet.gatewayDestination}</span>
                         <select
-                          value={selectedGatewaySource ? String(selectedGatewaySource.domain) : ""}
-                          onChange={(event) => setGatewaySourceDomain(event.target.value)}
+                          value={selectedDestination ? String(selectedDestination.domain) : ""}
+                          onChange={(event) => setGatewayDestinationDomain(event.target.value)}
                           disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
                         >
-                          {gatewaySources.map((item) => (
+                          {gatewayDestinations.map((item) => (
                             <option key={item.domain} value={item.domain}>
-                              {gatewaySourceNetworkLabel(item.domain)}
+                              {item.label}
                             </option>
                           ))}
                         </select>
@@ -1251,11 +1368,13 @@ export default function WalletPage() {
                       <button
                         className="ex-btn ex-btn--ink"
                         type="button"
-                        onClick={handleGatewayFunding}
+                        onClick={handleGatewayTransfer}
                         disabled={gatewayFundingBusy || Boolean(gatewayFundingStatus && gatewayFundingStatus.state !== "SIGNATURE_PENDING")}
                       >
                         {gatewayFundingBusy
-                          ? t.wallet.gatewayPreparingSignature
+                          ? (gatewaySignStep && gatewaySignStep.total > 1
+                            ? withGatewayStep(t.wallet.gatewaySigningStep, gatewaySignStep.step, gatewaySignStep.total)
+                            : t.wallet.gatewayPreparingSignature)
                           : gatewayFundingStatus?.readyToBroadcast === true
                             ? t.wallet.gatewayTransferPrepared
                           : gatewayFundingRecovery
@@ -1268,129 +1387,203 @@ export default function WalletPage() {
                   {gatewayFundingError && <p className="ex-entry__msg" data-tone="error">{gatewayFundingError}</p>}
                 </section>
 
-                <section
-                  className={`ex-wallet-gateway${depositCompleted ? " ex-wallet-gateway--completed" : ""}`}
-                  aria-label={t.wallet.gatewayDepositAriaLabel}
-                >
+                {/* B: fund the unified balance. One compact card per funding
+                    chain, each with its own read-only state. A source wallet
+                    balance is never the Gateway unified balance above. */}
+                <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayDepositAriaLabel}>
                   <div>
-                    <p className="ex-eyebrow">{BASE_SEPOLIA_SOURCE.label}</p>
-                    {depositCompleted ? (
-                      <p className="ex-wallet-gateway__available">
-                        {baseUsdcRaw !== null
-                          ? withGatewayAmount(
-                            t.wallet.gatewayBaseAvailable,
-                            formatGatewayUsdcDisplay(formatGatewayUsdcRaw(baseUsdcRaw), locale),
-                          )
-                          : baseReadError ? "—" : t.wallet.gatewayBaseReading}
-                      </p>
-                    ) : (
-                      <>
-                        <h3>{t.wallet.gatewayBaseSourceTitle}</h3>
-                        <p>
-                          {t.wallet.gatewayBaseUsdcBalance}
-                          {": "}
-                          <strong className="ex-num">
-                            {baseUsdcRaw !== null
-                              ? formatGatewayUsdcDisplay(formatGatewayUsdcRaw(baseUsdcRaw), locale)
-                              : baseReadError ? "—" : t.wallet.gatewayBaseReading}
-                          </strong>
-                        </p>
-                      </>
-                    )}
-                    {baseReadError && <p className="ex-entry__msg" data-tone="error">{baseReadError}</p>}
+                    <p className="ex-eyebrow">{t.wallet.gatewayAddTitle}</p>
+                    <p>{t.wallet.gatewayAddBody}</p>
                   </div>
 
-                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "missing" && (
+                  {sourceReadState === "error" ? (
                     <div>
-                      <p>{t.wallet.gatewayPrepareBaseWalletBody}</p>
-                      {baseWalletNotice && <p className="ex-entry__msg" aria-live="polite">{baseWalletNotice}</p>}
-                      <button className="ex-btn ex-btn--ink" type="button" onClick={handlePrepareBaseWallet}>
-                        {baseWalletNotice ? t.wallet.gatewayResumeBaseWallet : t.wallet.gatewayPrepareBaseWallet}
-                      </button>
-                    </div>
-                  )}
-                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "preparing" && (
-                    <p>{t.wallet.gatewayPreparingBaseWallet}</p>
-                  )}
-                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "mismatch" && (
-                    <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewayBaseWalletMismatch}</p>
-                  )}
-                  {executionMode === "CIRCLE_USER_WALLET" && baseWalletStatus === "error" && (
-                    <div>
-                      <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewayBaseUnavailable}</p>
-                      <button className="ex-btn ex-btn--ghost" type="button" onClick={handlePrepareBaseWallet}>
+                      <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                        {t.wallet.gatewaySourceUnavailable}
+                      </p>
+                      <button
+                        className="ex-btn ex-btn--ghost"
+                        type="button"
+                        onClick={() => void refreshSourceState()}
+                      >
                         {t.wallet.gatewayRetry}
                       </button>
                     </div>
+                  ) : sourceReadState !== "ready" || !sourceState ? (
+                    <p>{t.wallet.gatewaySourceReading}</p>
+                  ) : (
+                    <div className="ex-gateway-sources">
+                      {sourceState.sources.map((source) => {
+                        const walletStatus = sourceWalletStatus[source.domain] || "idle";
+                        const notice = sourceWalletNotice[source.domain] || "";
+                        const owned = activeDepositDomain === source.domain;
+                        // A deposit elsewhere locks every other card: one
+                        // deliberate financial action at a time, and never an
+                        // automatic second deposit on another chain.
+                        const lockedElsewhere =
+                          activeDepositDomain !== null && activeDepositDomain !== source.domain;
+                        const open = openSourceDomain === source.domain;
+
+                        return (
+                          <article
+                            key={source.domain}
+                            className="ex-gateway-source"
+                            data-state={
+                              owned && depositCompleted ? "completed"
+                              : owned && depositAwaitingFinality ? "pending"
+                              : walletStatus === "missing" || walletStatus === "preparing" ? "unprepared"
+                              : walletStatus === "mismatch" || walletStatus === "error" ? "error"
+                              : source.state === "error" ? "read-error"
+                              : "ready"
+                            }
+                          >
+                            <p className="ex-gateway-source__name">{source.label}</p>
+
+                            {source.state === "error" ? (
+                              <p className="ex-gateway-source__balance">{t.wallet.gatewaySourceUnavailable}</p>
+                            ) : source.balanceRaw !== null ? (
+                              <p className="ex-gateway-source__balance ex-num">
+                                {withGatewayAmount(
+                                  t.wallet.gatewaySourceAvailable,
+                                  formatGatewayUsdcDisplay(formatGatewayUsdcRaw(source.balanceRaw), locale),
+                                )}
+                              </p>
+                            ) : (
+                              <p className="ex-gateway-source__balance">{t.wallet.gatewaySourceReading}</p>
+                            )}
+
+                            {executionMode === "CIRCLE_USER_WALLET" && walletStatus === "missing" ? (
+                              <>
+                                <p className="ex-gateway-source__hint">{t.wallet.gatewayWalletNotPrepared}</p>
+                                {notice && <p className="ex-entry__msg" aria-live="polite">{notice}</p>}
+                                <button
+                                  className="ex-btn ex-btn--ink"
+                                  type="button"
+                                  onClick={() => void handlePrepareSourceWallet(source.domain)}
+                                >
+                                  {notice ? t.wallet.gatewayResumeSourceWallet : t.wallet.gatewayPrepareWallet}
+                                </button>
+                              </>
+                            ) : executionMode === "CIRCLE_USER_WALLET" && walletStatus === "preparing" ? (
+                              <p className="ex-gateway-source__hint">{t.wallet.gatewayPreparingWallet}</p>
+                            ) : executionMode === "CIRCLE_USER_WALLET" && walletStatus === "mismatch" ? (
+                              <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewaySourceWalletMismatch}</p>
+                            ) : executionMode === "CIRCLE_USER_WALLET" && walletStatus === "error" ? (
+                              <>
+                                <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewaySourcePrepareUncertain}</p>
+                                <button
+                                  className="ex-btn ex-btn--ghost"
+                                  type="button"
+                                  onClick={() => void handlePrepareSourceWallet(source.domain)}
+                                >
+                                  {t.wallet.gatewayRetry}
+                                </button>
+                              </>
+                            ) : owned && depositCompleted ? (
+                              <div className="ex-gateway-deposit-complete" data-state="completed">
+                                <p>
+                                  <span aria-hidden="true">✓</span>
+                                  {withGatewayAmount(
+                                    t.wallet.gatewayDepositAddedToGateway,
+                                    completedDepositAmount,
+                                  )}
+                                </p>
+                                <button
+                                  className="ex-btn ex-btn--ghost"
+                                  type="button"
+                                  onClick={() => handleAddMoreGatewayUsdc(source.domain)}
+                                >
+                                  {t.wallet.gatewayAddMoreUsdc}
+                                </button>
+                              </div>
+                            ) : owned && depositAwaitingFinality ? (
+                              <div className="ex-gateway-finality" aria-live="polite">
+                                <ol className="ex-gateway-finality__rail">
+                                  <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
+                                  <li data-state="active">
+                                    <span className="ex-gateway-finality__pulse" aria-hidden="true" />
+                                    {t.wallet.gatewayWaitingFinality}
+                                  </li>
+                                  <li data-state="pending">{t.wallet.gatewayBalanceAvailable}</li>
+                                </ol>
+                                <p>{t.wallet.gatewayFinalityAdvice}</p>
+                                {depositStatusWarning && <small>{depositStatusWarning}</small>}
+                              </div>
+                            ) : lockedElsewhere ? (
+                              <p className="ex-gateway-source__hint">{t.wallet.gatewaySourceBusyElsewhere}</p>
+                            ) : open || owned ? (
+                              <div className="ex-gateway-source__form">
+                                <label>
+                                  <span>{t.wallet.gatewayDepositAmount}</span>
+                                  <input
+                                    inputMode="decimal"
+                                    placeholder="0.00"
+                                    value={depositAmount}
+                                    onChange={(event) => setDepositAmount(event.target.value)}
+                                    disabled={depositBusy || Boolean(depositRecovery)}
+                                  />
+                                </label>
+                                <button
+                                  className="ex-btn ex-btn--ink"
+                                  type="button"
+                                  onClick={() => void handleGatewaySourceDeposit(source.domain)}
+                                  disabled={depositBusy}
+                                >
+                                  {depositBusy
+                                    ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval
+                                      : depositPhase === "confirmApproval" ? (executionMode === "CIRCLE_USER_WALLET" ? t.wallet.gatewayConfirmApprovalCircle : t.wallet.gatewayConfirmApprovalWallet)
+                                      : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
+                                      : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
+                                      : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality
+                                      // No specific phase reported yet: if this
+                                      // click is resuming a recovery,
+                                      // "Recovering..." is the honest busy
+                                      // label; otherwise it is a fresh read.
+                                      : depositRecovery ? t.wallet.gatewayRecoveringOperation
+                                      : t.wallet.gatewayReading)
+                                    : depositRecovery
+                                      // Idle: nothing happens until the user
+                                      // explicitly clicks, so the label must say
+                                      // "continue", never "recovering" (which
+                                      // implies it is already in progress).
+                                      ? t.wallet.gatewayResumeDeposit
+                                      : t.wallet.gatewayAddToGateway}
+                                </button>
+                                {!depositRecovery && !depositBusy && (
+                                  <button
+                                    className="ex-btn ex-btn--ghost"
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenSourceDomain(null);
+                                      setDepositAmount("");
+                                      setDepositError("");
+                                    }}
+                                  >
+                                    {t.wallet.gatewayAddCancel}
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <button
+                                className="ex-btn ex-btn--ink"
+                                type="button"
+                                onClick={() => {
+                                  setOpenSourceDomain(source.domain);
+                                  setDepositAmount("");
+                                  setDepositError("");
+                                  setDepositNotice("");
+                                }}
+                                disabled={source.state === "error"}
+                              >
+                                {t.wallet.gatewayAddUsdc}
+                              </button>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
                   )}
 
-                  {depositFinalityVisible && (
-                    <div className="ex-gateway-finality" aria-live="polite">
-                      <ol className="ex-gateway-finality__rail">
-                        <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
-                        <li data-state="active">
-                          <span className="ex-gateway-finality__pulse" aria-hidden="true" />
-                          {t.wallet.gatewayWaitingFinality}
-                        </li>
-                        <li data-state="pending">{t.wallet.gatewayBalanceAvailable}</li>
-                      </ol>
-                      <p>{t.wallet.gatewayFinalityAdvice}</p>
-                      {depositStatusWarning && <small>{depositStatusWarning}</small>}
-                    </div>
-                  )}
-
-                  {baseWalletStatus === "ready" && depositCompleted ? (
-                    <div className="ex-gateway-deposit-complete" data-state="completed">
-                      <p>
-                        <span aria-hidden="true">✓</span>
-                        {withGatewayAmount(
-                          t.wallet.gatewayDepositAddedToGateway,
-                          completedDepositAmount,
-                        )}
-                      </p>
-                      <button className="ex-btn ex-btn--ghost" type="button" onClick={handleAddMoreGatewayUsdc}>
-                        {t.wallet.gatewayAddMoreUsdc}
-                      </button>
-                    </div>
-                  ) : baseWalletStatus === "ready" && !depositAwaitingFinality ? (
-                    <div className="ex-wallet-gateway__controls">
-                      <label>
-                        <span>{t.wallet.gatewayDepositAmount}</span>
-                        <input
-                          inputMode="decimal"
-                          placeholder="0.00"
-                          value={depositAmount}
-                          onChange={(event) => setDepositAmount(event.target.value)}
-                          disabled={depositBusy || depositAwaitingFinality || Boolean(depositRecovery)}
-                        />
-                      </label>
-                      <button
-                        className="ex-btn ex-btn--ink"
-                        type="button"
-                        onClick={handleGatewayBaseDeposit}
-                        disabled={depositBusy || depositAwaitingFinality}
-                      >
-                        {depositBusy
-                          ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval
-                            : depositPhase === "confirmApproval" ? (executionMode === "CIRCLE_USER_WALLET" ? t.wallet.gatewayConfirmApprovalCircle : t.wallet.gatewayConfirmApprovalWallet)
-                            : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
-                            : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
-                            : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality
-                            // No specific phase reported yet: if this click is
-                            // resuming a recovery, "Recovering..." is the
-                            // honest busy label; otherwise it's a fresh read.
-                            : depositRecovery ? t.wallet.gatewayRecoveringOperation
-                            : t.wallet.gatewayReading)
-                          : depositRecovery
-                            // Idle: nothing happens until the user explicitly
-                            // clicks, so the label must say "continue", never
-                            // "recovering" (which implies it is already in
-                            // progress).
-                            ? t.wallet.gatewayResumeDeposit
-                            : t.wallet.gatewayConfirmDeposit}
-                      </button>
-                    </div>
-                  ) : null}
                   {!depositCompleted && depositNotice && <p className="ex-entry__msg" data-tone="ok">{depositNotice}</p>}
                   {!depositCompleted && depositError && <p className="ex-entry__msg" data-tone="error">{depositError}</p>}
                 </section>
@@ -1411,7 +1604,7 @@ export default function WalletPage() {
                   onClick={() => {
                     void refreshChainState();
                     void refreshGatewayBalance();
-                    void refreshBaseSourceState();
+                    void refreshSourceState();
                   }}
                   disabled={Boolean(chainBusy)}
                 >

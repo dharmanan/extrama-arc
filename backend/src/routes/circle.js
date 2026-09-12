@@ -8,6 +8,7 @@ const { z } = require('zod');
 const db = require('../db');
 const sessionService = require('../services/sessionService');
 const circleUserWalletService = require('../services/circleUserWalletService');
+const gatewayNetworks = require('../services/gatewayNetworks');
 const { encrypt, decrypt } = require('../services/cryptoService');
 const { requireAuth } = require('../middleware/auth');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
@@ -136,35 +137,56 @@ router.post('/wallet', walletLimiter, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-const baseSepoliaPrepareSchema = userTokenSchema.extend({ idempotencyKey });
+const sourcePrepareSchema = userTokenSchema.extend({ idempotencyKey });
 
-// Both routes require an already-authenticated EXTREMA session: the
+// A Gateway funding source is addressed by its DOMAIN, never by a blockchain
+// name the browser makes up: the domain is mapped to a canonical network here,
+// and only a network the product offers as a deposit source resolves at all.
+function resolveSourceDomain(value) {
+  const domain = Number(value);
+  if (!Number.isInteger(domain)) return null;
+  return gatewayNetworks.depositSourceForDomain(domain);
+}
+
+// Every route below requires an already-authenticated EXTREMA session: the
 // comparison target is always the session's own canonical Arc address, never
-// a browser-supplied one, and the Base Circle wallet id never replaces the
-// session's Arc Circle wallet id.
-router.post('/wallet/base-sepolia', walletLimiter, requireAuth, async (req, res, next) => {
+// a browser-supplied one, and a source-chain Circle wallet id never replaces
+// the session's Arc Circle wallet id.
+router.post('/wallet/source/:domain', walletLimiter, requireAuth, async (req, res, next) => {
   try {
     if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
       return res.status(409).json({ error: 'circle_wallet_session_required' });
     }
+    const network = resolveSourceDomain(req.params.domain);
+    if (!network) return res.status(400).json({ error: 'gateway_deposit_source_unsupported' });
     const token = userTokenSchema.parse(req.body).userToken;
-    const wallet = await circleUserWalletService.listBaseSepoliaEoa(token);
-    res.json({ wallet, arcAddress: req.auth.walletAddress });
+    const wallet = await circleUserWalletService.listEoaForBlockchain(
+      token, network.circleBlockchain,
+    );
+    circleUserWalletService.assertCircleSourceWalletMatchesAddress(
+      wallet, req.auth.walletAddress,
+    );
+    res.json({ wallet, domain: network.domain, arcAddress: req.auth.walletAddress });
   } catch (error) { next(error); }
 });
 
-router.post('/wallet/base-sepolia/prepare', walletLimiter, requireAuth, async (req, res, next) => {
+// Preparation creates the companion wallet and nothing else. It never
+// approves, deposits or transfers.
+router.post('/wallet/source/:domain/prepare', walletLimiter, requireAuth, async (req, res, next) => {
   try {
     if (req.auth.executionMode !== EXECUTION_MODES.CIRCLE_USER_WALLET) {
       return res.status(409).json({ error: 'circle_wallet_session_required' });
     }
-    const input = baseSepoliaPrepareSchema.parse(req.body);
-    const result = await circleUserWalletService.prepareBaseSepoliaEoa({
+    const network = resolveSourceDomain(req.params.domain);
+    if (!network) return res.status(400).json({ error: 'gateway_deposit_source_unsupported' });
+    const input = sourcePrepareSchema.parse(req.body);
+    const result = await circleUserWalletService.prepareEoaForBlockchain({
       userToken: input.userToken,
       idempotencyKey: input.idempotencyKey,
+      blockchain: network.circleBlockchain,
       arcAddress: req.auth.walletAddress,
     });
-    res.json(result);
+    res.json({ ...result, domain: network.domain });
   } catch (error) { next(error); }
 });
 

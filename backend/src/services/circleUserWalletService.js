@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { ethers } = require('ethers');
 const config = require('../config');
+const gatewayNetworks = require('./gatewayNetworks');
 
 const ARC_TESTNET = 'ARC-TESTNET';
 const BASE_SEPOLIA = 'BASE-SEPOLIA';
@@ -62,6 +63,42 @@ function pickArcEoa(wallets) {
 
 function pickBaseSepoliaEoa(wallets) {
   return pickEoaForBlockchain(wallets, BASE_SEPOLIA, 'circle_base_sepolia_eoa_ambiguous');
+}
+
+// The source-wallet readiness route is server-authenticated, so a Circle EOA
+// returned for a companion chain must still be the same canonical user EOA as
+// the Arc session. A browser never supplies the comparison address.
+function assertCircleSourceWalletMatchesAddress(wallet, arcAddress) {
+  if (!wallet) return wallet;
+  try {
+    if (
+      !ethers.isAddress(wallet.address) ||
+      !ethers.isAddress(arcAddress) ||
+      ethers.getAddress(wallet.address).toLowerCase() !== ethers.getAddress(arcAddress).toLowerCase()
+    ) {
+      throw new Error('circle_source_address_mismatch');
+    }
+  } catch (error) {
+    if (error?.message === 'circle_source_address_mismatch') throw error;
+    throw new Error('circle_source_address_mismatch');
+  }
+  return wallet;
+}
+
+// The Circle blockchain identifiers EXTREMA is allowed to prepare a companion
+// source wallet on. Read from the one canonical Gateway network table, whose
+// identifiers are the exact enum strings shipped in the installed
+// @circle-fin/user-controlled-wallets SDK. Anything else fails closed: a
+// mistyped or invented blockchain name must never reach Circle.
+const GATEWAY_SOURCE_BLOCKCHAINS = new Set(
+  gatewayNetworks.DEPOSIT_SOURCE_NETWORKS.map((network) => network.circleBlockchain),
+);
+
+function assertGatewaySourceBlockchain(blockchain) {
+  if (!GATEWAY_SOURCE_BLOCKCHAINS.has(blockchain)) {
+    throw new Error('circle_source_blockchain_unsupported');
+  }
+  return blockchain;
 }
 
 function nextCursor(response) {
@@ -199,9 +236,22 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     return pickArcEoa(await listWalletsForBlockchain(userToken, ARC_TESTNET));
   }
 
-  // The Base Sepolia wallet is source-chain execution metadata only: it never
-  // replaces the Arc Circle wallet id held in the EXTREMA session. Callers
-  // compare its address against the session's own canonical Arc address.
+  // A source-chain wallet is execution metadata only: it never replaces the
+  // Arc Circle wallet id held in the EXTREMA session. Callers compare its
+  // address against the session's own canonical Arc address.
+  //
+  // One lookup for every Gateway funding source (Base, OP, Arbitrum and
+  // Ethereum Sepolia). An ambiguous listing on any of them fails closed rather
+  // than picking a wallet.
+  async function listEoaForBlockchain(userToken, blockchain) {
+    assertGatewaySourceBlockchain(blockchain);
+    return pickEoaForBlockchain(
+      await listWalletsForBlockchain(userToken, blockchain),
+      blockchain,
+      'circle_source_eoa_ambiguous',
+    );
+  }
+
   async function listBaseSepoliaEoa(userToken) {
     return pickBaseSepoliaEoa(await listWalletsForBlockchain(userToken, BASE_SEPOLIA));
   }
@@ -291,46 +341,62 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     }
   }
 
-  // Adds Base Sepolia to an ALREADY onboarded Circle user (one who already
-  // has a PIN and an Arc EOA), so this uses createWallet, not
+  // Adds a Gateway source chain to an ALREADY onboarded Circle user (one who
+  // already has a PIN and an Arc EOA), so this uses createWallet, not
   // createUserPinWithWallets (which sets up a brand new user's first PIN).
-  // Circle's unified EVM addressing means the resulting EOA should be the
-  // same address as the existing Arc EOA; this function is the sole
-  // authority on that comparison and fails closed on any mismatch or
-  // ambiguity. The browser is never trusted to assert the match itself.
-  async function prepareBaseSepoliaEoa({ userToken, idempotencyKey, arcAddress }) {
+  //
+  // Circle's unified EVM addressing means the resulting EOA should be the same
+  // address as the existing Arc EOA; this function is the sole authority on
+  // that comparison and fails closed on any mismatch, ambiguity or empty
+  // result. The browser is never trusted to assert the match itself, and never
+  // supplies the address: the caller passes the session's own canonical Arc
+  // address.
+  //
+  // Preparation creates a wallet and nothing else. No approval, no deposit and
+  // no transfer is ever issued from here.
+  async function prepareEoaForBlockchain({
+    userToken, idempotencyKey, blockchain, arcAddress,
+  }) {
+    assertGatewaySourceBlockchain(blockchain);
     if (!ethers.isAddress(arcAddress)) {
-      throw new Error('circle_base_sepolia_arc_address_invalid');
+      throw new Error('circle_source_arc_address_invalid');
     }
     const canonicalArc = ethers.getAddress(arcAddress).toLowerCase();
 
-    const existing = await listBaseSepoliaEoa(userToken);
-    if (existing) {
-      if (existing.address.toLowerCase() !== canonicalArc) {
-        throw new Error('circle_base_sepolia_address_mismatch');
+    const assertMatches = (wallet) => {
+      if (wallet.address.toLowerCase() !== canonicalArc) {
+        throw new Error('circle_source_address_mismatch');
       }
-      return { status: 'EXISTING', wallet: existing, challengeId: null };
+      return wallet;
+    };
+
+    const existing = await listEoaForBlockchain(userToken, blockchain);
+    if (existing) {
+      return { status: 'EXISTING', wallet: assertMatches(existing), challengeId: null };
     }
 
     try {
       const response = await getClient().createWallet({
-        userToken, blockchains: [BASE_SEPOLIA], accountType: EOA, idempotencyKey,
+        userToken, blockchains: [blockchain], accountType: EOA, idempotencyKey,
       });
       const challengeId = response?.data?.challengeId;
       if (typeof challengeId !== 'string' || !challengeId) throw new Error('circle_response_invalid');
       return { status: 'CHALLENGE_REQUIRED', wallet: null, challengeId };
     } catch (error) {
       if (circleErrorCode(error) === ALREADY_INITIALIZED_CODE) {
-        const wallet = await listBaseSepoliaEoa(userToken);
-        if (!wallet) throw new Error('circle_base_sepolia_eoa_not_found');
-        if (wallet.address.toLowerCase() !== canonicalArc) {
-          throw new Error('circle_base_sepolia_address_mismatch');
-        }
-        return { status: 'EXISTING', wallet, challengeId: null };
+        const wallet = await listEoaForBlockchain(userToken, blockchain);
+        if (!wallet) throw new Error('circle_source_eoa_not_found');
+        return { status: 'EXISTING', wallet: assertMatches(wallet), challengeId: null };
       }
       if (error?.message?.startsWith('circle_')) throw error;
       throw safeCircleError(error);
     }
+  }
+
+  async function prepareBaseSepoliaEoa({ userToken, idempotencyKey, arcAddress }) {
+    return prepareEoaForBlockchain({
+      userToken, idempotencyKey, blockchain: BASE_SEPOLIA, arcAddress,
+    });
   }
 
   async function createContractExecutionChallenge({
@@ -567,8 +633,10 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
     initializeArcEoa,
     listArcEoa,
     listBaseSepoliaEoa,
+    listEoaForBlockchain,
     refreshUserToken,
     prepareBaseSepoliaEoa,
+    prepareEoaForBlockchain,
     createContractExecutionChallenge,
     getContractExecutionChallenge,
     createTypedDataChallenge,
@@ -585,11 +653,14 @@ module.exports = {
   BASE_SEPOLIA,
   EOA,
   ALREADY_INITIALIZED_CODE,
+  GATEWAY_SOURCE_BLOCKCHAINS,
+  assertGatewaySourceBlockchain,
   circleErrorCode,
   safeCircleError,
   pickArcEoa,
   pickBaseSepoliaEoa,
   pickEoaForBlockchain,
+  assertCircleSourceWalletMatchesAddress,
   matchesContractExecutionTransaction,
   matchesFetchedContractExecutionTransaction,
   createCircleUserWalletService,
