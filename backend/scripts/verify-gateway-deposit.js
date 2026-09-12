@@ -1069,10 +1069,9 @@ function verifyWalletPageDepositRecoveryWiring() {
   const selects = [...fundingMarkup.matchAll(/<select/g)];
   assert.equal(selects.length, 1, 'the send section has one selector only');
   assert.match(fundingMarkup, /<span>\{t\.wallet\.gatewayDestination\}<\/span>/);
-  assert.match(
-    fundingMarkup,
-    /onChange=\{\(event\) => setGatewayDestinationDomain\(event\.target\.value\)\}/,
-  );
+  assert.match(fundingMarkup, /onChange=\{\(event\) => \{/);
+  assert.match(fundingMarkup, /setGatewayDestinationDomain\(event\.target\.value\);/);
+  assert.match(fundingMarkup, /event\.currentTarget\.blur\(\);/);
   assert.match(
     fundingMarkup,
     /\{gatewayDestinations\.map\(\(item\) => \(\s*<option key=\{item\.domain\} value=\{item\.domain\}>\s*\{item\.label\}\s*<\/option>/,
@@ -1144,60 +1143,25 @@ function verifyWalletPageDepositRecoveryWiring() {
   );
 
   // -------------------------------------------------------------------
-  // B. The four funding source cards
+  // B. One compact funding-source selector
   // -------------------------------------------------------------------
   assert.match(depositMarkup, /t\.wallet\.gatewayAddTitle/);
   assert.match(depositMarkup, /t\.wallet\.gatewayAddBody/);
-  assert.match(depositMarkup, /className="ex-gateway-sources"/);
-  assert.match(
-    depositMarkup,
-    /\{sourceState\.sources\.map\(\(source\) => \{/,
-    'one card per server-listed funding source, never a hardcoded list',
-  );
-  assert.match(depositMarkup, /className="ex-gateway-source"/);
-  assert.match(depositMarkup, /\{source\.label\}/);
-
-  // A source WALLET balance is a different quantity from the unified balance
-  // and is rendered from the source read, never from the Gateway totals.
-  assert.match(
-    depositMarkup,
-    /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(source\.balanceRaw\), locale\)/,
-    'a card shows its own chain balance',
-  );
-  assert.match(depositMarkup, /t\.wallet\.gatewaySourceAvailable/);
-  assert.ok(
-    !depositMarkup.includes('transferableTotalUsdc') && !depositMarkup.includes('gateway.totalUsdc'),
-    'a source card must never display the Gateway unified balance as its own',
-  );
-  // A failed read shows no number at all: a zero is only ever a real zero.
-  assert.match(
-    depositMarkup,
-    /source\.state === "error" \?[\s\S]{0,160}t\.wallet\.gatewaySourceUnavailable/,
-    'a read error must report unavailable rather than a fabricated zero',
-  );
-  assert.match(
-    depositMarkup,
-    /source\.balanceRaw !== null \?/,
-    'a balance is rendered only when one was actually read',
-  );
-
-  // Per-card independent states, including the Circle-only unprepared state.
+  assert.match(depositMarkup, /className="ex-gateway-deposit-controls"/);
+  assert.match(depositMarkup, /<span>\{t\.wallet\.gatewayFrom\}<\/span>/);
+  assert.match(depositMarkup, /<span>\{t\.wallet\.gatewayAvailable\}<\/span>/);
+  assert.match(depositMarkup, /value=\{String\(selectedSource\.domain\)\}/);
+  assert.match(depositMarkup, /\{sourceState\.sources\.map\(\(source\) => \(\s*<option key=\{source\.domain\} value=\{source\.domain\}>\{source\.label\}<\/option>/);
+  assert.match(depositMarkup, /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(selectedSource\.balanceRaw\), locale\)/);
+  assert.ok(!depositMarkup.includes('transferableTotalUsdc') && !depositMarkup.includes('gateway.totalUsdc'));
+  assert.match(depositMarkup, /selectedSource\.state === "error"/);
+  assert.match(depositMarkup, /selectedSource\.balanceRaw !== null/);
   assert.match(depositMarkup, /t\.wallet\.gatewayWalletNotPrepared/);
-  assert.match(depositMarkup, /t\.wallet\.gatewayPrepareWallet/);
-  assert.match(depositMarkup, /handlePrepareSourceWallet\(source\.domain\)/);
+  assert.match(depositMarkup, /handlePrepareSourceWallet\(selectedSource\.domain\)/);
   assert.match(depositMarkup, /t\.wallet\.gatewaySourceWalletMismatch/);
-  assert.match(depositMarkup, /const walletStatus = sourceWalletStatus\[source\.domain\] \|\| "idle";/);
+  assert.match(depositMarkup, /handleGatewaySourceDeposit\(selectedSource\.domain\)/);
+  assert.match(depositMarkup, /disabled=\{depositBusy \|\| depositAwaitingFinality \|\| Boolean\(depositRecovery\)\}/);
 
-  // Only the card that owns an in-flight deposit shows a finality rail, and
-  // every other card is locked while one deposit is in flight.
-  assert.match(depositMarkup, /const owned = activeDepositDomain === source\.domain;/);
-  assert.match(
-    depositMarkup,
-    /activeDepositDomain !== null && activeDepositDomain !== source\.domain/,
-    'a deposit in flight must lock every other funding card',
-  );
-  assert.match(depositMarkup, /owned && depositAwaitingFinality \?/);
-  assert.match(depositMarkup, /lockedElsewhere \?[\s\S]{0,160}gatewaySourceBusyElsewhere/);
   const railStart = depositMarkup.indexOf('className="ex-gateway-finality"');
   const railEnd = depositMarkup.indexOf('</div>', railStart);
   assert.ok(railStart > -1 && railEnd > railStart);
@@ -1208,46 +1172,17 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(railMarkup, /data-state="active"/);
   assert.match(railMarkup, /ex-gateway-finality__pulse/);
   assert.match(railMarkup, /data-state="pending"/);
-  assert.ok(
-    !/attestation|mint|countdown|progress|%/i.test(railMarkup),
-    'the finality rail must not invent technical or percentage progress',
-  );
+  assert.ok(!/attestation|mint|countdown|progress|%/i.test(railMarkup));
   assert.match(styles, /animation:ex-gateway-finality-breathe/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,180}animation:none/);
 
-  // The completed card collapses to a confirmation plus "Add more".
-  assert.match(depositMarkup, /owned && depositCompleted \?/);
+  assert.match(styles, /\.ex-gateway-deposit-controls\{/);
+  assert.match(styles, /grid-template-columns:minmax\(180px,1\.2fr\)/);
+  assert.ok(!depositMarkup.includes('className="ex-gateway-sources"'));
+  assert.ok(!depositMarkup.includes('className="ex-gateway-source"'));
+  assert.match(depositMarkup, /depositCompleted && \(/);
   assert.match(depositMarkup, /gatewayDepositAddedToGateway/);
   assert.match(depositMarkup, /gatewayAddMoreUsdc/);
-
-  // -------------------------------------------------------------------
-  // C. Responsive layout: four across, then two by two, then one column
-  // -------------------------------------------------------------------
-  const gridStart = styles.indexOf('.ex-gateway-sources{');
-  assert.ok(gridStart > -1, 'the source grid must be styled');
-  assert.match(
-    styles.slice(gridStart, gridStart + 200),
-    /grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/,
-    'four compact cards in one row on a desktop',
-  );
-  assert.match(
-    styles,
-    /@media \(max-width:1024px\)\{\s*\.ex-gateway-sources\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/,
-    'two by two at medium widths',
-  );
-  assert.match(
-    styles,
-    /@media \(max-width:560px\)\{\s*\.ex-gateway-sources\{grid-template-columns:minmax\(0,1fr\)\}/,
-    'one column on a phone',
-  );
-  // Editorial, not a colored dashboard: the cards use borders and type only.
-  const cardStyleStart = styles.indexOf('.ex-gateway-source{');
-  const cardStyle = styles.slice(cardStyleStart, styles.indexOf('}', cardStyleStart));
-  assert.match(cardStyle, /border:1px solid var\(--line\)/);
-  assert.ok(
-    !/background:(?!transparent)/.test(cardStyle),
-    'a source card must not introduce a filled background',
-  );
 
   // -------------------------------------------------------------------
   // D. Deposit recovery remains authoritative (the production fix)
@@ -1318,16 +1253,19 @@ function verifyWalletPageDepositRecoveryWiring() {
   // shown empty while a real recovery amount exists.
   const seedMatches = [...walletPage.matchAll(/setDepositAmount\(formatGatewayUsdcRaw\(recovery\.amountRaw\)\);/g)];
   assert.equal(seedMatches.length, 2, 'both the Circle and external recovery load effects must seed the display amount');
-  assert.match(
-    depositMarkup,
-    /disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/,
+  const amountValueIndex = depositMarkup.indexOf('value={depositAmount}');
+  const amountInputEnd = depositMarkup.indexOf('/>', amountValueIndex);
+  assert.ok(amountValueIndex > -1 && amountInputEnd > amountValueIndex, 'the funding amount input must exist');
+  const amountInputMarkup = depositMarkup.slice(amountValueIndex, amountInputEnd);
+  assert.ok(
+    amountInputMarkup.includes('Boolean(depositRecovery)'),
     'the amount field stays disabled while a durable recovery exists',
   );
 
   // Idle with a live recovery says "continue", never "recovering"; an actual
   // busy resume may still say "recovering".
-  const onClickIndex = depositMarkup.indexOf('onClick={() => void handleGatewaySourceDeposit(source.domain)}');
-  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewaySourceDeposit for its own card');
+  const onClickIndex = depositMarkup.indexOf('onClick={() => void handleGatewaySourceDeposit(selectedSource.domain)}');
+  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewaySourceDeposit for the selected source');
   const buttonStart = depositMarkup.indexOf('{depositBusy', onClickIndex);
   const buttonEnd = depositMarkup.indexOf('</button>', buttonStart);
   assert.ok(buttonStart > -1 && buttonEnd > buttonStart);
@@ -1502,7 +1440,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(addMoreHandler, /setDepositStatus\(null\)/);
   assert.match(addMoreHandler, /setDepositAmount\(""\)/);
   assert.match(addMoreHandler, /setOpenSourceDomain\(sourceDomain\)/);
-  assert.match(depositMarkup, /onClick=\{\(\) => handleAddMoreGatewayUsdc\(source\.domain\)\}/);
+  assert.match(depositMarkup, /onClick=\{\(\) => handleAddMoreGatewayUsdc\(selectedSource\.domain\)\}/);
   assert.ok(
     !/confirmGatewaySourceDeposit|executeHostedChallenge|crypto\.randomUUID|backendApi\./.test(addMoreHandler),
     'Add more USDC must only reveal the empty form and never create a financial action',
@@ -1544,8 +1482,8 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_PRIMARY_NETWORK_DISPLAY=PASS');
   console.log('GATEWAY_TRANSFER_PREPARED_SUCCESS_SEMANTICS=PASS');
   console.log('GATEWAY_DESTINATION_SELECTOR=PASS');
-  console.log('GATEWAY_SOURCE_CARDS_UI=PASS');
-  console.log('GATEWAY_RESPONSIVE_SOURCE_LAYOUT=PASS');
+  console.log('GATEWAY_SOURCE_SELECTOR_UI=PASS');
+  console.log('GATEWAY_SOURCE_ROW_LAYOUT=PASS');
   console.log('GATEWAY_EXTERNAL_CHAIN_SWITCH=PASS');
   console.log('GATEWAY_WALLET_UI_CLEANUP=PASS');
   console.log('GATEWAY_WALLET_UI_REGRESSIONS=PASS');

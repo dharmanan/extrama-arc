@@ -2639,3 +2639,50 @@ img{max-width:100%}
     grid-column:1 / -1;
   }
 }
+
+
+/* Wallet compact funding + stable header polish */
+.ex-wallet-ready{
+  grid-template-columns:minmax(0,980px);
+  justify-content:start;
+  align-items:start;
+}
+.ex-wallet-ready__main{width:100%;max-width:980px}
+.ex-wallet-address__actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ex-gateway-deposit-controls{
+  display:grid;
+  grid-template-columns:minmax(180px,1.2fr) minmax(140px,.72fr) minmax(150px,.9fr) auto;
+  gap:12px;
+  align-items:end;
+}
+.ex-gateway-deposit-controls label,
+.ex-gateway-deposit__available{display:grid;gap:7px;min-width:0}
+.ex-gateway-deposit-controls label>span,
+.ex-gateway-deposit__available>span{
+  font-size:.68rem;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.ex-gateway-deposit__available strong{
+  min-height:42px;
+  display:flex;
+  align-items:center;
+  font-size:.94rem;
+  font-weight:500;
+}
+.ex-gateway-deposit__action{display:flex;align-items:flex-end;min-height:42px}
+.ex-gateway-deposit__action .ex-btn{white-space:nowrap;min-height:42px}
+.ex-wallet-gateway select:focus:not(:focus-visible){outline:0}
+.ex-wallet-gateway select:focus-visible{outline:1px solid var(--ink);outline-offset:1px}
+@media (min-width:1101px){
+  .ex-header__aside>.ex-wallet{width:232px;justify-content:center;box-sizing:border-box;white-space:nowrap}
+}
+@media (max-width:820px){
+  .ex-gateway-deposit-controls{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:560px){
+  .ex-gateway-deposit-controls{grid-template-columns:minmax(0,1fr)}
+  .ex-wallet-address{align-items:flex-start}
+  .ex-wallet-address__actions{width:100%}
+}

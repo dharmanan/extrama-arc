@@ -319,16 +319,15 @@ export default function WalletPage() {
   // falls back to the Circle Google or email sign in, never to another method.
   const [circleReauthRequired, setCircleReauthRequired] = useState(false);
 
-  // The four funding source cards: Circle wallet readiness, source wallet USDC
-  // and the approve/deposit action itself, each tracked per Gateway domain.
-  // Distinct from the transfer signature above: this is what gets USDC into the
-  // unified balance in the first place.
+  // Funding source readiness and source-wallet USDC stay tracked per Gateway
+  // domain, but the product presents one deliberate FROM selector instead of
+  // four expanding cards. Deposit/recovery semantics remain per-domain.
   const [sourceState, setSourceState] = useState<GatewaySourceStateResponse | null>(null);
   const [sourceReadState, setSourceReadState] = useState<GatewayReadState>("idle");
   const [sourceWalletStatus, setSourceWalletStatus] = useState<Record<number, SourceWalletStatus>>({});
   const [sourceWalletNotice, setSourceWalletNotice] = useState<Record<number, string>>({});
-  // Which card has its amount form open. Only one at a time: a deposit is a
-  // financial action and the product asks for one deliberate choice.
+  // Selected funding network. A durable deposit recovery overrides this value
+  // and locks the selector to the already-submitted source domain.
   const [openSourceDomain, setOpenSourceDomain] = useState<number | null>(null);
   const [depositAmount, setDepositAmount] = useState("");
   const [depositBusy, setDepositBusy] = useState(false);
@@ -1069,6 +1068,19 @@ export default function WalletPage() {
   const completedDepositAmount = depositCompleted && depositStatus
     ? formatGatewayUsdcDisplay(formatGatewayUsdcRaw(depositStatus.amountRaw), locale)
     : "";
+  const selectedSourceDomain = activeDepositDomain
+    ?? openSourceDomain
+    ?? sourceState?.sources[0]?.domain
+    ?? null;
+  const selectedSource = sourceState?.sources.find((source) => source.domain === selectedSourceDomain)
+    ?? sourceState?.sources[0]
+    ?? null;
+  const selectedSourceWalletStatus: SourceWalletStatus = selectedSource
+    ? (sourceWalletStatus[selectedSource.domain] || "idle")
+    : "idle";
+  const selectedSourceNotice = selectedSource
+    ? (sourceWalletNotice[selectedSource.domain] || "")
+    : "";
 
   function handleAddMoreGatewayUsdc(sourceDomain: number) {
     // This only returns the compact completed view to its idle form. It does
@@ -1244,9 +1256,14 @@ export default function WalletPage() {
 
               <div className="ex-wallet-address">
                 <p className="ex-wallet-address__value ex-num">{walletAddress}</p>
-                <button className="ex-btn ex-btn--ghost" type="button" onClick={copyExtremaAddress}>
-                  {copiedAddress ? t.wallet.copied : t.wallet.copyAddress}
-                </button>
+                <div className="ex-wallet-address__actions">
+                  <button className="ex-btn ex-btn--ghost" type="button" onClick={copyExtremaAddress}>
+                    {copiedAddress ? t.wallet.copied : t.wallet.copyAddress}
+                  </button>
+                  <button className="ex-btn ex-btn--ghost" type="button" onClick={handleLock}>
+                    {executionMode === "EXTERNAL_WALLET" ? t.wallet.disconnectWallet : t.wallet.disconnectSession}
+                  </button>
+                </div>
               </div>
 
               {sessionNeedsAuth ? (
@@ -1345,7 +1362,14 @@ export default function WalletPage() {
                         <span>{t.wallet.gatewayDestination}</span>
                         <select
                           value={selectedDestination ? String(selectedDestination.domain) : ""}
-                          onChange={(event) => setGatewayDestinationDomain(event.target.value)}
+                          onPointerDown={(event) => { event.currentTarget.dataset.pointerSelect = "true"; }}
+                          onChange={(event) => {
+                            setGatewayDestinationDomain(event.target.value);
+                            if (event.currentTarget.dataset.pointerSelect === "true") {
+                              delete event.currentTarget.dataset.pointerSelect;
+                              event.currentTarget.blur();
+                            }
+                          }}
                           disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
                         >
                           {gatewayDestinations.map((item) => (
@@ -1387,9 +1411,9 @@ export default function WalletPage() {
                   {gatewayFundingError && <p className="ex-entry__msg" data-tone="error">{gatewayFundingError}</p>}
                 </section>
 
-                {/* B: fund the unified balance. One compact card per funding
-                    chain, each with its own read-only state. A source wallet
-                    balance is never the Gateway unified balance above. */}
+                {/* B: fund the unified balance. The same compact FROM / AVAILABLE /
+                    AMOUNT interaction is used for Circle and external wallets. Circle
+                    alone may require a companion wallet preparation step. */}
                 <section className="ex-wallet-gateway" aria-label={t.wallet.gatewayDepositAriaLabel}>
                   <div>
                     <p className="ex-eyebrow">{t.wallet.gatewayAddTitle}</p>
@@ -1409,179 +1433,126 @@ export default function WalletPage() {
                         {t.wallet.gatewayRetry}
                       </button>
                     </div>
-                  ) : sourceReadState !== "ready" || !sourceState ? (
+                  ) : sourceReadState !== "ready" || !sourceState || !selectedSource ? (
                     <p>{t.wallet.gatewaySourceReading}</p>
                   ) : (
-                    <div className="ex-gateway-sources">
-                      {sourceState.sources.map((source) => {
-                        const walletStatus = sourceWalletStatus[source.domain] || "idle";
-                        const notice = sourceWalletNotice[source.domain] || "";
-                        const owned = activeDepositDomain === source.domain;
-                        // A deposit elsewhere locks every other card: one
-                        // deliberate financial action at a time, and never an
-                        // automatic second deposit on another chain.
-                        const lockedElsewhere =
-                          activeDepositDomain !== null && activeDepositDomain !== source.domain;
-                        const open = openSourceDomain === source.domain;
-
-                        return (
-                          <article
-                            key={source.domain}
-                            className="ex-gateway-source"
-                            data-state={
-                              owned && depositCompleted ? "completed"
-                              : owned && depositAwaitingFinality ? "pending"
-                              : walletStatus === "missing" || walletStatus === "preparing" ? "unprepared"
-                              : walletStatus === "mismatch" || walletStatus === "error" ? "error"
-                              : source.state === "error" ? "read-error"
-                              : "ready"
-                            }
+                    <>
+                      <div className="ex-gateway-deposit-controls">
+                        <label>
+                          <span>{t.wallet.gatewayFrom}</span>
+                          <select
+                            value={String(selectedSource.domain)}
+                            onPointerDown={(event) => { event.currentTarget.dataset.pointerSelect = "true"; }}
+                            onChange={(event) => {
+                              const nextDomain = Number(event.target.value);
+                              setOpenSourceDomain(nextDomain);
+                              setDepositAmount("");
+                              setDepositError("");
+                              setDepositNotice("");
+                              if (event.currentTarget.dataset.pointerSelect === "true") {
+                                delete event.currentTarget.dataset.pointerSelect;
+                                event.currentTarget.blur();
+                              }
+                            }}
+                            disabled={depositBusy || depositAwaitingFinality || Boolean(depositRecovery)}
                           >
-                            <p className="ex-gateway-source__name">{source.label}</p>
+                            {sourceState.sources.map((source) => (
+                              <option key={source.domain} value={source.domain}>{source.label}</option>
+                            ))}
+                          </select>
+                        </label>
 
-                            {source.state === "error" ? (
-                              <p className="ex-gateway-source__balance">{t.wallet.gatewaySourceUnavailable}</p>
-                            ) : source.balanceRaw !== null ? (
-                              <p className="ex-gateway-source__balance ex-num">
-                                {withGatewayAmount(
-                                  t.wallet.gatewaySourceAvailable,
-                                  formatGatewayUsdcDisplay(formatGatewayUsdcRaw(source.balanceRaw), locale),
-                                )}
-                              </p>
-                            ) : (
-                              <p className="ex-gateway-source__balance">{t.wallet.gatewaySourceReading}</p>
-                            )}
+                        <div className="ex-gateway-deposit__available">
+                          <span>{t.wallet.gatewayAvailable}</span>
+                          <strong className="ex-num">
+                            {executionMode === "CIRCLE_USER_WALLET" && selectedSourceWalletStatus === "missing"
+                              ? t.wallet.gatewayWalletNotPrepared
+                              : selectedSource.state === "error"
+                                ? t.wallet.gatewaySourceUnavailable
+                                : selectedSource.balanceRaw !== null
+                                  ? `${formatGatewayUsdcDisplay(formatGatewayUsdcRaw(selectedSource.balanceRaw), locale)} USDC`
+                                  : t.wallet.gatewaySourceReading}
+                          </strong>
+                        </div>
 
-                            {executionMode === "CIRCLE_USER_WALLET" && walletStatus === "missing" ? (
-                              <>
-                                <p className="ex-gateway-source__hint">{t.wallet.gatewayWalletNotPrepared}</p>
-                                {notice && <p className="ex-entry__msg" aria-live="polite">{notice}</p>}
-                                <button
-                                  className="ex-btn ex-btn--ink"
-                                  type="button"
-                                  onClick={() => void handlePrepareSourceWallet(source.domain)}
-                                >
-                                  {notice ? t.wallet.gatewayResumeSourceWallet : t.wallet.gatewayPrepareWallet}
-                                </button>
-                              </>
-                            ) : executionMode === "CIRCLE_USER_WALLET" && walletStatus === "preparing" ? (
-                              <p className="ex-gateway-source__hint">{t.wallet.gatewayPreparingWallet}</p>
-                            ) : executionMode === "CIRCLE_USER_WALLET" && walletStatus === "mismatch" ? (
-                              <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewaySourceWalletMismatch}</p>
-                            ) : executionMode === "CIRCLE_USER_WALLET" && walletStatus === "error" ? (
-                              <>
-                                <p className="ex-entry__msg" data-tone="error">{t.wallet.gatewaySourcePrepareUncertain}</p>
-                                <button
-                                  className="ex-btn ex-btn--ghost"
-                                  type="button"
-                                  onClick={() => void handlePrepareSourceWallet(source.domain)}
-                                >
-                                  {t.wallet.gatewayRetry}
-                                </button>
-                              </>
-                            ) : owned && depositCompleted ? (
-                              <div className="ex-gateway-deposit-complete" data-state="completed">
-                                <p>
-                                  <span aria-hidden="true">✓</span>
-                                  {withGatewayAmount(
-                                    t.wallet.gatewayDepositAddedToGateway,
-                                    completedDepositAmount,
-                                  )}
-                                </p>
-                                <button
-                                  className="ex-btn ex-btn--ghost"
-                                  type="button"
-                                  onClick={() => handleAddMoreGatewayUsdc(source.domain)}
-                                >
-                                  {t.wallet.gatewayAddMoreUsdc}
-                                </button>
-                              </div>
-                            ) : owned && depositAwaitingFinality ? (
-                              <div className="ex-gateway-finality" aria-live="polite">
-                                <ol className="ex-gateway-finality__rail">
-                                  <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
-                                  <li data-state="active">
-                                    <span className="ex-gateway-finality__pulse" aria-hidden="true" />
-                                    {t.wallet.gatewayWaitingFinality}
-                                  </li>
-                                  <li data-state="pending">{t.wallet.gatewayBalanceAvailable}</li>
-                                </ol>
-                                <p>{t.wallet.gatewayFinalityAdvice}</p>
-                                {depositStatusWarning && <small>{depositStatusWarning}</small>}
-                              </div>
-                            ) : lockedElsewhere ? (
-                              <p className="ex-gateway-source__hint">{t.wallet.gatewaySourceBusyElsewhere}</p>
-                            ) : open || owned ? (
-                              <div className="ex-gateway-source__form">
-                                <label>
-                                  <span>{t.wallet.gatewayDepositAmount}</span>
-                                  <input
-                                    inputMode="decimal"
-                                    placeholder="0.00"
-                                    value={depositAmount}
-                                    onChange={(event) => setDepositAmount(event.target.value)}
-                                    disabled={depositBusy || Boolean(depositRecovery)}
-                                  />
-                                </label>
-                                <button
-                                  className="ex-btn ex-btn--ink"
-                                  type="button"
-                                  onClick={() => void handleGatewaySourceDeposit(source.domain)}
-                                  disabled={depositBusy}
-                                >
-                                  {depositBusy
-                                    ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval
-                                      : depositPhase === "confirmApproval" ? (executionMode === "CIRCLE_USER_WALLET" ? t.wallet.gatewayConfirmApprovalCircle : t.wallet.gatewayConfirmApprovalWallet)
-                                      : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
-                                      : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
-                                      : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality
-                                      // No specific phase reported yet: if this
-                                      // click is resuming a recovery,
-                                      // "Recovering..." is the honest busy
-                                      // label; otherwise it is a fresh read.
-                                      : depositRecovery ? t.wallet.gatewayRecoveringOperation
-                                      : t.wallet.gatewayReading)
-                                    : depositRecovery
-                                      // Idle: nothing happens until the user
-                                      // explicitly clicks, so the label must say
-                                      // "continue", never "recovering" (which
-                                      // implies it is already in progress).
-                                      ? t.wallet.gatewayResumeDeposit
-                                      : t.wallet.gatewayAddToGateway}
-                                </button>
-                                {!depositRecovery && !depositBusy && (
-                                  <button
-                                    className="ex-btn ex-btn--ghost"
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenSourceDomain(null);
-                                      setDepositAmount("");
-                                      setDepositError("");
-                                    }}
-                                  >
-                                    {t.wallet.gatewayAddCancel}
-                                  </button>
-                                )}
-                              </div>
-                            ) : (
-                              <button
-                                className="ex-btn ex-btn--ink"
-                                type="button"
-                                onClick={() => {
-                                  setOpenSourceDomain(source.domain);
-                                  setDepositAmount("");
-                                  setDepositError("");
-                                  setDepositNotice("");
-                                }}
-                                disabled={source.state === "error"}
-                              >
-                                {t.wallet.gatewayAddUsdc}
-                              </button>
-                            )}
-                          </article>
-                        );
-                      })}
-                    </div>
+                        <label>
+                          <span>{t.wallet.gatewayDepositAmount}</span>
+                          <input
+                            inputMode="decimal"
+                            placeholder="0.00"
+                            value={depositAmount}
+                            onChange={(event) => setDepositAmount(event.target.value)}
+                            disabled={
+                              depositBusy || Boolean(depositRecovery) || depositAwaitingFinality ||
+                              selectedSource.state === "error" ||
+                              (executionMode === "CIRCLE_USER_WALLET" && selectedSourceWalletStatus !== "ready")
+                            }
+                          />
+                        </label>
+
+                        <div className="ex-gateway-deposit__action">
+                          {executionMode === "CIRCLE_USER_WALLET" && selectedSourceWalletStatus === "missing" ? (
+                            <button className="ex-btn ex-btn--ink" type="button" onClick={() => void handlePrepareSourceWallet(selectedSource.domain)}>
+                              {selectedSourceNotice ? t.wallet.gatewayResumeSourceWallet : t.wallet.gatewayPrepareWallet}
+                            </button>
+                          ) : executionMode === "CIRCLE_USER_WALLET" && selectedSourceWalletStatus === "preparing" ? (
+                            <button className="ex-btn ex-btn--ink" type="button" disabled>{t.wallet.gatewayPreparingWallet}</button>
+                          ) : executionMode === "CIRCLE_USER_WALLET" && selectedSourceWalletStatus === "mismatch" ? (
+                            <button className="ex-btn ex-btn--ghost" type="button" disabled>{t.wallet.gatewaySourceWalletMismatch}</button>
+                          ) : executionMode === "CIRCLE_USER_WALLET" && selectedSourceWalletStatus === "error" ? (
+                            <button className="ex-btn ex-btn--ghost" type="button" onClick={() => void handlePrepareSourceWallet(selectedSource.domain)}>
+                              {t.wallet.gatewayRetry}
+                            </button>
+                          ) : depositCompleted ? (
+                            <button className="ex-btn ex-btn--ghost" type="button" onClick={() => handleAddMoreGatewayUsdc(selectedSource.domain)}>
+                              {t.wallet.gatewayAddMoreUsdc}
+                            </button>
+                          ) : (
+                            <button
+                              className="ex-btn ex-btn--ink"
+                              type="button"
+                              onClick={() => void handleGatewaySourceDeposit(selectedSource.domain)}
+                              disabled={depositBusy || depositAwaitingFinality || selectedSource.state === "error"}
+                            >
+                              {depositBusy
+                                ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval
+                                  : depositPhase === "confirmApproval" ? (executionMode === "CIRCLE_USER_WALLET" ? t.wallet.gatewayConfirmApprovalCircle : t.wallet.gatewayConfirmApprovalWallet)
+                                  : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
+                                  : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
+                                  : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality
+                                  : depositRecovery ? t.wallet.gatewayRecoveringOperation
+                                  : t.wallet.gatewayReading)
+                                : depositRecovery
+                                  ? t.wallet.gatewayResumeDeposit
+                                  : t.wallet.gatewayAddToGateway}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {selectedSourceNotice && <p className="ex-entry__msg" aria-live="polite">{selectedSourceNotice}</p>}
+
+                      {depositCompleted && (
+                        <div className="ex-gateway-deposit-complete" data-state="completed">
+                          <p><span aria-hidden="true">✓</span>{withGatewayAmount(t.wallet.gatewayDepositAddedToGateway, completedDepositAmount)}</p>
+                        </div>
+                      )}
+
+                      {depositAwaitingFinality && (
+                        <div className="ex-gateway-finality" aria-live="polite">
+                          <ol className="ex-gateway-finality__rail">
+                            <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
+                            <li data-state="active">
+                              <span className="ex-gateway-finality__pulse" aria-hidden="true" />
+                              {t.wallet.gatewayWaitingFinality}
+                            </li>
+                            <li data-state="pending">{t.wallet.gatewayBalanceAvailable}</li>
+                          </ol>
+                          <p>{t.wallet.gatewayFinalityAdvice}</p>
+                          {depositStatusWarning && <small>{depositStatusWarning}</small>}
+                        </div>
+                      )}
+                    </>
                   )}
 
                   {!depositCompleted && depositNotice && <p className="ex-entry__msg" data-tone="ok">{depositNotice}</p>}
@@ -1632,17 +1603,6 @@ export default function WalletPage() {
               </div>
             </section>
 
-            <section className="ex-entry ex-wallet-session">
-              <h3 className="ex-entry__title">{t.wallet.sessionTitle}</h3>
-              <p className="ex-entry__note">
-                {executionMode === "EXTERNAL_WALLET"
-                  ? t.wallet.externalSessionBody
-                  : t.wallet.circleSessionBody}
-              </p>
-              <button className="ex-btn ex-btn--ghost" type="button" onClick={handleLock}>
-                {t.wallet.disconnectSession}
-              </button>
-            </section>
           </div>
         </div>
       </main>
