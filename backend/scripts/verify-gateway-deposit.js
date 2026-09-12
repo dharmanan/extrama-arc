@@ -22,7 +22,12 @@ global.fetch = async () => {
   throw new Error('live network disabled in deterministic verifier');
 };
 
-const { createGatewayDepositService } = require('../src/services/gatewayDepositService');
+const {
+  createGatewayDepositService,
+  RECOVERY_DISPOSITIONS,
+  hasSubmittedFinancialEvidence,
+  recoveryDispositionFor,
+} = require('../src/services/gatewayDepositService');
 const circleExecutionEngine = require('../src/services/circleExecutionEngine');
 const gatewayServiceForDeposit = require('../src/services/gatewayService');
 
@@ -549,12 +554,14 @@ async function verifyReconcilingFinalitySurvivesTtl() {
   const afterTtl = await service.status({ auth, actionId });
   assert.equal(afterTtl.state, 'RECONCILING');
   assert.equal(afterTtl.pending, true);
+  assert.equal(afterTtl.recoveryDisposition, RECOVERY_DISPOSITIONS.RECONCILE);
   assert.equal(database.rows.get(actionId).state, 'RECONCILING');
 
   gatewayBalances.domainRaw = AMOUNT;
   clock += 10_000;
   const completed = await service.status({ auth, actionId });
   assert.equal(completed.state, 'COMPLETED');
+  assert.equal(completed.recoveryDisposition, RECOVERY_DISPOSITIONS.CLEAR);
   assert.equal(
     database.rows.get(actionId).deposit_tx_hash,
     `0x${'bc'.repeat(32)}`,
@@ -584,10 +591,11 @@ async function verifyReconcilingFinalitySurvivesTtl() {
   });
   const expired = await service.status({ auth, actionId: staleActionId });
   assert.equal(expired.state, 'EXPIRED');
+  assert.equal(expired.recoveryDisposition, RECOVERY_DISPOSITIONS.CLEAR);
 
-  // A malformed RECONCILING transition is not submitted proof. With no
-  // bound deposit hash it follows the normal fail-closed expiry path and the
-  // status read never creates or broadcasts a transaction.
+  // RECONCILING is itself a durable submission/reconciliation phase. Even a
+  // malformed row is not silently downgraded into a clean expiry; the status
+  // read remains read-only and leaves financial investigation closed.
   const unprovenReconcilingActionId = '16161616-1616-4616-8616-161616161616';
   database.rows.set(unprovenReconcilingActionId, {
     id: unprovenReconcilingActionId, user_id: auth.userId, request_id: '17171717-1717-4717-8717-171717171717',
@@ -601,9 +609,110 @@ async function verifyReconcilingFinalitySurvivesTtl() {
     deposit_circle_transaction_id: null, state: 'RECONCILING', last_error: null,
     expires_at: new Date(clock - 1),
   });
+  gatewayBalances.domainRaw = '0';
   const unprovenExpired = await service.status({ auth, actionId: unprovenReconcilingActionId });
-  assert.equal(unprovenExpired.state, 'EXPIRED');
+  assert.equal(unprovenExpired.state, 'RECONCILING');
+  assert.equal(unprovenExpired.recoveryDisposition, RECOVERY_DISPOSITIONS.RECONCILE);
+
+  // RECONCILIATION_REQUIRED is not an empty/clean expiry state. It is reserved
+  // for an uncertain outcome, so even an old row keeps its
+  // durable action and cannot be turned into a fresh deposit by TTL handling.
+  const reconciliationRequiredActionId = '18181818-1818-4818-8818-181818181818';
+  database.rows.set(reconciliationRequiredActionId, {
+    id: reconciliationRequiredActionId, user_id: auth.userId, request_id: '19191919-1919-4919-8919-191919191919',
+    execution_mode: auth.executionMode, wallet_address: wallet.address,
+    source_domain: DOMAIN, source_chain_id: CHAIN_ID, amount_raw: AMOUNT,
+    baseline_domain_balance_raw: '0', approval_tx_hash: `0x${'de'.repeat(32)}`,
+    approval_circle_challenge_id: null, approval_circle_idempotency_key: null,
+    approval_circle_ref_id: null, approval_circle_transaction_id: null,
+    deposit_tx_hash: `0x${'ef'.repeat(32)}`, deposit_circle_challenge_id: null,
+    deposit_circle_idempotency_key: null, deposit_circle_ref_id: null,
+    deposit_circle_transaction_id: null, state: 'RECONCILIATION_REQUIRED', last_error: 'gateway_status_unknown',
+    expires_at: new Date(clock - 1),
+  });
+  const sourceCallsBeforeReconciliationRequired = { ...source.calls };
+  const reconciliationRequired = await service.status({ auth, actionId: reconciliationRequiredActionId });
+  assert.equal(reconciliationRequired.state, 'RECONCILIATION_REQUIRED');
+  assert.equal(reconciliationRequired.depositTxHash, `0x${'ef'.repeat(32)}`);
+  assert.equal(reconciliationRequired.recoveryDisposition, RECOVERY_DISPOSITIONS.RECONCILE);
+  const replay = await service.start({
+    auth, requestId: '19191919-1919-4919-8919-191919191919', sourceDomain: DOMAIN, amountRaw: AMOUNT,
+  });
+  assert.equal(replay.actionId, reconciliationRequiredActionId);
+  assert.equal(replay.state, 'RECONCILIATION_REQUIRED');
+  assert.deepEqual(
+    source.calls,
+    sourceCallsBeforeReconciliationRequired,
+    'an uncertain recovery must not rebuild, verify, or broadcast a replacement source-chain transaction',
+  );
+
+  // Terminal release is financial-evidence-aware. Empty terminal rows unlock
+  // only after the backend says CLEAR; a stored source transaction makes the
+  // otherwise identical status a read-only RECONCILE outcome instead.
+  const cleanFailedActionId = '20202020-2020-4020-8020-202020202020';
+  database.rows.set(cleanFailedActionId, {
+    id: cleanFailedActionId, user_id: auth.userId, request_id: '21212121-2121-4121-8121-212121212121',
+    execution_mode: auth.executionMode, wallet_address: wallet.address,
+    source_domain: DOMAIN, source_chain_id: CHAIN_ID, amount_raw: AMOUNT,
+    baseline_domain_balance_raw: '0', approval_tx_hash: null,
+    approval_circle_challenge_id: null, approval_circle_idempotency_key: null,
+    approval_circle_ref_id: null, approval_circle_transaction_id: null,
+    deposit_tx_hash: null, deposit_circle_challenge_id: null,
+    deposit_circle_idempotency_key: null, deposit_circle_ref_id: null,
+    deposit_circle_transaction_id: null, state: 'FAILED', last_error: 'gateway_deposit_failed',
+    expires_at: new Date(clock - 1),
+  });
+  const cleanFailed = await service.status({ auth, actionId: cleanFailedActionId });
+  assert.equal(cleanFailed.recoveryDisposition, RECOVERY_DISPOSITIONS.CLEAR);
+
+  const expiredWithEvidenceActionId = '22222222-2222-4222-8222-222222222222';
+  database.rows.set(expiredWithEvidenceActionId, {
+    id: expiredWithEvidenceActionId, user_id: auth.userId, request_id: '23232323-2323-4232-8232-232323232323',
+    execution_mode: auth.executionMode, wallet_address: wallet.address,
+    source_domain: DOMAIN, source_chain_id: CHAIN_ID, amount_raw: AMOUNT,
+    baseline_domain_balance_raw: '0', approval_tx_hash: null,
+    approval_circle_challenge_id: null, approval_circle_idempotency_key: null,
+    approval_circle_ref_id: null, approval_circle_transaction_id: null,
+    deposit_tx_hash: `0x${'f1'.repeat(32)}`, deposit_circle_challenge_id: null,
+    deposit_circle_idempotency_key: null, deposit_circle_ref_id: null,
+    deposit_circle_transaction_id: null, state: 'EXPIRED', last_error: 'gateway_deposit_expired',
+    expires_at: new Date(clock - 1),
+  });
+  const expiredWithEvidence = await service.status({ auth, actionId: expiredWithEvidenceActionId });
+  assert.equal(expiredWithEvidence.state, 'EXPIRED');
+  assert.equal(expiredWithEvidence.recoveryDisposition, RECOVERY_DISPOSITIONS.RECONCILE);
+
+  const failedWithEvidenceActionId = '24242424-2424-4424-8424-242424242424';
+  database.rows.set(failedWithEvidenceActionId, {
+    id: failedWithEvidenceActionId, user_id: auth.userId, request_id: '25252525-2525-4525-8525-252525252525',
+    execution_mode: auth.executionMode, wallet_address: wallet.address,
+    source_domain: DOMAIN, source_chain_id: CHAIN_ID, amount_raw: AMOUNT,
+    baseline_domain_balance_raw: '0', approval_tx_hash: null,
+    approval_circle_challenge_id: 'potentially-submitted-circle-challenge', approval_circle_idempotency_key: null,
+    approval_circle_ref_id: null, approval_circle_transaction_id: null,
+    deposit_tx_hash: null, deposit_circle_challenge_id: null,
+    deposit_circle_idempotency_key: null, deposit_circle_ref_id: null,
+    deposit_circle_transaction_id: null, state: 'FAILED', last_error: 'gateway_deposit_failed',
+    expires_at: new Date(clock - 1),
+  });
+  const failedWithEvidence = await service.status({ auth, actionId: failedWithEvidenceActionId });
+  assert.equal(failedWithEvidence.recoveryDisposition, RECOVERY_DISPOSITIONS.RECONCILE);
+
+  assert.equal(
+    hasSubmittedFinancialEvidence({ state: 'EXPIRED', deposit_tx_hash: null, deposit_circle_transaction_id: null }),
+    false,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'EXPIRED', deposit_tx_hash: null, deposit_circle_transaction_id: null }),
+    RECOVERY_DISPOSITIONS.CLEAR,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'FAILED', deposit_circle_challenge_id: 'challenge' }),
+    RECOVERY_DISPOSITIONS.RECONCILE,
+  );
   console.log('GATEWAY_DEPOSIT_RECONCILING_FINALITY=PASS');
+  console.log('GATEWAY_DEPOSIT_RECONCILIATION_REQUIRED_PRESERVED=PASS');
+  console.log('GATEWAY_CLEAN_TERMINAL_RECOVERY_RELEASE=PASS');
 }
 
 // ---------------------------------------------------------------------------
@@ -1010,7 +1119,10 @@ async function verifyWrongBlockchainStillFailsClosed() {
 // recovery first. Pure source-text check: no network, no component mount.
 // ---------------------------------------------------------------------------
 
-function verifyWalletPageDepositRecoveryWiring() {
+// Historical static wiring assertions for the retired four-card surface. The
+// current form is checked below; the executable state-machine checks above
+// remain shared by both surfaces.
+function verifyWalletPageDepositRecoveryWiringLegacy() {
   const walletPage = fs.readFileSync(
     path.join(__dirname, '../../app/wallet/page.tsx'),
     'utf8',
@@ -1552,6 +1664,155 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_ADD_MORE_SINGLE_CLICK=PASS');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_LIVE_NETWORK_CALLS=0');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS');
+}
+
+// ---------------------------------------------------------------------------
+// Static wiring proof for the current compact Gateway funding surface. It does
+// not mount the UI or call an RPC: the financial state-machine verification
+// above is fully in-memory, and these checks ensure its browser wiring stays
+// honest and non-mutating.
+// ---------------------------------------------------------------------------
+function verifyWalletPageDepositRecoveryWiring() {
+  const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
+  const depositApi = fs.readFileSync(path.join(__dirname, '../../app/lib/backend-api.ts'), 'utf8');
+  const styles = fs.readFileSync(path.join(__dirname, '../../app/globals.css'), 'utf8');
+  const header = fs.readFileSync(path.join(__dirname, '../../app/product-components.tsx'), 'utf8');
+  const copy = fs.readFileSync(path.join(__dirname, '../../app/i18n.tsx'), 'utf8');
+
+  const fundingStart = walletPage.indexOf(
+    '<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>',
+  );
+  const depositStart = walletPage.indexOf(
+    '<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayDepositAriaLabel}>',
+  );
+  const depositEnd = walletPage.indexOf('<div className="ex-wallet-actions">', depositStart);
+  assert.ok(fundingStart > -1 && depositStart > fundingStart && depositEnd > depositStart);
+  const fundingMarkup = walletPage.slice(fundingStart, depositStart);
+  const depositMarkup = walletPage.slice(depositStart, depositEnd);
+
+  // Gateway transfer remains destination-only: source allocation stays on the
+  // backend planner, and a prepared label still needs readyToBroadcast.
+  assert.equal([...fundingMarkup.matchAll(/<select/g)].length, 1);
+  assert.match(fundingMarkup, /t\.wallet\.gatewayDestination/);
+  assert.match(fundingMarkup, /gatewayDestinations\.map\(\(item\) => \(/);
+  assert.match(fundingMarkup, /gatewayFundingStatus\?\.readyToBroadcast === true\s*\?\s*t\.wallet\.gatewayTransferPrepared/);
+  assert.doesNotMatch(fundingMarkup, /gatewayFundingStatus && gatewayFundingStatus\.state !== "SIGNATURE_PENDING"[\s\S]{0,180}gatewayTransferPrepared/);
+  assert.match(walletPage, /confirmGatewayBurnSignature\(\s*\{ destinationDomain, valueRaw \},/);
+  assert.ok(!/startGatewayFunding\([\s\S]{0,200}sourceDomain/.test(walletPage));
+  for (const state of ['FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED']) {
+    assert.notEqual(state === 'READY_TO_BROADCAST', true, `${state} cannot claim transfer preparation`);
+  }
+
+  // One stable source form has four conceptual columns: source, selected
+  // source-wallet availability, amount and action. The options are the
+  // canonical server labels; they do not append a balance or a domain number.
+  assert.match(depositMarkup, /className="ex-gateway-deposit-form"/);
+  assert.equal([...depositMarkup.matchAll(/<select/g)].length, 1);
+  assert.match(depositMarkup, /t\.wallet\.gatewaySource/);
+  assert.match(depositMarkup, /t\.wallet\.gatewayAvailable/);
+  assert.match(depositMarkup, /t\.wallet\.gatewayAction/);
+  assert.match(depositMarkup, /sourceState\.sources\.map\(\(source\) => \(/);
+  assert.match(depositMarkup, /<option key=\{source\.domain\} value=\{source\.domain\}>\{source\.label\}<\/option>/);
+  assert.ok(!depositMarkup.includes('ex-gateway-sources'));
+  assert.ok(!depositMarkup.includes('ex-gateway-source'));
+  assert.match(depositMarkup, /selectedGatewaySource\.balanceRaw/);
+  assert.match(
+    depositMarkup,
+    /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(selectedGatewaySource\.balanceRaw\), locale\)/,
+  );
+  assert.match(depositMarkup, /selectedGatewaySource\?\.state === "error"/);
+  assert.ok(!depositMarkup.includes('transferableTotalUsdc') && !depositMarkup.includes('gateway.totalUsdc'));
+  assert.ok(!/· \{formatGatewayUsdcDisplay/.test(depositMarkup), 'source options must not display a Gateway balance');
+  assert.ok(!/Domain \$\{|domain \$\{|\{source\.domain\}<|\{item\.domain\}</.test(fundingMarkup + depositMarkup));
+
+  // The selected source is a deliberate input. Circle preparation is available
+  // only to Circle sessions; an external session reaches the normal action and
+  // never renders a preparation control.
+  assert.match(walletPage, /const \[selectedSourceDomain, setSelectedSourceDomain\] = useState\(""\);/);
+  assert.match(walletPage, /const selectedGatewaySource = sourceState\?\.sources\.find/);
+  assert.match(depositMarkup, /handlePrepareSourceWallet\(selectedGatewaySource\.domain\)/);
+  const externalActionStart = depositMarkup.indexOf('executionMode === "CIRCLE_USER_WALLET"');
+  const standardAction = depositMarkup.indexOf('handleGatewaySourceDeposit(selectedGatewaySource.domain)');
+  assert.ok(externalActionStart > -1 && standardAction > externalActionStart);
+
+  // The durable recovery is authoritative before an editable amount is read.
+  const handlerStart = walletPage.indexOf('async function handleGatewaySourceDeposit');
+  const handlerEnd = walletPage.indexOf('\n  async function ensureArcTestnet()', handlerStart);
+  assert.ok(handlerStart > -1 && handlerEnd > handlerStart);
+  const handler = walletPage.slice(handlerStart, handlerEnd);
+  const recoveryStart = handler.indexOf('if (depositRecovery) {');
+  const sourceCheck = handler.indexOf('if (depositRecovery.sourceDomain !== selectedDomain) {');
+  const configuredCheck = handler.indexOf('if (!isConfiguredSourceDomain(depositRecovery.sourceDomain)) {');
+  const recoveryAmount = handler.indexOf('amountRaw = depositRecovery.amountRaw;');
+  const noRecovery = handler.indexOf('} else {', recoveryStart);
+  const parsedAmount = handler.indexOf('parseGatewayUsdcRaw(depositAmount)');
+  assert.ok(recoveryStart > -1 && sourceCheck > recoveryStart && configuredCheck > sourceCheck &&
+    recoveryAmount > configuredCheck && noRecovery > recoveryAmount && parsedAmount > noRecovery);
+  assert.match(handler, /confirmGatewaySourceDeposit\(\s*\{ sourceDomain, amountRaw \},/);
+  assert.ok(!handler.includes('crypto.randomUUID()'));
+
+  // Recovery release is a backend financial-evidence decision, never a
+  // browser state-name/sessionStorage inference. A CLEAR result releases a
+  // completed action or a terminal action the service proved had no submitted
+  // evidence. RECONCILE preserves the same action and source lock.
+  assert.match(depositApi, /recoveryDisposition: "CLEAR" \| "RESUME" \| "RECONCILE"/);
+  const recoveryReviewStart = walletPage.indexOf('function needsGatewayDepositRecoveryReview');
+  const recoveryReviewEnd = walletPage.indexOf('\nfunction isSubmittedGatewayDepositRecovery', recoveryReviewStart);
+  assert.ok(recoveryReviewStart > -1 && recoveryReviewEnd > recoveryReviewStart);
+  const recoveryReview = walletPage.slice(recoveryReviewStart, recoveryReviewEnd);
+  assert.match(recoveryReview, /return action\.recoveryDisposition === "RECONCILE"/);
+  const finalityStart = walletPage.indexOf('async function readStatus()');
+  const finalityEnd = walletPage.indexOf('\n  useEffect(() => {', finalityStart);
+  assert.ok(finalityStart > -1 && finalityEnd > finalityStart);
+  const finality = walletPage.slice(finalityStart, finalityEnd);
+  assert.match(finality, /backendApi\.wallet\.gatewayDeposit\(recovery\.actionId\)/);
+  assert.match(finality, /current\.recoveryDisposition === "CLEAR"[\s\S]{0,700}clearTerminalRecovery\(\)/);
+  assert.match(finality, /current\.state === "RECONCILING"[\s\S]{0,240}window\.setTimeout\(readStatus, 10_000\)/);
+  assert.match(finality, /needsGatewayDepositRecoveryReview\(current\)[\s\S]{0,700}window\.setTimeout\(readStatus, 10_000\)/);
+  assert.doesNotMatch(finality, /current\.state === "EXPIRED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
+  assert.doesNotMatch(finality, /current\.state === "FAILED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
+  assert.doesNotMatch(finality, /current\.state === "RECONCILIATION_REQUIRED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
+  assert.ok(!finality.includes('confirmGatewaySourceDeposit') && !finality.includes('executeHostedChallenge'));
+  assert.match(handler, /function clearTerminalBrowserRecovery\(\)/);
+  assert.match(handler, /result\.recoveryDisposition === "CLEAR"[\s\S]{0,300}clearTerminalBrowserRecovery\(\)/);
+  assert.match(handler, /needsGatewayDepositRecoveryReview\(result\)[\s\S]{0,220}restoreBrowserRecovery\(\)/);
+  assert.doesNotMatch(handler, /gateway_deposit_expired[\s\S]{0,300}clearTerminalBrowserRecovery\(\)/);
+  assert.ok(!handler.includes('deleteGatewayDeposit') && !handler.includes('crypto.randomUUID()'));
+  assert.match(handler, /else if \(result\.state === "RECONCILING"\) \{\s+restoreBrowserRecovery\(\)/);
+  assert.match(depositMarkup, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\) \|\| depositAwaitingFinality\}/);
+  assert.match(depositMarkup, /onClick=\{\(\) => void handleGatewaySourceDeposit\(selectedGatewaySource\.domain\)\}/);
+  assert.ok(!walletPage.includes('Status: ${result.state}') && !walletPage.includes('Durum: ${result.state}'));
+
+  // Pointer selection explicitly clears focus after the native choice closes,
+  // while keyboard focus keeps the shared focus-visible outline.
+  assert.match(depositMarkup, /onPointerUp=\{clearPointerSelectFocus\}/);
+  assert.match(walletPage, /const select = event\.currentTarget;\s+window\.requestAnimationFrame\(\(\) => select\.blur\(\)\)/);
+  assert.match(walletPage, /event\.pointerType !== "mouse" && event\.pointerType !== "touch" && event\.pointerType !== "pen"/);
+  assert.match(styles, /:focus-visible\{outline:2px solid var\(--ember\)/);
+
+  // Account controls no longer occupy a detached panel. The address owns the
+  // end/disconnect action, and the global account footprint is stable before
+  // its asynchronous balance becomes available.
+  assert.match(walletPage, /className="ex-wallet-address__actions"/);
+  assert.match(walletPage, /executionMode === "CIRCLE_USER_WALLET" \? t\.wallet\.endSession : t\.wallet\.disconnectWallet/);
+  assert.ok(!walletPage.includes('className="ex-entry ex-wallet-session"'));
+  assert.match(header, /className="ex-header__account"/);
+  assert.match(styles, /\.ex-header__account\{display:flex;justify-content:flex-end;inline-size:258px;min-width:0\}/);
+
+  assert.match(copy, /gatewaySource: "From"/);
+  assert.match(copy, /gatewaySource: "Kaynak"/);
+  assert.match(copy, /endSession: "End session"/);
+  assert.match(copy, /disconnectWallet: "Disconnect wallet"/);
+  assert.ok(!walletPage.includes('submitGatewayFunding'));
+
+  console.log('GATEWAY_SOURCE_FORM_UI=PASS');
+  console.log('GATEWAY_SELECTED_SOURCE_BALANCE_UI=PASS');
+  console.log('GATEWAY_UNCERTAIN_RECOVERY_FAILS_CLOSED=PASS');
+  console.log('GATEWAY_POINTER_FOCUS=PASS');
+  console.log('GATEWAY_HEADER_ACCOUNT_FOOTPRINT=PASS');
+  console.log('GATEWAY_SESSION_CONTROLS=PASS');
+  console.log('GATEWAY_WALLET_UI=PASS');
+  console.log('WALLET_PAGE_DEPOSIT_RECOVERY_LIVE_NETWORK_CALLS=0');
 }
 
 function verifyPoolRefreshWiring() {

@@ -85,34 +85,36 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
             </button>
           </div>
 
-          {connected && address ? (
-            <Link href="/wallet" className="ex-wallet">
-              <span className="ex-wallet__dot" aria-hidden="true" />
-              <span className="ex-num">{shortAddress(address)}</span>
-              {onchainUsdc !== null && (
-                <span className="ex-num ex-wallet__balance">
-                  · {formatHeaderUsdc(onchainUsdc, locale)} USDC
+          <div className="ex-header__account">
+            {connected && address ? (
+              <Link href="/wallet" className="ex-wallet">
+                <span className="ex-wallet__dot" aria-hidden="true" />
+                <span className="ex-num">{shortAddress(address)}</span>
+                {onchainUsdc !== null && (
+                  <span className="ex-num ex-wallet__balance">
+                    · {formatHeaderUsdc(onchainUsdc, locale)} USDC
+                  </span>
+                )}
+              </Link>
+            ) : wagmiConnected && wagmiAddress ? (
+              <Link href="/wallet" className="ex-wallet">
+                <span className="ex-wallet__long">
+                  {shortAddress(wagmiAddress)}
+                  {chain?.name ? ` · ${chain.name}` : ""}
                 </span>
-              )}
-            </Link>
-          ) : wagmiConnected && wagmiAddress ? (
-            <Link href="/wallet" className="ex-wallet">
-              <span className="ex-wallet__long">
-                {shortAddress(wagmiAddress)}
-                {chain?.name ? ` · ${chain.name}` : ""}
-              </span>
-              <span className="ex-wallet__short">{shortAddress(wagmiAddress)}</span>
-            </Link>
-          ) : (
-            <Link href="/wallet" className="ex-wallet">
-              <span className="ex-wallet__long">
-                {locale === "tr" ? "Devam et" : "Continue"}
-              </span>
-              <span className="ex-wallet__short">
-                {locale === "tr" ? "Devam" : "Continue"}
-              </span>
-            </Link>
-          )}
+                <span className="ex-wallet__short">{shortAddress(wagmiAddress)}</span>
+              </Link>
+            ) : (
+              <Link href="/wallet" className="ex-wallet">
+                <span className="ex-wallet__long">
+                  {locale === "tr" ? "Devam et" : "Continue"}
+                </span>
+                <span className="ex-wallet__short">
+                  {locale === "tr" ? "Devam" : "Continue"}
+                </span>
+              </Link>
+            )}
+          </div>
         </div>
 
         <button type="button" className="ex-menu-toggle" aria-expanded={menuOpen} aria-controls="mobile-product-menu" aria-label={menuOpen ? t.closeNavigation : t.openNavigation} onClick={() => setMenuOpen((open) => !open)}>

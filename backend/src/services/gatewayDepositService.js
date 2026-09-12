@@ -45,6 +45,48 @@ function assertHumanSession(auth) {
   }
 }
 
+const RECOVERY_DISPOSITIONS = Object.freeze({
+  CLEAR: 'CLEAR',
+  RESUME: 'RESUME',
+  RECONCILE: 'RECONCILE',
+});
+
+const SUBMITTED_FINANCIAL_STATES = new Set([
+  'APPROVAL_PENDING',
+  'APPROVAL_VERIFIED',
+  'DEPOSIT_PENDING',
+  'DEPOSIT_VERIFIED',
+  'RECONCILING',
+  'RECONCILIATION_REQUIRED',
+]);
+
+function hasDurableValue(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+// This is the sole authority for recovery-release safety. A persisted Circle
+// challenge is treated as uncertain rather than clean: the browser may have
+// shown it to the user before a response was lost, and only the durable row
+// can say whether Circle subsequently observed a transaction. Idempotency and
+// ref identifiers alone are not financial submission evidence.
+function hasSubmittedFinancialEvidence(row) {
+  return SUBMITTED_FINANCIAL_STATES.has(row.state) || [
+    row.approval_tx_hash,
+    row.deposit_tx_hash,
+    row.approval_circle_challenge_id,
+    row.deposit_circle_challenge_id,
+    row.approval_circle_transaction_id,
+    row.deposit_circle_transaction_id,
+  ].some(hasDurableValue);
+}
+
+function recoveryDispositionFor(row) {
+  if (row.state === 'COMPLETED') return RECOVERY_DISPOSITIONS.CLEAR;
+  if (hasSubmittedFinancialEvidence(row)) return RECOVERY_DISPOSITIONS.RECONCILE;
+  if (row.state === 'FAILED' || row.state === 'EXPIRED') return RECOVERY_DISPOSITIONS.CLEAR;
+  return RECOVERY_DISPOSITIONS.RESUME;
+}
+
 function publicAction(row, options = {}) {
   return {
     actionId: row.id,
@@ -54,6 +96,9 @@ function publicAction(row, options = {}) {
     sourceChainId: Number(row.source_chain_id),
     amountRaw: row.amount_raw,
     state: row.state,
+    // The browser must use this backend-derived disposition instead of trying
+    // to infer financial certainty from a terminal state name or tab storage.
+    recoveryDisposition: recoveryDispositionFor(row),
     approvalTxHash: row.approval_tx_hash || null,
     approvalChallengeId: row.approval_circle_challenge_id || null,
     depositTxHash: row.deposit_tx_hash || null,
@@ -98,10 +143,6 @@ function createGatewayDepositService({
 } = {}) {
   function isExpired(row) {
     return new Date(row.expires_at).getTime() <= now();
-  }
-
-  function hasBoundDepositTransaction(row) {
-    return typeof row.deposit_tx_hash === 'string' && ethers.isHexString(row.deposit_tx_hash, 32);
   }
 
   function sourceConfigFor(sourceDomain) {
@@ -205,23 +246,32 @@ function createGatewayDepositService({
   }
 
   async function markExpired(row) {
-    // The TTL protects unsubmitted approvals/challenges. A RECONCILING row is
-    // exempt only once a canonical source-chain deposit transaction hash has
-    // been durably bound; an accidental or malformed state transition must
-    // still fail closed instead of becoming immortal.
-    const submittedReconciliation =
-      row.state === 'RECONCILING' && hasBoundDepositTransaction(row);
-    if (isExpired(row) && !['COMPLETED', 'FAILED'].includes(row.state) && !submittedReconciliation) {
+    // The TTL retires only actions with no durable/potential financial
+    // submission evidence. A Circle challenge, transaction id or tx hash may
+    // describe an already-approved operation even when its final receipt is
+    // not available yet; those rows remain available for same-action,
+    // read-only reconciliation. In particular, RECONCILIATION_REQUIRED never
+    // becomes a clean EXPIRED outcome merely because time elapsed.
+    if (
+      isExpired(row) &&
+      !['COMPLETED', 'FAILED', 'RECONCILIATION_REQUIRED'].includes(row.state) &&
+      !hasSubmittedFinancialEvidence(row)
+    ) {
       const result = await database.query(
         `UPDATE gateway_deposit_actions
             SET state = 'EXPIRED', updated_at = NOW()
           WHERE id = $1
-            AND state NOT IN ('COMPLETED', 'FAILED')
-            AND (
-              state <> 'RECONCILING'
-              OR deposit_tx_hash IS NULL
-              OR deposit_tx_hash !~ '^0x[0-9a-fA-F]{64}$'
+            AND state NOT IN (
+              'COMPLETED', 'FAILED', 'APPROVAL_PENDING', 'APPROVAL_VERIFIED',
+              'DEPOSIT_PENDING', 'DEPOSIT_VERIFIED', 'RECONCILING',
+              'RECONCILIATION_REQUIRED'
             )
+            AND approval_tx_hash IS NULL
+            AND deposit_tx_hash IS NULL
+            AND approval_circle_challenge_id IS NULL
+            AND deposit_circle_challenge_id IS NULL
+            AND approval_circle_transaction_id IS NULL
+            AND deposit_circle_transaction_id IS NULL
           RETURNING *`,
         [row.id],
       );
@@ -530,7 +580,7 @@ function createGatewayDepositService({
       throw new Error('gateway_deposit_request_id_conflict');
     }
     row = await markExpired(row);
-    if (row.state === 'EXPIRED') throw new Error('gateway_deposit_expired');
+    if (row.state === 'EXPIRED') return publicAction(row);
     if (row.state === 'STARTED') row = await readBaseline(row);
     if (['COMPLETED', 'FAILED', 'RECONCILIATION_REQUIRED', 'RECONCILING'].includes(row.state)) {
       return publicAction(row, { pending: row.state === 'RECONCILING' });
@@ -547,7 +597,7 @@ function createGatewayDepositService({
   async function verifyApproval({ auth, actionId, userToken = null, txHash = null }, dependencies = {}) {
     assertHumanSession(auth);
     let row = await markExpired(await findById(auth, actionId));
-    if (row.state === 'EXPIRED') throw new Error('gateway_deposit_expired');
+    if (row.state === 'EXPIRED') return publicAction(row);
 
     if (auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
       if (typeof userToken !== 'string' || userToken.length < 16) throw new Error('circle_request_invalid');
@@ -568,7 +618,7 @@ function createGatewayDepositService({
   async function verifyDeposit({ auth, actionId, userToken = null, txHash = null }, dependencies = {}) {
     assertHumanSession(auth);
     let row = await markExpired(await findById(auth, actionId));
-    if (row.state === 'EXPIRED') throw new Error('gateway_deposit_expired');
+    if (row.state === 'EXPIRED') return publicAction(row);
 
     if (auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
       if (typeof userToken !== 'string' || userToken.length < 16) throw new Error('circle_request_invalid');
@@ -599,7 +649,10 @@ const gatewayDepositService = createGatewayDepositService();
 
 module.exports = {
   DEPOSIT_TTL_MS,
+  RECOVERY_DISPOSITIONS,
   SOURCE_CHAINS,
+  hasSubmittedFinancialEvidence,
+  recoveryDispositionFor,
   createGatewayDepositService,
   ...gatewayDepositService,
 };

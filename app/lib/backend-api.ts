@@ -704,6 +704,9 @@ export type GatewayDepositResponse = {
   sourceChainId: number;
   amountRaw: string;
   state: "STARTED" | "BASELINE_READ" | "APPROVAL_REQUIRED" | "APPROVAL_CHALLENGE" | "APPROVAL_PENDING" | "APPROVAL_VERIFIED" | "DEPOSIT_REQUIRED" | "DEPOSIT_CHALLENGE" | "DEPOSIT_PENDING" | "DEPOSIT_VERIFIED" | "RECONCILING" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "EXPIRED";
+  // Authoritative backend recovery classification. The browser must not infer
+  // release safety from state strings or sessionStorage contents.
+  recoveryDisposition: "CLEAR" | "RESUME" | "RECONCILE";
   approvalTxHash: string | null;
   approvalChallengeId: string | null;
   depositTxHash: string | null;

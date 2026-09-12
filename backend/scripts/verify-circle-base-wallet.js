@@ -444,7 +444,7 @@ function verifyWalletPageWiring() {
   assert.match(walletPage, /confirmGatewaySourceDeposit/);
   assert.match(walletPage, /confirmGatewayBurnSignature/);
   const externalDepositStart = walletPage.indexOf('async function handleGatewaySourceDeposit');
-  const externalDepositEnd = walletPage.indexOf('\n  // A backend status is authoritative', externalDepositStart);
+  const externalDepositEnd = walletPage.indexOf('\n  async function ensureArcTestnet()', externalDepositStart);
   assert.ok(externalDepositStart > -1 && externalDepositEnd > externalDepositStart);
   const externalDeposit = walletPage.slice(externalDepositStart, externalDepositEnd);
   assert.ok(
