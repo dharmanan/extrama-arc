@@ -23,6 +23,7 @@ const crypto = require('crypto');
 const { ethers } = require('ethers');
 const db = require('../db');
 const gatewayService = require('./gatewayService');
+const gatewayNetworks = require('./gatewayNetworks');
 const gatewaySourceChainService = require('./gatewaySourceChainService');
 const circleUserWalletService = require('./circleUserWalletService');
 const circleExecutionEngine = require('./circleExecutionEngine');
@@ -111,6 +112,83 @@ function recoveryDispositionFor(row) {
   // A new state is not evidence of a clean terminal outcome. Keep the action
   // closed until its semantics are explicitly classified.
   return RECOVERY_DISPOSITIONS.RECONCILE;
+}
+
+const ACTIVITY_PHASES = Object.freeze({
+  APPROVAL_PREPARING: 'APPROVAL_PREPARING',
+  APPROVAL_REQUIRED: 'APPROVAL_REQUIRED',
+  APPROVAL_SUBMITTED: 'APPROVAL_SUBMITTED',
+  DEPOSIT_PREPARING: 'DEPOSIT_PREPARING',
+  DEPOSIT_CONFIRMATION_REQUIRED: 'DEPOSIT_CONFIRMATION_REQUIRED',
+  DEPOSIT_SUBMITTED: 'DEPOSIT_SUBMITTED',
+  GATEWAY_FINALITY: 'GATEWAY_FINALITY',
+  COMPLETED: 'COMPLETED',
+  NEEDS_REVIEW: 'NEEDS_REVIEW',
+  FAILED: 'FAILED',
+  EXPIRED: 'EXPIRED',
+});
+
+function activityStatusFor(row) {
+  const disposition = recoveryDispositionFor(row);
+  if (disposition === RECOVERY_DISPOSITIONS.RECONCILE && ['FAILED', 'EXPIRED'].includes(row.state)) {
+    return { stage: 'REVIEW', phase: ACTIVITY_PHASES.NEEDS_REVIEW, actionRequired: true };
+  }
+
+  switch (row.state) {
+    case 'STARTED':
+    case 'BASELINE_READ':
+      return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_PREPARING, actionRequired: false };
+    case 'APPROVAL_REQUIRED':
+      return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_REQUIRED, actionRequired: true };
+    case 'APPROVAL_CHALLENGE':
+      return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_REQUIRED, actionRequired: true };
+    case 'APPROVAL_PENDING':
+      return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_SUBMITTED, actionRequired: false };
+    case 'APPROVAL_VERIFIED':
+    case 'DEPOSIT_REQUIRED':
+      return { stage: 'DEPOSIT', phase: ACTIVITY_PHASES.DEPOSIT_PREPARING, actionRequired: false };
+    case 'DEPOSIT_CHALLENGE':
+      return { stage: 'DEPOSIT', phase: ACTIVITY_PHASES.DEPOSIT_CONFIRMATION_REQUIRED, actionRequired: true };
+    case 'DEPOSIT_PENDING':
+    case 'DEPOSIT_VERIFIED':
+      return { stage: 'DEPOSIT', phase: ACTIVITY_PHASES.DEPOSIT_SUBMITTED, actionRequired: false };
+    case 'RECONCILING':
+      return { stage: 'FINALITY', phase: ACTIVITY_PHASES.GATEWAY_FINALITY, actionRequired: false };
+    case 'COMPLETED':
+      return { stage: 'COMPLETED', phase: ACTIVITY_PHASES.COMPLETED, actionRequired: false };
+    case 'RECONCILIATION_REQUIRED':
+      return { stage: 'REVIEW', phase: ACTIVITY_PHASES.NEEDS_REVIEW, actionRequired: true };
+    case 'FAILED':
+      return { stage: 'FAILED', phase: ACTIVITY_PHASES.FAILED, actionRequired: true };
+    case 'EXPIRED':
+      return { stage: 'EXPIRED', phase: ACTIVITY_PHASES.EXPIRED, actionRequired: true };
+    default:
+      return { stage: 'REVIEW', phase: ACTIVITY_PHASES.NEEDS_REVIEW, actionRequired: true };
+  }
+}
+
+function activityItemFor(row) {
+  const source = gatewayNetworks.depositSourceForDomain(Number(row.source_domain));
+  const status = activityStatusFor(row);
+  const disposition = recoveryDispositionFor(row);
+  return {
+    actionId: row.id,
+    sourceDomain: Number(row.source_domain),
+    sourceChainId: Number(row.source_chain_id),
+    sourceLabel: source ? source.label : 'Unknown source network',
+    amountRaw: row.amount_raw,
+    state: row.state,
+    recoveryDisposition: disposition,
+    approvalTxHash: row.approval_tx_hash || null,
+    depositTxHash: row.deposit_tx_hash || null,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at || row.created_at).toISOString(),
+    stage: status.stage,
+    phase: status.phase,
+    actionRequired: status.actionRequired || disposition === RECOVERY_DISPOSITIONS.RECONCILE,
+    interactive: disposition === RECOVERY_DISPOSITIONS.RESUME,
+    terminal: disposition === RECOVERY_DISPOSITIONS.CLEAR,
+  };
 }
 
 function publicAction(row, options = {}) {
@@ -589,17 +667,27 @@ function createGatewayDepositService({
 
   // --- Shared reconciliation -------------------------------------------
 
-  async function reconcile(row) {
+  async function reconcile(row, balanceSnapshot = null) {
     if (row.state !== 'RECONCILING') return row;
-    let balance;
+    let balance = balanceSnapshot;
+    if (!balance) {
+      try {
+        balance = await gateway.readUnifiedUsdcBalance(row.wallet_address);
+      } catch {
+        return row;
+      }
+    }
+    const match = Array.isArray(balance?.balances)
+      ? balance.balances.find((item) => item.domain === Number(row.source_domain))
+      : null;
+    let currentRaw;
+    let targetRaw;
     try {
-      balance = await gateway.readUnifiedUsdcBalance(row.wallet_address);
+      currentRaw = match ? BigInt(match.balanceRaw) : 0n;
+      targetRaw = BigInt(row.baseline_domain_balance_raw || '0') + BigInt(row.amount_raw);
     } catch {
       return row;
     }
-    const match = balance.balances.find((item) => item.domain === Number(row.source_domain));
-    const currentRaw = match ? BigInt(match.balanceRaw) : 0n;
-    const targetRaw = BigInt(row.baseline_domain_balance_raw || '0') + BigInt(row.amount_raw);
     if (currentRaw < targetRaw) return row;
     const result = await database.query(
       `UPDATE gateway_deposit_actions
@@ -698,7 +786,68 @@ function createGatewayDepositService({
     return publicAction(row, { pending: row.state === 'RECONCILING' });
   }
 
-  return { start, verifyApproval, verifyDeposit, status };
+  async function activity({ auth }) {
+    assertHumanSession(auth);
+    const result = await database.query(
+      `/* gateway_deposit_activity */
+       WITH scoped AS (
+         SELECT *
+         FROM gateway_deposit_actions
+         WHERE user_id = $1 AND execution_mode = $2 AND lower(wallet_address) = lower($3)
+       ), classified AS (
+         SELECT scoped.*,
+           CASE
+             WHEN state = 'COMPLETED'
+               OR (
+                 state IN ('FAILED', 'EXPIRED')
+                 AND COALESCE(BTRIM(approval_tx_hash), '') = ''
+                 AND COALESCE(BTRIM(deposit_tx_hash), '') = ''
+                 AND COALESCE(BTRIM(approval_circle_challenge_id), '') = ''
+                 AND COALESCE(BTRIM(deposit_circle_challenge_id), '') = ''
+                 AND COALESCE(BTRIM(approval_circle_transaction_id), '') = ''
+                 AND COALESCE(BTRIM(deposit_circle_transaction_id), '') = ''
+               )
+             THEN TRUE ELSE FALSE
+           END AS clear_terminal
+         FROM scoped
+       ), ranked AS (
+         SELECT classified.*,
+           ROW_NUMBER() OVER (PARTITION BY clear_terminal ORDER BY created_at DESC) AS clear_rank
+         FROM classified
+       )
+       SELECT * FROM ranked
+       WHERE clear_terminal = FALSE OR clear_rank <= 10
+       ORDER BY created_at DESC`,
+      [auth.userId, auth.executionMode, auth.walletAddress],
+    );
+
+    let rows = result.rows;
+    const reconcilingRows = rows.filter((row) => row.state === 'RECONCILING');
+    let readState = 'ready';
+    if (reconcilingRows.length) {
+      try {
+        const balance = await gateway.readUnifiedUsdcBalance(auth.walletAddress);
+        rows = await Promise.all(rows.map((row) => reconcile(row, balance)));
+      } catch {
+        readState = 'delayed';
+      }
+    }
+
+    const mappedActivities = rows.map(activityItemFor);
+    const activities = [
+      ...mappedActivities.filter((item) => !item.terminal),
+      ...mappedActivities.filter((item) => item.terminal)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, 10),
+    ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return {
+      activities,
+      readState,
+      hasBackgroundActivity: activities.some((item) => !item.terminal && !item.interactive),
+    };
+  }
+
+  return { start, verifyApproval, verifyDeposit, status, activity };
 }
 
 const gatewayDepositService = createGatewayDepositService();
@@ -707,8 +856,11 @@ module.exports = {
   DEPOSIT_TTL_MS,
   RECOVERY_DISPOSITIONS,
   ACTIVE_RESUMABLE_STATES,
+  ACTIVITY_PHASES,
   SOURCE_CHAINS,
   hasSubmittedFinancialEvidence,
+  activityStatusFor,
+  activityItemFor,
   recoveryDispositionFor,
   createGatewayDepositService,
   ...gatewayDepositService,

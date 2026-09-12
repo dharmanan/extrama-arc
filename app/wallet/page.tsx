@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type MutableRefObject, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type PointerEvent } from "react";
 import Link from "next/link";
 import { ProductHeader } from "../product-components";
 import {
@@ -18,6 +18,7 @@ import {
   backendApi,
   isAuthSessionError,
   type GatewayDepositResponse,
+  type GatewayDepositActivityItem,
   type GatewayFundingResponse,
   type GatewayNetwork,
   type GatewaySourceStateResponse,
@@ -33,8 +34,6 @@ import {
   readCircleSourceWalletRecovery,
   storeCircleSourceWalletRecovery,
   clearCircleSourceWalletRecovery,
-  storeCircleGatewayDepositRecovery,
-  storeExternalGatewayDepositRecovery,
   clearCircleGatewayDepositRecovery,
   clearExternalGatewayDepositRecovery,
   type CircleGatewayFundingRecovery,
@@ -88,16 +87,6 @@ function needsGatewayDepositRecoveryReview(action: GatewayDepositResponse) {
   // dedicated finality rail below; every other RECONCILE disposition stays in
   // the locked, status-only review state.
   return action.recoveryDisposition === "RECONCILE" && action.state !== "RECONCILING";
-}
-
-function isSubmittedGatewayDepositRecovery(
-  recovery: CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery | null,
-) {
-  if (!recovery) return false;
-  if ("challengeId" in recovery) {
-    return recovery.phase === "DEPOSIT_PENDING" || recovery.phase === "RECONCILING";
-  }
-  return recovery.phase === "RECONCILING";
 }
 
 const WALLET_MARKET_ASSETS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -340,10 +329,55 @@ export default function WalletPage() {
   const [depositError, setDepositError] = useState("");
   const [depositNotice, setDepositNotice] = useState("");
   const [depositStatus, setDepositStatus] = useState<GatewayDepositResponse | null>(null);
-  const [depositStatusWarning, setDepositStatusWarning] = useState("");
   const [depositRecovery, setDepositRecovery] = useState<
     CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery | null
   >(null);
+  const [activityItems, setActivityItems] = useState<GatewayDepositActivityItem[]>([]);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityReadState, setActivityReadState] = useState<"idle" | "ready" | "delayed">("idle");
+  const [activityStatusWarning, setActivityStatusWarning] = useState("");
+  const activityRequestInFlight = useRef(false);
+  const activityRecoveryRef = useRef<CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery | null>(null);
+  activityRecoveryRef.current = depositRecovery;
+
+  const clearInteractiveDepositRecovery = useCallback(() => {
+    if (executionMode === "CIRCLE_USER_WALLET") clearCircleGatewayDepositRecovery();
+    else if (executionMode === "EXTERNAL_WALLET") clearExternalGatewayDepositRecovery();
+    setDepositRecovery(null);
+    setDepositAmount("");
+    setDepositStatus(null);
+    setDepositPhase("");
+  }, [executionMode]);
+
+  const refreshActivity = useCallback(async () => {
+    if (walletStatus !== "ready" || !walletAddress || !executionMode) {
+      setActivityItems([]);
+      setActivityReadState("idle");
+      setActivityStatusWarning("");
+      return;
+    }
+    if (activityRequestInFlight.current) return;
+    activityRequestInFlight.current = true;
+    try {
+      const result = await backendApi.wallet.gatewayDepositActivity();
+      setActivityItems(result.activities);
+      setActivityReadState(result.readState);
+      setActivityStatusWarning(result.readState === "delayed" ? t.wallet.gatewayFinalityStatusDelayed : "");
+      const recovery = activityRecoveryRef.current;
+      const matching = recovery && result.activities.find((item) => item.actionId === recovery.actionId);
+      if (matching && (matching.state === "RECONCILING" || matching.terminal)) {
+        // Once the server has moved a submitted action into background Activity
+        // (or has authoritatively completed/cleared it), release only the local
+        // interactive lock. The durable backend row is never deleted here.
+        clearInteractiveDepositRecovery();
+      }
+    } catch {
+      setActivityReadState("delayed");
+      setActivityStatusWarning(t.wallet.gatewayFinalityStatusDelayed);
+    } finally {
+      activityRequestInFlight.current = false;
+    }
+  }, [clearInteractiveDepositRecovery, executionMode, t.wallet, walletAddress, walletStatus]);
 
   useEffect(() => {
     if (isConnected && connectedAddress) {
@@ -872,6 +906,12 @@ export default function WalletPage() {
     }
     const recovery = readCircleGatewayDepositRecovery();
     if (!recovery) return;
+    if (recovery.phase === "RECONCILING") {
+      clearCircleGatewayDepositRecovery();
+      setDepositRecovery(null);
+      setDepositAmount("");
+      return;
+    }
     setDepositRecovery(recovery);
     setSelectedSourceDomain(String(recovery.sourceDomain));
     // The durable recovery amount is authoritative; seed the (disabled)
@@ -881,119 +921,43 @@ export default function WalletPage() {
     setDepositAmount(formatGatewayUsdcRaw(recovery.amountRaw));
   }, [executionMode]);
 
-  // A submitted Gateway deposit is reconciled with the same durable action.
-  // This effect is status-only: it never creates an intent, requests a wallet
-  // transaction, verifies a challenge, or opens Circle's hosted UI.
-  useEffect(() => {
-    if (!depositRecovery) return;
-    const recovery: CircleGatewayDepositRecovery | ExternalGatewayDepositRecovery = depositRecovery;
-
-    let cancelled = false;
-    let timer: number | undefined;
-    let reading = false;
-
-    function persistReconcilingRecovery() {
-      if (recovery.phase === "RECONCILING") return;
-      if ("challengeId" in recovery) {
-        const next = { ...recovery, phase: "RECONCILING" as const };
-        storeCircleGatewayDepositRecovery(next);
-        setDepositRecovery(next);
-      } else {
-        const next = { ...recovery, phase: "RECONCILING" as const };
-        storeExternalGatewayDepositRecovery(next);
-        setDepositRecovery(next);
-      }
-    }
-
-    function clearTerminalRecovery() {
-      if ("challengeId" in recovery) clearCircleGatewayDepositRecovery();
-      else clearExternalGatewayDepositRecovery();
-      setDepositRecovery(null);
-      setDepositAmount("");
-    }
-
-    async function readStatus() {
-      if (reading || cancelled) return;
-      reading = true;
-      try {
-        const current = await backendApi.wallet.gatewayDeposit(recovery.actionId);
-        if (cancelled) return;
-        setDepositStatus(current);
-        setDepositStatusWarning("");
-
-        if (current.recoveryDisposition === "CLEAR") {
-          clearTerminalRecovery();
-          setDepositPhase("");
-          if (current.state === "COMPLETED") {
-            setDepositNotice(
-              withGatewayAmount(
-                t.wallet.gatewayDepositAddedToGateway,
-                formatGatewayUsdcDisplay(formatGatewayUsdcRaw(current.amountRaw), locale),
-              ),
-            );
-            void refreshGatewayBalance();
-            void refreshSourceState();
-          } else {
-            // The backend has authoritatively established that no financial
-            // submission was durably observed. Retire only this local recovery;
-            // the user may manually start a new deposit, never automatically.
-            setDepositError(
-              current.state === "EXPIRED"
-                ? t.wallet.gatewayDepositExpired
-                : t.wallet.gatewayDepositStatusNeedsReview,
-            );
-          }
-          return;
-        }
-
-        if (current.state === "RECONCILING") {
-          setDepositPhase("waitingFinality");
-          persistReconcilingRecovery();
-          timer = window.setTimeout(readStatus, 10_000);
-          return;
-        }
-
-        if (needsGatewayDepositRecoveryReview(current)) {
-          setDepositPhase("");
-          // The ACTION column already renders the human-facing review copy.
-          // Clear any stale banner from an earlier attempt so genuine
-          // RECONCILE states do not show the same message twice.
-          setDepositError("");
-          // This request is status-only. An uncertain terminal result may be
-          // resolved later by the durable backend action, but it must never
-          // cause a new approval, deposit, or hosted Circle challenge here.
-          timer = window.setTimeout(readStatus, 10_000);
-          return;
-        }
-      } catch {
-        if (!cancelled) {
-          // A status-read fault says nothing about a submitted deposit. Keep
-          // the recovery and the finality rail intact, then try the same read.
-          setDepositStatusWarning(t.wallet.gatewayFinalityStatusDelayed);
-          if (isSubmittedGatewayDepositRecovery(recovery)) {
-            timer = window.setTimeout(readStatus, 10_000);
-          }
-        }
-      } finally {
-        reading = false;
-      }
-    }
-
-    void readStatus();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [depositRecovery?.actionId, depositRecovery?.phase, locale, t.wallet]);
-
   useEffect(() => {
     if (executionMode !== "EXTERNAL_WALLET") return;
     const recovery = readExternalGatewayDepositRecovery();
     if (!recovery) return;
+    if (recovery.phase === "RECONCILING") {
+      clearExternalGatewayDepositRecovery();
+      setDepositRecovery(null);
+      setDepositAmount("");
+      return;
+    }
     setDepositRecovery(recovery);
     setSelectedSourceDomain(String(recovery.sourceDomain));
     setDepositAmount(formatGatewayUsdcRaw(recovery.amountRaw));
   }, [executionMode]);
+
+  useEffect(() => {
+    if (walletStatus !== "ready" || !walletAddress || !executionMode) {
+      setActivityItems([]);
+      setActivityReadState("idle");
+      setActivityStatusWarning("");
+      return;
+    }
+    void refreshActivity();
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") void refreshActivity();
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, [executionMode, refreshActivity, walletAddress, walletStatus]);
+
+  useEffect(() => {
+    const hasBackgroundActivity = activityItems.some((item) => !item.terminal && !item.interactive);
+    if (walletStatus !== "ready" || !walletAddress || !executionMode || !hasBackgroundActivity) return;
+    if (document.visibilityState !== "visible") return;
+    const timer = window.setTimeout(() => void refreshActivity(), 12_000);
+    return () => window.clearTimeout(timer);
+  }, [activityItems, executionMode, refreshActivity, walletAddress, walletStatus]);
 
   // A source transaction must be signed on its OWN chain. The request's chain
   // id is the authority: the wallet is switched to it and then re-read, so a
@@ -1090,7 +1054,6 @@ export default function WalletPage() {
     setDepositError("");
     setDepositNotice("");
     setDepositStatus(null);
-    setDepositStatusWarning("");
     function clearTerminalBrowserRecovery() {
       if (executionMode === "CIRCLE_USER_WALLET") clearCircleGatewayDepositRecovery();
       else clearExternalGatewayDepositRecovery();
@@ -1141,8 +1104,11 @@ export default function WalletPage() {
           );
         }
       } else if (result.state === "RECONCILING") {
-        restoreBrowserRecovery();
-        setDepositPhase("waitingFinality");
+        // Submission has crossed the interactive boundary. Activity now owns
+        // read-only finality observation; release only this browser's form
+        // lock and retain the durable backend action.
+        clearInteractiveDepositRecovery();
+        void refreshActivity();
       } else if (needsGatewayDepositRecoveryReview(result)) {
         restoreBrowserRecovery();
         setDepositStatus(result);
@@ -1184,18 +1150,46 @@ export default function WalletPage() {
     }
   }
 
-  // A backend disposition is authoritative. A submitted action has positive
-  // source-deposit evidence and gets the finality rail. Only a CLEAR response
-  // unlocks the form; state names and sessionStorage never decide release.
-  const depositAwaitingFinality = depositStatus
-    ? depositStatus.state === "RECONCILING"
-    : isSubmittedGatewayDepositRecovery(depositRecovery);
+  // A backend disposition is authoritative. Interactive recovery remains
+  // locked until the same action is resumed or a clean CLEAR response arrives.
+  // RECONCILING is intentionally absent here: it belongs to Activity and must
+  // not globally lock a fresh deposit from another source.
   const depositRecoveryNeedsReview = Boolean(
     depositRecovery && depositStatus && needsGatewayDepositRecoveryReview(depositStatus),
   );
   const selectedGatewaySource = sourceState?.sources.find(
     (source) => String(source.domain) === selectedSourceDomain,
   ) || null;
+
+  function activityPhaseCopy(phase: GatewayDepositActivityItem["phase"]) {
+    switch (phase) {
+      case "APPROVAL_PREPARING": return t.wallet.gatewayActivityApprovalPreparing;
+      case "APPROVAL_REQUIRED": return t.wallet.gatewayActivityApprovalRequired;
+      case "APPROVAL_SUBMITTED": return t.wallet.gatewayActivityApprovalSubmitted;
+      case "DEPOSIT_PREPARING": return t.wallet.gatewayActivityDepositPreparing;
+      case "DEPOSIT_CONFIRMATION_REQUIRED": return t.wallet.gatewayActivityDepositConfirmationRequired;
+      case "DEPOSIT_SUBMITTED": return t.wallet.gatewayActivityDepositSubmitted;
+      case "GATEWAY_FINALITY": return t.wallet.gatewayActivityWaitingFinality;
+      case "COMPLETED": return t.wallet.gatewayActivityCompleted;
+      case "NEEDS_REVIEW": return t.wallet.gatewayActivityNeedsReview;
+      case "FAILED": return t.wallet.gatewayActivityFailed;
+      case "EXPIRED": return t.wallet.gatewayActivityExpired;
+    }
+  }
+
+  function activityStageState(item: GatewayDepositActivityItem, stage: "APPROVAL" | "DEPOSIT" | "FINALITY" | "COMPLETED") {
+    if (item.terminal || item.stage === "COMPLETED") return "complete";
+    if (item.stage === "REVIEW" || item.stage === "FAILED" || item.stage === "EXPIRED") {
+      return stage === "DEPOSIT" ? "attention" : "pending";
+    }
+    const order = { APPROVAL: 0, DEPOSIT: 1, FINALITY: 2, COMPLETED: 3 };
+    const active = item.stage === "FINALITY" ? order.FINALITY : order[item.stage as "APPROVAL" | "DEPOSIT"];
+    if (order[stage] < active) return "complete";
+    if (order[stage] === active) return "active";
+    return "pending";
+  }
+
+  const activityAttentionCount = activityItems.filter((item) => !item.terminal).length;
 
   async function ensureArcTestnet() {
     if (chain?.id === arcTestnet.id) return;
@@ -1375,6 +1369,65 @@ export default function WalletPage() {
                     {executionMode === "CIRCLE_USER_WALLET" ? t.wallet.endSession : t.wallet.disconnectWallet}
                   </button>
                 </div>
+              </div>
+
+              <div className="ex-wallet-activity">
+                <button
+                  className="ex-wallet-activity__toggle ex-btn ex-btn--ghost"
+                  type="button"
+                  aria-expanded={activityOpen}
+                  aria-controls="wallet-activity"
+                  onClick={() => setActivityOpen((open) => !open)}
+                >
+                  {t.wallet.gatewayActivity} · {activityAttentionCount}
+                </button>
+                {activityOpen && (
+                  <section id="wallet-activity" className="ex-wallet-activity__panel" aria-label={t.wallet.gatewayActivityAriaLabel}>
+                    <div className="ex-wallet-activity__heading">
+                      <h2>{t.wallet.gatewayActivity}</h2>
+                      <button
+                        className="ex-wallet-activity__close"
+                        type="button"
+                        onClick={() => setActivityOpen(false)}
+                      >
+                        {t.wallet.gatewayActivityClose}
+                      </button>
+                    </div>
+                    {activityReadState === "delayed" && (
+                      <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                        {activityStatusWarning || t.wallet.gatewayFinalityStatusDelayed}
+                      </p>
+                    )}
+                    {activityItems.length === 0 ? (
+                      <p className="ex-wallet-activity__empty">{t.wallet.gatewayActivityNoRecent}</p>
+                    ) : (
+                      <ol className="ex-wallet-activity__list">
+                        {activityItems.map((item) => (
+                          <li className="ex-wallet-activity__item" key={item.actionId}>
+                            <div className="ex-wallet-activity__top">
+                              <span className="ex-wallet-activity__network">{item.sourceLabel}</span>
+                              <span className="ex-wallet-activity__amount ex-num">
+                                {formatGatewayUsdcDisplay(formatGatewayUsdcRaw(item.amountRaw), locale)} USDC
+                              </span>
+                            </div>
+                            <div className="ex-wallet-activity__meta">
+                              <span>{activityPhaseCopy(item.phase)}</span>
+                              <span data-tone={item.actionRequired ? "error" : "muted"}>
+                                {item.actionRequired ? t.wallet.gatewayActivityActionRequired : t.wallet.gatewayActivityNoAction}
+                              </span>
+                            </div>
+                            <ol className="ex-wallet-activity__stages" aria-label={t.wallet.gatewayActivityAriaLabel}>
+                              <li data-state={activityStageState(item, "APPROVAL")}>{t.wallet.gatewayActivityApproval}</li>
+                              <li data-state={activityStageState(item, "DEPOSIT")}>{t.wallet.gatewayActivityDeposit}</li>
+                              <li data-state={activityStageState(item, "FINALITY")}>{t.wallet.gatewayActivityFinality}</li>
+                              <li data-state={activityStageState(item, "COMPLETED")}>{t.wallet.gatewayActivityCompleted}</li>
+                            </ol>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </section>
+                )}
               </div>
 
               {sessionNeedsAuth ? (
@@ -1563,7 +1616,6 @@ export default function WalletPage() {
                             setSelectedSourceDomain(event.target.value);
                             setDepositAmount("");
                             setDepositStatus(null);
-                            setDepositStatusWarning("");
                             setDepositError("");
                             setDepositNotice("");
                             // Focus handling last, and only for a committed
@@ -1571,7 +1623,7 @@ export default function WalletPage() {
                             blurAfterPointerSelectChange(sourcePointerIntent, select);
                           }}
                           onBlur={() => clearSelectPointerIntent(sourcePointerIntent)}
-                          disabled={depositBusy || Boolean(depositRecovery) || depositAwaitingFinality}
+                          disabled={depositBusy || Boolean(depositRecovery)}
                         >
                           {sourceState.sources.map((source) => (
                             <option key={source.domain} value={source.domain}>{source.label}</option>
@@ -1603,7 +1655,7 @@ export default function WalletPage() {
                           value={depositAmount}
                           onChange={(event) => setDepositAmount(event.target.value)}
                           disabled={
-                            depositBusy || Boolean(depositRecovery) || depositAwaitingFinality ||
+                            depositBusy || Boolean(depositRecovery) ||
                             !selectedGatewaySource || selectedGatewaySource.state === "error"
                           }
                         />
@@ -1656,8 +1708,6 @@ export default function WalletPage() {
                               ? t.wallet.gatewayDepositExpired
                               : t.wallet.gatewayDepositStatusNeedsReview}
                           </p>
-                        ) : depositAwaitingFinality ? (
-                          <p className="ex-gateway-deposit-form__hint">{t.wallet.gatewayWaitingFinality}</p>
                         ) : (
                           <button
                             className="ex-btn ex-btn--ink"
@@ -1680,20 +1730,6 @@ export default function WalletPage() {
                         )}
                       </div>
 
-                      {depositAwaitingFinality && (
-                        <div className="ex-gateway-finality" aria-live="polite">
-                          <ol className="ex-gateway-finality__rail">
-                            <li data-state="complete">{t.wallet.gatewayDepositSubmitted}</li>
-                            <li data-state="active">
-                              <span className="ex-gateway-finality__pulse" aria-hidden="true" />
-                              {t.wallet.gatewayWaitingFinality}
-                            </li>
-                            <li data-state="pending">{t.wallet.gatewayBalanceAvailable}</li>
-                          </ol>
-                          <p>{t.wallet.gatewayFinalityAdvice}</p>
-                          {depositStatusWarning && <small>{depositStatusWarning}</small>}
-                        </div>
-                      )}
                     </div>
                   )}
 

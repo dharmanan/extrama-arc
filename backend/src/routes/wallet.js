@@ -212,6 +212,12 @@ router.post('/gateway-deposit/start', gatewayFundingStartLimiter, async (req, re
   } catch (error) { next(error); }
 });
 
+router.get('/gateway-deposit/activity', async (req, res, next) => {
+  try {
+    res.json(await gatewayDepositService.activity({ auth: req.auth }));
+  } catch (error) { next(error); }
+});
+
 router.get('/gateway-deposit/:actionId', async (req, res, next) => {
   try {
     res.json(await gatewayDepositService.status({ auth: req.auth, actionId: req.params.actionId }));

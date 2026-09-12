@@ -1924,6 +1924,27 @@ img{max-width:100%}
 .ex-wallet-address__value{margin:0;flex:1;min-width:0;font-size:.86rem;color:var(--ink-2);word-break:break-all;overflow-wrap:anywhere}
 .ex-wallet-address__actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
 
+.ex-wallet-activity{display:grid;gap:12px;padding-block:14px;border-bottom:1px solid var(--line)}
+.ex-wallet-activity__toggle{justify-self:start}
+.ex-wallet-activity__panel{display:grid;gap:16px;padding:14px 0 2px;border-top:1px solid var(--line)}
+.ex-wallet-activity__heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.ex-wallet-activity__heading h2{margin:0;font-family:var(--serif);font-size:clamp(1.2rem,1.9vw,1.5rem);font-weight:400}
+.ex-wallet-activity__close{padding:0;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink-2);font-size:.78rem;cursor:pointer}
+.ex-wallet-activity__empty{margin:0;color:var(--muted);font-size:.9rem}
+.ex-wallet-activity__list{display:grid;gap:12px;margin:0;padding:0;list-style:none}
+.ex-wallet-activity__item{display:grid;gap:10px;padding-block:12px;border-bottom:1px solid var(--line)}
+.ex-wallet-activity__top{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.ex-wallet-activity__network{font-family:var(--serif);font-size:1.1rem}
+.ex-wallet-activity__amount{font-size:.9rem}
+.ex-wallet-activity__meta{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;color:var(--ink-2);font-size:.84rem}
+.ex-wallet-activity__meta [data-tone="error"]{color:var(--ember)}
+.ex-wallet-activity__meta [data-tone="muted"]{color:var(--muted)}
+.ex-wallet-activity__stages{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin:0;padding:0;list-style:none}
+.ex-wallet-activity__stages li{padding-top:7px;border-top:1px solid var(--line-strong);color:var(--muted);font-size:.72rem;line-height:1.25}
+.ex-wallet-activity__stages li[data-state="complete"]{border-top-color:var(--ink);color:var(--ink)}
+.ex-wallet-activity__stages li[data-state="active"]{border-top:2px solid var(--ember);color:var(--ink)}
+.ex-wallet-activity__stages li[data-state="attention"]{border-top-color:var(--ember);color:var(--ember)}
+
 .ex-wallet-ledger--prompt{
   display:grid;
   gap:10px;
@@ -1950,6 +1971,8 @@ img{max-width:100%}
   .ex-wallet-alt button{align-self:flex-start}
   .ex-wallet-address{flex-direction:column;align-items:flex-start;gap:10px}
   .ex-wallet-address__actions{justify-content:flex-start}
+  .ex-wallet-activity__top{flex-direction:column;align-items:flex-start;gap:4px}
+  .ex-wallet-activity__stages{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 6px}
   .ex-wallet-panel__actions{flex-direction:column;align-items:stretch}
   .ex-wallet-connectors{grid-template-columns:1fr}
   .ex-wallet-connector,

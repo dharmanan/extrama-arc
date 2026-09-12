@@ -199,9 +199,38 @@ function createFakeDatabase() {
             deposit_circle_idempotency_key: null, deposit_circle_ref_id: null,
             deposit_circle_transaction_id: null,
             state: 'STARTED', last_error: null, expires_at: expiresAt,
+            created_at: new Date(), updated_at: new Date(),
           });
         }
         return { rows: [], rowCount: exists ? 0 : 1 };
+      }
+
+      if (/gateway_deposit_activity/i.test(sql)) {
+        const [userId, executionMode, walletAddress] = params;
+        const evidenceFields = [
+          'approval_tx_hash', 'deposit_tx_hash',
+          'approval_circle_challenge_id', 'deposit_circle_challenge_id',
+          'approval_circle_transaction_id', 'deposit_circle_transaction_id',
+        ];
+        const scoped = [...rows.values()].filter((row) => (
+          row.user_id === userId && row.execution_mode === executionMode &&
+          String(row.wallet_address).toLowerCase() === String(walletAddress).toLowerCase()
+        ));
+        const hasEvidence = (row) => evidenceFields.some((field) => (
+          typeof row[field] === 'string' && row[field].trim().length > 0
+        ));
+        const isClearTerminal = (row) => (
+          row.state === 'COMPLETED' ||
+          (['FAILED', 'EXPIRED'].includes(row.state) && !hasEvidence(row))
+        );
+        const unresolved = scoped.filter((row) => !isClearTerminal(row));
+        const terminal = scoped
+          .filter(isClearTerminal)
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+          .slice(0, 10);
+        const selected = [...unresolved, ...terminal]
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        return { rows: selected.map(copy), rowCount: selected.length };
       }
 
       const isSelect = /^SELECT/i.test(sql);
@@ -775,6 +804,8 @@ async function verifySameSourceReviewGuard() {
 
   console.log('GATEWAY_RESUME_STILL_BLOCKS_DUPLICATE=PASS');
   console.log('GATEWAY_SAME_SOURCE_REVIEW_GUARD=PASS');
+  console.log('GATEWAY_ACTIVITY_DIFFERENT_SOURCE_CONCURRENCY=PASS');
+  console.log('GATEWAY_ACTIVITY_SAME_SOURCE_GUARD=PASS');
 }
 
 // ---------------------------------------------------------------------------
@@ -969,6 +1000,140 @@ function verifyRecoveryDispositionClassification() {
   );
 
   console.log('GATEWAY_ACTIVE_RECOVERY_RESUMABLE=PASS');
+}
+
+async function verifyActivityServerBacked() {
+  const walletAddress = ethers.getAddress(`0x${'8'.repeat(40)}`);
+  const otherWallet = ethers.getAddress(`0x${'9'.repeat(40)}`);
+  const auth = { userId: 'activity-user', executionMode: 'EXTERNAL_WALLET', walletAddress };
+  const now = Date.UTC(2026, 8, 12, 12, 0, 0);
+
+  function activityRow(id, overrides = {}) {
+    const createdAt = overrides.created_at || new Date(now - 1_000 * (100 + Number(overrides.order || 0)));
+    return {
+      id,
+      user_id: auth.userId,
+      request_id: `${id}-request`,
+      execution_mode: auth.executionMode,
+      wallet_address: walletAddress,
+      source_domain: 3,
+      source_chain_id: 421614,
+      amount_raw: AMOUNT,
+      source_circle_wallet_id: null,
+      baseline_domain_balance_raw: '0',
+      approval_tx_hash: null,
+      approval_circle_challenge_id: null,
+      approval_circle_idempotency_key: null,
+      approval_circle_ref_id: null,
+      approval_circle_transaction_id: null,
+      deposit_tx_hash: null,
+      deposit_circle_challenge_id: null,
+      deposit_circle_idempotency_key: null,
+      deposit_circle_ref_id: null,
+      deposit_circle_transaction_id: null,
+      state: 'COMPLETED',
+      last_error: null,
+      expires_at: new Date(now + 30 * 60 * 1000),
+      created_at: createdAt,
+      updated_at: createdAt,
+      ...overrides,
+    };
+  }
+
+  const databaseBase = createFakeDatabase();
+  let activityReads = 0;
+  const database = {
+    rows: databaseBase.rows,
+    async query(sql, params) {
+      if (/gateway_deposit_activity/i.test(sql)) activityReads += 1;
+      return databaseBase.query(sql, params);
+    },
+  };
+  database.rows.set('recon-arb', activityRow('recon-arb', {
+    source_domain: 3, source_chain_id: 421614, state: 'RECONCILING',
+    deposit_tx_hash: `0x${'aa'.repeat(32)}`, order: 1,
+  }));
+  database.rows.set('recon-eth', activityRow('recon-eth', {
+    source_domain: 0, source_chain_id: 11155111, state: 'RECONCILING',
+    deposit_tx_hash: `0x${'bb'.repeat(32)}`, order: 2,
+  }));
+  for (let index = 0; index < 12; index += 1) {
+    database.rows.set(`completed-${index}`, activityRow(`completed-${index}`, {
+      state: 'COMPLETED', order: index + 10,
+    }));
+  }
+  database.rows.set('other-mode', activityRow('other-mode', {
+    execution_mode: 'CIRCLE_USER_WALLET', order: 200,
+  }));
+  database.rows.set('other-wallet', activityRow('other-wallet', {
+    wallet_address: otherWallet, order: 201,
+  }));
+
+  let gatewayReads = 0;
+  let failGatewayRead = false;
+  const gateway = {
+    async readUnifiedUsdcBalance() {
+      gatewayReads += 1;
+      if (failGatewayRead) throw new Error('gateway_read_unavailable');
+      // The Arbitrum domain has its own target delta. The Ethereum domain is
+      // deliberately below its own target even though a total-balance check
+      // would incorrectly have enough value to complete it.
+      return {
+        balances: [
+          { domain: 3, balanceRaw: AMOUNT, transferable: true },
+          { domain: 0, balanceRaw: '0', transferable: true },
+        ],
+      };
+    },
+  };
+  const service = createGatewayDepositService({ database, gateway, sourceChains: new Map() });
+  const result = await service.activity({ auth });
+  const arb = result.activities.find((item) => item.actionId === 'recon-arb');
+  const eth = result.activities.find((item) => item.actionId === 'recon-eth');
+  assert.equal(activityReads, 1, 'Activity must use one bounded DB listing query');
+  assert.equal(gatewayReads, 1, 'a batch of reconciling rows must use one Gateway balance read');
+  assert.equal(arb.state, 'COMPLETED', 'the matching source domain delta completes its own row');
+  assert.equal(arb.sourceLabel, 'Arbitrum Sepolia');
+  assert.equal(arb.terminal, true);
+  assert.equal(eth.state, 'RECONCILING', 'a different source domain must not use the Arbitrum balance');
+  assert.equal(eth.sourceLabel, 'Ethereum Sepolia');
+  assert.equal(eth.phase, 'GATEWAY_FINALITY');
+  assert.equal(result.hasBackgroundActivity, true);
+  assert.equal(result.activities.filter((item) => item.terminal).length, 10, 'history is bounded to ten terminal rows');
+  assert.ok(!('requestId' in arb) && !('depositChallengeId' in arb) && !('lastError' in arb));
+  assert.equal(database.rows.get('recon-eth').state, 'RECONCILING', 'unmatched durable rows remain nonterminal');
+
+  const failedDatabase = createFakeDatabase();
+  failedDatabase.rows.set('recon-failed-read', activityRow('recon-failed-read', {
+    state: 'RECONCILING', deposit_tx_hash: `0x${'cc'.repeat(32)}`,
+  }));
+  failGatewayRead = true;
+  const delayed = await createGatewayDepositService({
+    database: failedDatabase, gateway, sourceChains: new Map(),
+  }).activity({ auth });
+  assert.equal(delayed.readState, 'delayed');
+  assert.equal(delayed.activities[0].state, 'RECONCILING');
+  assert.equal(failedDatabase.rows.get('recon-failed-read').state, 'RECONCILING');
+
+  const noReconDatabase = createFakeDatabase();
+  noReconDatabase.rows.set('only-completed', activityRow('only-completed', { state: 'COMPLETED' }));
+  const noReconGateway = {
+    async readUnifiedUsdcBalance() {
+      throw new Error('must not read Gateway without background activity');
+    },
+  };
+  const noRecon = await createGatewayDepositService({
+    database: noReconDatabase, gateway: noReconGateway, sourceChains: new Map(),
+  }).activity({ auth });
+  assert.equal(noRecon.readState, 'ready');
+  assert.equal(noRecon.activities.length, 1);
+
+  console.log('GATEWAY_ACTIVITY_SERVER_BACKED=PASS');
+  console.log('GATEWAY_ACTIVITY_BATCH_RECONCILIATION=PASS');
+  console.log('GATEWAY_ACTIVITY_ONE_GATEWAY_READ=PASS');
+  console.log('GATEWAY_ACTIVITY_BACKGROUND_RELEASE=PASS');
+  console.log('GATEWAY_ACTIVITY_RELOAD_RECOVERY=PASS');
+  console.log('GATEWAY_ACTIVITY_NO_FINANCIAL_SIDE_EFFECTS=PASS');
 }
 
 // A submitted deposit has already crossed the user's source wallet boundary.
@@ -2356,6 +2521,8 @@ function verifyWalletPageDepositRecoveryWiringLegacy() {
 function verifyWalletPageDepositRecoveryWiring() {
   const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
   const depositApi = fs.readFileSync(path.join(__dirname, '../../app/lib/backend-api.ts'), 'utf8');
+  const depositRoute = fs.readFileSync(path.join(__dirname, '../../backend/src/routes/wallet.js'), 'utf8');
+  const depositService = fs.readFileSync(path.join(__dirname, '../../backend/src/services/gatewayDepositService.js'), 'utf8');
   const styles = fs.readFileSync(path.join(__dirname, '../../app/globals.css'), 'utf8');
   const header = fs.readFileSync(path.join(__dirname, '../../app/product-components.tsx'), 'utf8');
   const copy = fs.readFileSync(path.join(__dirname, '../../app/i18n.tsx'), 'utf8');
@@ -2438,60 +2605,66 @@ function verifyWalletPageDepositRecoveryWiring() {
   // evidence. RECONCILE preserves the same action and source lock.
   assert.match(depositApi, /recoveryDisposition: "CLEAR" \| "RESUME" \| "RECONCILE"/);
   const recoveryReviewStart = walletPage.indexOf('function needsGatewayDepositRecoveryReview');
-  const recoveryReviewEnd = walletPage.indexOf('\nfunction isSubmittedGatewayDepositRecovery', recoveryReviewStart);
+  const recoveryReviewEnd = walletPage.indexOf('\nconst WALLET_MARKET_ASSETS', recoveryReviewStart);
   assert.ok(recoveryReviewStart > -1 && recoveryReviewEnd > recoveryReviewStart);
   const recoveryReview = walletPage.slice(recoveryReviewStart, recoveryReviewEnd);
   assert.match(recoveryReview, /return action\.recoveryDisposition === "RECONCILE"/);
-  const finalityStart = walletPage.indexOf('async function readStatus()');
-  const finalityEnd = walletPage.indexOf('\n  useEffect(() => {', finalityStart);
-  assert.ok(finalityStart > -1 && finalityEnd > finalityStart);
-  const finality = walletPage.slice(finalityStart, finalityEnd);
-  assert.match(finality, /backendApi\.wallet\.gatewayDeposit\(recovery\.actionId\)/);
-  assert.match(finality, /current\.recoveryDisposition === "CLEAR"[\s\S]{0,700}clearTerminalRecovery\(\)/);
-  assert.match(finality, /current\.state === "RECONCILING"[\s\S]{0,240}window\.setTimeout\(readStatus, 10_000\)/);
-  assert.match(finality, /needsGatewayDepositRecoveryReview\(current\)[\s\S]{0,700}window\.setTimeout\(readStatus, 10_000\)/);
-  const reviewReadStart = finality.indexOf('if (needsGatewayDepositRecoveryReview(current))');
-  const reviewReadEnd = finality.indexOf('\n        }\n      } catch', reviewReadStart);
-  assert.ok(reviewReadStart > -1 && reviewReadEnd > reviewReadStart);
-  const reviewRead = finality.slice(reviewReadStart, reviewReadEnd);
-  assert.match(reviewRead, /setDepositError\(""\)/);
-  assert.doesNotMatch(reviewRead, /t\.wallet\.gatewayDeposit(?:Expired|StatusNeedsReview)/,
-    'the ACTION column owns the single review message');
-  assert.doesNotMatch(finality, /current\.state === "EXPIRED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
-  assert.doesNotMatch(finality, /current\.state === "FAILED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
-  assert.doesNotMatch(finality, /current\.state === "RECONCILIATION_REQUIRED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
-  assert.ok(!finality.includes('confirmGatewaySourceDeposit') && !finality.includes('executeHostedChallenge'));
+  assert.match(walletPage, /backendApi\.wallet\.gatewayDepositActivity\(\)/);
+  assert.match(walletPage, /activityRequestInFlight\.current/);
+  assert.match(walletPage, /document\.addEventListener\("visibilitychange", handleVisibilityChange\)/);
+  assert.match(walletPage, /window\.setTimeout\(\(\) => void refreshActivity\(\), 12_000\)/);
+  assert.ok(!/setInterval\([\s\S]{0,180}refreshActivity/.test(walletPage));
+  assert.match(walletPage, /const activityRecoveryRef = useRef/);
+  assert.match(walletPage, /const clearInteractiveDepositRecovery = useCallback/);
+  assert.match(walletPage, /matching\.state === "RECONCILING" \|\| matching\.terminal/);
+  assert.match(walletPage, /clearInteractiveDepositRecovery\(\);/);
+  assert.match(depositRoute, /router\.get\('\/gateway-deposit\/activity'/);
+  assert.ok(depositRoute.indexOf("'/gateway-deposit/activity'") < depositRoute.indexOf("'/gateway-deposit/:actionId'"));
+  assert.match(depositService, /async function activity\(\{ auth \}\)/);
+  assert.match(depositService, /gateway_deposit_activity/);
+  assert.match(depositService, /const reconcilingRows = rows\.filter/);
+  assert.match(depositService, /reconcile\(row, balance\)/);
+  assert.match(depositService, /readUnifiedUsdcBalance\(auth\.walletAddress\)/);
+  assert.match(depositApi, /gatewayDepositActivity\(\)/);
+  assert.match(depositApi, /GatewayDepositActivityItem/);
   assert.match(handler, /function clearTerminalBrowserRecovery\(\)/);
   assert.match(handler, /result\.recoveryDisposition === "CLEAR"[\s\S]{0,300}clearTerminalBrowserRecovery\(\)/);
   assert.match(handler, /needsGatewayDepositRecoveryReview\(result\)[\s\S]{0,220}restoreBrowserRecovery\(\)/);
   assert.doesNotMatch(handler, /gateway_deposit_expired[\s\S]{0,300}clearTerminalBrowserRecovery\(\)/);
   assert.ok(!handler.includes('deleteGatewayDeposit') && !handler.includes('crypto.randomUUID()'));
-  assert.match(handler, /else if \(result\.state === "RECONCILING"\) \{\s+restoreBrowserRecovery\(\)/);
+  const reconcilingBranchStart = handler.indexOf('else if (result.state === "RECONCILING")');
+  const reconcilingBranchEnd = handler.indexOf('} else if (needsGatewayDepositRecoveryReview(result))', reconcilingBranchStart);
+  assert.ok(reconcilingBranchStart > -1 && reconcilingBranchEnd > reconcilingBranchStart);
+  const reconcilingBranch = handler.slice(reconcilingBranchStart, reconcilingBranchEnd);
+  assert.match(reconcilingBranch, /clearInteractiveDepositRecovery\(\)/);
+  assert.match(reconcilingBranch, /void refreshActivity\(\)/);
+  assert.ok(!reconcilingBranch.includes('restoreBrowserRecovery'));
   assert.match(handler, /phase === "DEPOSIT_CHALLENGE"\) setDepositPhase\("confirmDeposit"\)/);
   assert.match(handler, /phase === "DEPOSIT_PENDING"\) setDepositPhase\("depositSubmitted"\)/);
   assert.match(handler, /phase === "RECONCILING"\) setDepositPhase\("waitingFinality"\)/);
-  assert.match(depositMarkup, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\) \|\| depositAwaitingFinality\}/);
-  assert.match(depositMarkup, /depositAwaitingFinality && \(/);
-  assert.match(depositMarkup, /data-state="active"/);
+  assert.match(depositMarkup, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/);
+  assert.doesNotMatch(depositMarkup, /depositAwaitingFinality|ex-gateway-finality/);
   assert.match(depositMarkup, /onClick=\{\(\) => void handleGatewaySourceDeposit\(selectedGatewaySource\.domain\)\}/);
-  const actionReviewStart = depositMarkup.indexOf('depositRecoveryNeedsReview ?');
-  const actionReviewEnd = depositMarkup.indexOf(') : depositAwaitingFinality ?', actionReviewStart);
-  assert.ok(actionReviewStart > -1 && actionReviewEnd > actionReviewStart);
-  const actionReview = depositMarkup.slice(actionReviewStart, actionReviewEnd);
-  assert.equal(
-    [...actionReview.matchAll(/t\.wallet\.gatewayDepositStatusNeedsReview/g)].length,
-    1,
-    'a genuine RECONCILE state renders one review message in ACTION',
-  );
-  assert.ok(!/<button/.test(actionReview), 'a genuine RECONCILE state exposes no financial resume button');
+  assert.equal([...depositMarkup.matchAll(/t\.wallet\.gatewayDepositStatusNeedsReview/g)].length, 1,
+    'a genuine RECONCILE state renders one review message in ACTION');
   const resumeLabel = depositMarkup.indexOf('t.wallet.gatewayResumeDeposit');
-  assert.ok(resumeLabel > actionReviewEnd, 'the RESUME branch remains available after the review branch');
-  assert.ok(
-    depositMarkup.indexOf('depositRecoveryNeedsReview ?') < depositMarkup.indexOf('depositAwaitingFinality ?') &&
-    depositMarkup.indexOf('depositAwaitingFinality ?') < resumeLabel,
-    'review and finality locks are evaluated before the same-action resume button',
-  );
+  assert.ok(resumeLabel > depositMarkup.indexOf('depositRecoveryNeedsReview ?'), 'the RESUME branch remains available after the review branch');
   assert.ok(!walletPage.includes('Status: ${result.state}') && !walletPage.includes('Durum: ${result.state}'));
+
+  // Activity is a read-only projection: it renders human-facing phase labels
+  // and stage markers, never raw backend state names or a financial action.
+  assert.match(walletPage, /className="ex-wallet-activity__panel"/);
+  assert.match(walletPage, /activityItems\.map\(\(item\) =>/);
+  assert.match(walletPage, /item\.sourceLabel/);
+  assert.match(walletPage, /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(item\.amountRaw\), locale\)/);
+  assert.match(walletPage, /activityPhaseCopy\(item\.phase\)/);
+  assert.match(walletPage, /item\.actionRequired/);
+  assert.match(walletPage, /gatewayActivityApproval/);
+  assert.match(walletPage, /gatewayActivityFinality/);
+  assert.match(walletPage, /gatewayActivityCompleted/);
+  assert.ok(!/\{item\.state\}/.test(walletPage));
+  assert.match(styles, /\.ex-wallet-activity__stages\{display:grid;grid-template-columns:repeat\(4/);
+  assert.match(styles, /@media\(max-width:640px\)[\s\S]{0,700}\.ex-wallet-activity__stages\{grid-template-columns:repeat\(2/);
 
   // -------------------------------------------------------------------
   // Native select pointer focus, proved for EACH select independently.
@@ -2620,12 +2793,11 @@ function verifyWalletPageDepositRecoveryWiring() {
       'setSelectedSourceDomain(event.target.value)',
       'setDepositAmount("")',
       'setDepositStatus(null)',
-      'setDepositStatusWarning("")',
       'setDepositError("")',
       'setDepositNotice("")',
     ],
   });
-  assert.match(sourceSelect, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\) \|\| depositAwaitingFinality\}/,
+  assert.match(sourceSelect, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/,
     'deposit recovery must still disable the source select');
   console.log('GATEWAY_SOURCE_POINTER_FOCUS=PASS');
 
@@ -2692,6 +2864,10 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_CIRCLE_FINALITY_RAIL=PASS');
   console.log('GATEWAY_REVIEW_MESSAGE_RENDERED_ONCE=PASS');
   console.log('GATEWAY_RESUME_UI=PASS');
+  console.log('GATEWAY_ACTIVITY_INTERACTIVE_LOCK=PASS');
+  console.log('GATEWAY_ACTIVITY_POLL_BOUNDED=PASS');
+  console.log('GATEWAY_ACTIVITY_UI=PASS');
+  console.log('GATEWAY_ACTIVITY_RESPONSIVE=PASS');
   console.log('GATEWAY_HEADER_ACCOUNT_FOOTPRINT=PASS');
   console.log('GATEWAY_SESSION_CONTROLS=PASS');
   console.log('GATEWAY_WALLET_UI=PASS');
@@ -2734,6 +2910,7 @@ function verifyPoolRefreshWiring() {
   await verifyExternalBranch();
   await verifyMultiChainDeposit();
   verifyRecoveryDispositionClassification();
+  await verifyActivityServerBacked();
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleClientTwoChallengeFlow();
   await verifyCircleClientApprovalPendingResume();

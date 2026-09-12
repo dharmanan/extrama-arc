@@ -723,6 +723,53 @@ export type GatewayDepositResponse = {
   expiresAt: string;
 };
 
+export type GatewayDepositActivityStage =
+  | "APPROVAL"
+  | "DEPOSIT"
+  | "FINALITY"
+  | "COMPLETED"
+  | "REVIEW"
+  | "FAILED"
+  | "EXPIRED";
+
+export type GatewayDepositActivityPhase =
+  | "APPROVAL_PREPARING"
+  | "APPROVAL_REQUIRED"
+  | "APPROVAL_SUBMITTED"
+  | "DEPOSIT_PREPARING"
+  | "DEPOSIT_CONFIRMATION_REQUIRED"
+  | "DEPOSIT_SUBMITTED"
+  | "GATEWAY_FINALITY"
+  | "COMPLETED"
+  | "NEEDS_REVIEW"
+  | "FAILED"
+  | "EXPIRED";
+
+export type GatewayDepositActivityItem = {
+  actionId: string;
+  sourceDomain: number;
+  sourceChainId: number;
+  sourceLabel: string;
+  amountRaw: string;
+  state: GatewayDepositResponse["state"];
+  recoveryDisposition: "CLEAR" | "RESUME" | "RECONCILE";
+  approvalTxHash: string | null;
+  depositTxHash: string | null;
+  createdAt: string;
+  updatedAt: string;
+  stage: GatewayDepositActivityStage;
+  phase: GatewayDepositActivityPhase;
+  actionRequired: boolean;
+  interactive: boolean;
+  terminal: boolean;
+};
+
+export type GatewayDepositActivityResponse = {
+  activities: GatewayDepositActivityItem[];
+  readState: "ready" | "delayed";
+  hasBackgroundActivity: boolean;
+};
+
 export type EntryActionPayload = {
   action: "ENTRY";
   chainId: 5042002;
@@ -1490,6 +1537,9 @@ export const backendApi = {
     },
     gatewayDeposit(actionId: string) {
       return request<GatewayDepositResponse>(`/wallet/gateway-deposit/${actionId}`);
+    },
+    gatewayDepositActivity() {
+      return request<GatewayDepositActivityResponse>("/wallet/gateway-deposit/activity");
     },
     verifyGatewayDepositApproval(actionId: string, input: {
       circleUserToken?: string;
