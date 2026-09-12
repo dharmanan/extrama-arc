@@ -31,4 +31,12 @@ if old not in text:
     raise SystemExit('amount recovery assertion anchor missing')
 text = text.replace(old, new, 1)
 
+old = '''  const onClickIndex = depositMarkup.indexOf('onClick={() => void handleGatewaySourceDeposit(source.domain)}');
+  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewaySourceDeposit for its own card');'''
+new = '''  const onClickIndex = depositMarkup.indexOf('onClick={() => void handleGatewaySourceDeposit(selectedSource.domain)}');
+  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewaySourceDeposit for the selected source');'''
+if old not in text:
+    raise SystemExit('deposit button assertion anchor missing')
+text = text.replace(old, new, 1)
+
 path.write_text(text)
