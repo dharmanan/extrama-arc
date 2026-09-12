@@ -1136,6 +1136,52 @@ async function verifyActivityServerBacked() {
   console.log('GATEWAY_ACTIVITY_NO_FINANCIAL_SIDE_EFFECTS=PASS');
 }
 
+function verifyActivityPostgresTypes() {
+  const schema = fs.readFileSync(path.join(__dirname, '../src/db/schema.sql'), 'utf8');
+  const serviceSource = fs.readFileSync(path.join(__dirname, '../src/services/gatewayDepositService.js'), 'utf8');
+  const tableStart = schema.indexOf('CREATE TABLE IF NOT EXISTS gateway_deposit_actions');
+  const tableEnd = schema.indexOf('\n);', tableStart);
+  assert.ok(tableStart > -1 && tableEnd > tableStart, 'Gateway deposit table must exist in the schema');
+  const table = schema.slice(tableStart, tableEnd);
+
+  for (const column of [
+    'approval_circle_transaction_id',
+    'deposit_circle_transaction_id',
+  ]) {
+    assert.match(table, new RegExp(`${column}\\s+UUID\\b`), `${column} must remain a UUID column`);
+  }
+  for (const column of [
+    'approval_tx_hash',
+    'deposit_tx_hash',
+    'approval_circle_challenge_id',
+    'deposit_circle_challenge_id',
+  ]) {
+    assert.match(table, new RegExp(`${column}\\s+(?:VARCHAR\\(66\\)|TEXT)(?=\\s|,|\\n)`), `${column} must remain text-compatible`);
+  }
+
+  const activityStart = serviceSource.indexOf('/* gateway_deposit_activity */');
+  const activityEnd = serviceSource.indexOf('`,', activityStart);
+  assert.ok(activityStart > -1 && activityEnd > activityStart, 'the Activity SQL must remain structurally discoverable');
+  const activitySql = serviceSource.slice(activityStart, activityEnd);
+  assert.match(activitySql, /NULLIF\(BTRIM\(approval_tx_hash\), ''\) IS NULL/);
+  assert.match(activitySql, /NULLIF\(BTRIM\(deposit_tx_hash\), ''\) IS NULL/);
+  assert.match(activitySql, /NULLIF\(BTRIM\(approval_circle_challenge_id\), ''\) IS NULL/);
+  assert.match(activitySql, /NULLIF\(BTRIM\(deposit_circle_challenge_id\), ''\) IS NULL/);
+  assert.match(activitySql, /approval_circle_transaction_id IS NULL/);
+  assert.match(activitySql, /deposit_circle_transaction_id IS NULL/);
+  assert.doesNotMatch(
+    activitySql,
+    /BTRIM\([^)]*(?:approval_circle_transaction_id|deposit_circle_transaction_id)[^)]*\)/,
+    'UUID evidence columns must never be passed to a text trim function',
+  );
+  assert.doesNotMatch(
+    activitySql,
+    /(?:approval_circle_transaction_id|deposit_circle_transaction_id)[^\n]*::text/i,
+    'UUID evidence columns must use native semantics rather than text casts',
+  );
+  console.log('GATEWAY_ACTIVITY_POSTGRES_TYPES=PASS');
+}
+
 // A submitted deposit has already crossed the user's source wallet boundary.
 // It must retain its durable RECONCILING status past the approval/challenge
 // TTL and complete only when the Gateway balance delta is later observable.
@@ -2911,6 +2957,7 @@ function verifyPoolRefreshWiring() {
   await verifyMultiChainDeposit();
   verifyRecoveryDispositionClassification();
   await verifyActivityServerBacked();
+  verifyActivityPostgresTypes();
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleClientTwoChallengeFlow();
   await verifyCircleClientApprovalPendingResume();

@@ -800,12 +800,12 @@ function createGatewayDepositService({
              WHEN state = 'COMPLETED'
                OR (
                  state IN ('FAILED', 'EXPIRED')
-                 AND COALESCE(BTRIM(approval_tx_hash), '') = ''
-                 AND COALESCE(BTRIM(deposit_tx_hash), '') = ''
-                 AND COALESCE(BTRIM(approval_circle_challenge_id), '') = ''
-                 AND COALESCE(BTRIM(deposit_circle_challenge_id), '') = ''
-                 AND COALESCE(BTRIM(approval_circle_transaction_id), '') = ''
-                 AND COALESCE(BTRIM(deposit_circle_transaction_id), '') = ''
+                 AND NULLIF(BTRIM(approval_tx_hash), '') IS NULL
+                 AND NULLIF(BTRIM(deposit_tx_hash), '') IS NULL
+                 AND NULLIF(BTRIM(approval_circle_challenge_id), '') IS NULL
+                 AND NULLIF(BTRIM(deposit_circle_challenge_id), '') IS NULL
+                 AND approval_circle_transaction_id IS NULL
+                 AND deposit_circle_transaction_id IS NULL
                )
              THEN TRUE ELSE FALSE
            END AS clear_terminal
