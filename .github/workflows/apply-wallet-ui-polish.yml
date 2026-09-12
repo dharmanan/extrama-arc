@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - .github/workflows/apply-wallet-ui-polish.yml
+      - scripts/patch_wallet_ui_verifier.py
 
 permissions:
   contents: write
