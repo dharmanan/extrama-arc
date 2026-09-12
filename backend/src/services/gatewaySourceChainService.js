@@ -102,6 +102,46 @@ async function assertSourceNetwork(domain, provider) {
   }
 }
 
+// Only transport/provider availability failures are safe to retry after a
+// transaction has already been positively bound. Explicit source identity,
+// calldata, wallet and configuration errors deliberately do not match this
+// allowlist and therefore fail closed at the caller.
+function isTransientSourceReadError(error) {
+  if (!error) return false;
+  const nestedCodes = [error?.error?.code, error?.info?.error?.code];
+  if (nestedCodes.includes(-32005)) return true;
+
+  const messages = [
+    error?.error?.message,
+    error?.info?.error?.message,
+    error?.shortMessage,
+    error?.message,
+  ];
+  if (messages.some((message) => String(message || '').toLowerCase().includes('rate limit'))) {
+    return true;
+  }
+
+  if ([
+    'NETWORK_ERROR',
+    'SERVER_ERROR',
+    'TIMEOUT',
+    'UNKNOWN_ERROR',
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EAI_AGAIN',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_SOCKET',
+  ].includes(error.code)) {
+    return true;
+  }
+
+  // A contract/view call that has no revert data is provider transport noise;
+  // a real revert carries data and must not be retried as if it were stale.
+  return error.code === 'CALL_EXCEPTION' && (error.data === null || error.data === undefined);
+}
+
 /**
  * The user's real USDC position on a source chain: what they hold, and how
  * much of it GatewayWallet is currently allowed to move.
@@ -242,6 +282,7 @@ module.exports = {
   buildApproveTransactionRequest,
   buildDepositTransactionRequest,
   getSourceProvider,
+  isTransientSourceReadError,
   readSourceUsdcState,
   readTransaction,
   sourceChainExecution,

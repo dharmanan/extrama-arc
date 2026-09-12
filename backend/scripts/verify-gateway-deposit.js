@@ -174,10 +174,12 @@ function applySet(row, sql, params) {
 
 function createFakeDatabase() {
   const rows = new Map();
+  const events = [];
   const copy = (row) => (row ? { ...row } : null);
 
   return {
     rows,
+    events,
     async query(sqlText, params = []) {
       const sql = sqlText.replace(/\s+/g, ' ').trim();
 
@@ -262,6 +264,7 @@ function createFakeDatabase() {
         if (!matches.length) return { rows: [], rowCount: 0 };
         const row = matches[0];
         applySet(row, sql, params);
+        events.push({ sql, params: [...params], row: copy(row) });
         return { rows: hasReturning ? [copy(row)] : [], rowCount: 1 };
       }
       throw new Error(`fake db: unhandled SQL: ${sql}`);
@@ -1255,12 +1258,39 @@ async function verifyActivityServerBacked() {
   assert.equal(noRecon.readState, 'ready');
   assert.equal(noRecon.activities.length, 1);
 
+  // A legacy row may still carry a challenge state after its transaction was
+  // bound by an older deployment. Activity must project the durable evidence
+  // as submitted/no-action without rewriting the historical row.
+  const legacyDatabase = createFakeDatabase();
+  legacyDatabase.rows.set('legacy-approval-bound', activityRow('legacy-approval-bound', {
+    state: 'APPROVAL_CHALLENGE',
+    approval_tx_hash: `0x${'ee'.repeat(32)}`,
+  }));
+  legacyDatabase.rows.set('legacy-deposit-bound', activityRow('legacy-deposit-bound', {
+    state: 'DEPOSIT_CHALLENGE',
+    deposit_tx_hash: `0x${'ff'.repeat(32)}`,
+  }));
+  const legacyActivity = await createGatewayDepositService({
+    database: legacyDatabase, gateway: noReconGateway, sourceChains: new Map(),
+  }).activity({ auth });
+  const legacyApproval = legacyActivity.activities.find((item) => item.actionId === 'legacy-approval-bound');
+  const legacyDeposit = legacyActivity.activities.find((item) => item.actionId === 'legacy-deposit-bound');
+  assert.equal(legacyApproval.phase, 'APPROVAL_SUBMITTED');
+  assert.equal(legacyApproval.actionRequired, false);
+  assert.equal(legacyApproval.terminal, false);
+  assert.equal(legacyDeposit.phase, 'DEPOSIT_SUBMITTED');
+  assert.equal(legacyDeposit.actionRequired, false);
+  assert.equal(legacyDeposit.terminal, false);
+  assert.equal(legacyDatabase.rows.get('legacy-approval-bound').state, 'APPROVAL_CHALLENGE');
+  assert.equal(legacyDatabase.rows.get('legacy-deposit-bound').state, 'DEPOSIT_CHALLENGE');
+
   console.log('GATEWAY_ACTIVITY_SERVER_BACKED=PASS');
   console.log('GATEWAY_ACTIVITY_BATCH_RECONCILIATION=PASS');
   console.log('GATEWAY_ACTIVITY_ONE_GATEWAY_READ=PASS');
   console.log('GATEWAY_ACTIVITY_BACKGROUND_RELEASE=PASS');
   console.log('GATEWAY_ACTIVITY_RELOAD_RECOVERY=PASS');
   console.log('GATEWAY_ACTIVITY_NO_FINANCIAL_SIDE_EFFECTS=PASS');
+  console.log('GATEWAY_ACTIVITY_BOUND_APPROVAL_SUBMITTED=PASS');
   console.log('GATEWAY_FINALITY_NO_ACTION_REQUIRED=PASS');
   console.log('GATEWAY_FINALITY_ACTIVITY_OPEN_COUNT=PASS');
 }
@@ -1741,6 +1771,53 @@ async function verifyCircleClientApprovalPendingResume() {
   assert.equal(behavior.recovery().requestId, requestId);
   assert.equal(behavior.recovery().actionId, actionId);
   console.log('GATEWAY_CIRCLE_RESUME_PHASE_SYNC=PASS');
+  console.log('GATEWAY_CIRCLE_APPROVAL_PENDING_NO_REPROMPT=PASS');
+  console.log('GATEWAY_CIRCLE_PENDING_SAME_ACTION_RECOVERY=PASS');
+}
+
+async function verifyCircleClientDepositPendingResume() {
+  const actionId = 'circle-client-deposit-pending-action';
+  const requestId = 'circle-client-deposit-pending-request';
+  const depositChallengeId = 'deposit-challenge-pending';
+  const initialRecovery = {
+    actionId,
+    requestId,
+    sourceDomain: 3,
+    amountRaw: AMOUNT,
+    phase: 'DEPOSIT_PENDING',
+    challengeId: depositChallengeId,
+    expiresAtMs: Date.UTC(2026, 8, 12, 13, 0, 0),
+  };
+  const progress = [];
+  const responses = (state, overrides = {}) => circleDepositClientResponse(state, {
+    actionId, requestId, depositChallengeId, ...overrides,
+  });
+  const behavior = createCircleGatewayActionsBehavior({
+    initialRecovery,
+    startGatewayDeposit: () => { throw new Error('deposit pending recovery must not create a new action'); },
+    approvalResponses: [],
+    depositResponses: [
+      responses('DEPOSIT_PENDING', { pending: true }),
+      responses('RECONCILING', { pending: true }),
+    ],
+  });
+
+  const result = await behavior.runner.confirmGatewaySourceDeposit(
+    { sourceDomain: 3, amountRaw: AMOUNT },
+    { executionMode: 'CIRCLE_USER_WALLET' },
+    (phase) => progress.push(phase),
+  );
+  assert.equal(result.state, 'RECONCILING');
+  assert.deepEqual(progress, ['DEPOSIT_PENDING', 'RECONCILING']);
+  assert.equal(behavior.startCalls.length, 0, 'DEPOSIT_PENDING recovery must keep the same action');
+  assert.equal(behavior.approvalCalls.length, 0, 'DEPOSIT_PENDING recovery must not probe approval');
+  assert.equal(behavior.depositCalls.length, 2, 'DEPOSIT_PENDING must use read-only deposit verification');
+  assert.equal(behavior.executeCalls.length, 0, 'DEPOSIT_PENDING must never re-execute the deposit challenge');
+  assert.equal(behavior.gatewayStatusCalls.length, 0, 'pending recovery must not fall back to generic status polling');
+  assert.equal(behavior.depositCalls.every((call) => call.actionId === actionId), true);
+  assert.equal(behavior.recovery().actionId, actionId);
+  assert.equal(behavior.recovery().requestId, requestId);
+  console.log('GATEWAY_CIRCLE_DEPOSIT_PENDING_NO_REPROMPT=PASS');
 }
 
 async function verifyCircleClientTransientApprovalRead() {
@@ -1829,6 +1906,219 @@ async function verifyCircleClientTransientApprovalRead() {
   console.log('GATEWAY_CIRCLE_TRANSIENT_APPROVAL_READ_RETRY=PASS');
   console.log('GATEWAY_CIRCLE_NO_SECOND_APPROVAL_PROMPT=PASS');
   console.log('GATEWAY_CIRCLE_TRANSIENT_READ_PRESERVES_RECOVERY=PASS');
+}
+
+function createCirclePendingServiceFixture() {
+  const walletAddress = '0x7000000000000000000000000000000000000007';
+  const auth = {
+    userId: 'circle-pending-user', executionMode: 'CIRCLE_USER_WALLET',
+    walletAddress, circleWalletId: 'arc-pending-wallet',
+  };
+  const source = createFakeSourceChain();
+  const sourceChains = new Map([[DOMAIN, source]]);
+  const database = createFakeDatabase();
+  const gateway = {
+    async readUnifiedUsdcBalance() {
+      return { balances: [{ domain: DOMAIN, balanceRaw: '0', transferable: true }] };
+    },
+  };
+  const challenges = new Map();
+  let nextChallengeId = 1;
+  let createChallengeCalls = 0;
+  let approvalReadSequence = null;
+  let trackedActionId = null;
+  const sourceReadObservations = [];
+  const originalReadChainState = source.readChainState.bind(source);
+  source.readChainState = async () => {
+    if (!approvalReadSequence) return originalReadChainState();
+    const next = approvalReadSequence.shift();
+    const row = trackedActionId ? database.rows.get(trackedActionId) : null;
+    sourceReadObservations.push({
+      durableState: row?.state || null,
+      allowanceRaw: next instanceof Error ? null : next?.allowanceRaw,
+      error: next instanceof Error ? next.message : null,
+    });
+    if (next instanceof Error) throw next;
+    if (!next) throw new Error('source read sequence exhausted');
+    return next;
+  };
+  const circle = {
+    async listEoaForBlockchain() {
+      return { id: 'base-pending-wallet', address: walletAddress, blockchain: 'BASE-SEPOLIA', accountType: 'EOA' };
+    },
+    async createContractExecutionChallenge({ contractAddress, callData }) {
+      createChallengeCalls += 1;
+      const challengeId = `pending-challenge-${nextChallengeId}`;
+      nextChallengeId += 1;
+      challenges.set(challengeId, { contractAddress, callData, status: 'PENDING', txHash: null });
+      return { challengeId };
+    },
+    async getContractExecutionChallenge({ challengeId }) {
+      const challenge = challenges.get(challengeId);
+      return { id: challengeId, status: challenge.status, transactionId: challenge.txHash ? challengeId : null };
+    },
+    async getContractExecutionTransaction({ id, blockchain }) {
+      const challenge = challenges.get(id);
+      if (!challenge?.txHash) return null;
+      if (blockchain !== 'BASE-SEPOLIA') throw new Error('circle_transaction_mismatch');
+      return { id, state: 'COMPLETE', txHash: challenge.txHash, blockchain };
+    },
+    async findContractExecutionTransaction() {
+      return null;
+    },
+  };
+  const sessionDeps = { listArcEoa: async () => ({ id: auth.circleWalletId, address: walletAddress }) };
+  const service = createGatewayDepositService({
+    database, gateway, circle, sourceChains, sleep: async () => {},
+  });
+
+  return {
+    auth,
+    database,
+    service,
+    sourceReadObservations,
+    sessionDeps,
+    get createChallengeCalls() { return createChallengeCalls; },
+    setApprovalReadSequence(sequence, actionId) {
+      approvalReadSequence = [...sequence];
+      trackedActionId = actionId;
+    },
+    approve(challengeId, txHash) {
+      const challenge = challenges.get(challengeId);
+      challenge.status = 'COMPLETE';
+      challenge.txHash = txHash;
+    },
+  };
+}
+
+async function verifyCirclePendingStateDurability() {
+  const fixture = createCirclePendingServiceFixture();
+  const requestId = '77777777-7777-4777-8777-777777777777';
+  const started = await fixture.service.start({
+    auth: fixture.auth, userToken: 'circle-user-token-long-enough',
+    requestId, sourceDomain: DOMAIN, amountRaw: AMOUNT,
+  });
+  assert.equal(started.state, 'APPROVAL_CHALLENGE');
+  fixture.setApprovalReadSequence([
+    { balanceRaw: '5000000', allowanceRaw: '0' },
+    { balanceRaw: '5000000', allowanceRaw: AMOUNT },
+  ], started.actionId);
+  fixture.approve(started.approvalChallengeId, `0x${'71'.repeat(32)}`);
+
+  const approvalResolved = await fixture.service.verifyApproval({
+    auth: fixture.auth, actionId: started.actionId, userToken: 'circle-user-token-long-enough',
+  }, fixture.sessionDeps);
+  assert.equal(approvalResolved.state, 'DEPOSIT_CHALLENGE');
+  assert.deepEqual(
+    fixture.sourceReadObservations.map((observation) => observation.allowanceRaw),
+    ['0', AMOUNT],
+    'the source rail must retry one stale allowance and accept the later value',
+  );
+  assert.ok(
+    fixture.sourceReadObservations.every((observation) => observation.durableState === 'APPROVAL_PENDING'),
+    'the approval bind must be durable before any source confirmation read',
+  );
+  const approvalBindIndex = fixture.database.events.findIndex((event) => (
+    event.sql.includes('approval_tx_hash = $4') && event.sql.includes('state = $6')
+  ));
+  assert.ok(approvalBindIndex > -1);
+  assert.equal(fixture.database.events[approvalBindIndex].row.state, 'APPROVAL_PENDING');
+  assert.equal(fixture.database.rows.get(started.actionId).approval_tx_hash, `0x${'71'.repeat(32)}`);
+  assert.equal(fixture.createChallengeCalls, 2, 'stale confirmation must not create another approval challenge');
+  assert.equal(fixture.database.rows.size, 1, 'the same action row must be reused');
+  assert.equal(fixture.database.rows.get(started.actionId).request_id, requestId);
+  console.log('GATEWAY_CIRCLE_APPROVAL_BIND_DURABLE_PENDING=PASS');
+  console.log('GATEWAY_CIRCLE_SOURCE_READ_AFTER_WRITE_RETRY=PASS');
+  console.log('GATEWAY_CIRCLE_STALE_ALLOWANCE_RETRY=PASS');
+
+  const depositHash = `0x${'72'.repeat(32)}`;
+  fixture.approve(approvalResolved.depositChallengeId, depositHash);
+  const depositResolved = await fixture.service.verifyDeposit({
+    auth: fixture.auth, actionId: started.actionId, userToken: 'circle-user-token-long-enough',
+  }, fixture.sessionDeps);
+  assert.equal(depositResolved.state, 'RECONCILING');
+  const depositBindIndex = fixture.database.events.findIndex((event) => (
+    event.sql.includes('deposit_tx_hash = $4') && event.sql.includes('state = $6')
+  ));
+  const reconcilingIndex = fixture.database.events.findIndex((event, index) => (
+    index > depositBindIndex && event.sql.includes("SET state = 'RECONCILING'")
+  ));
+  assert.ok(depositBindIndex > approvalBindIndex && reconcilingIndex > depositBindIndex);
+  assert.equal(fixture.database.events[depositBindIndex].row.state, 'DEPOSIT_PENDING');
+  assert.equal(fixture.database.events[reconcilingIndex].row.state, 'RECONCILING');
+  assert.equal(fixture.database.rows.get(started.actionId).deposit_tx_hash, depositHash);
+  assert.equal(fixture.createChallengeCalls, 2, 'deposit binding must not create a second deposit challenge');
+  console.log('GATEWAY_CIRCLE_DEPOSIT_BIND_DURABLE_PENDING=PASS');
+
+  // When the bounded source rail is exhausted, a same-request start must not
+  // skip the pending confirmation and issue a deposit challenge. The next
+  // verify call resumes the same action read-only and advances normally.
+  const held = createCirclePendingServiceFixture();
+  const heldRequestId = '76767676-7676-4767-8767-767676767676';
+  const heldStarted = await held.service.start({
+    auth: held.auth, userToken: 'circle-user-token-long-enough',
+    requestId: heldRequestId, sourceDomain: DOMAIN, amountRaw: AMOUNT,
+  });
+  held.setApprovalReadSequence(
+    Array.from({ length: 6 }, () => ({ balanceRaw: '5000000', allowanceRaw: '0' })),
+    heldStarted.actionId,
+  );
+  held.approve(heldStarted.approvalChallengeId, `0x${'75'.repeat(32)}`);
+  const heldPending = await held.service.verifyApproval({
+    auth: held.auth, actionId: heldStarted.actionId, userToken: 'circle-user-token-long-enough',
+  }, held.sessionDeps);
+  assert.equal(heldPending.state, 'APPROVAL_PENDING');
+  assert.equal(heldPending.approvalTxHash, `0x${'75'.repeat(32)}`);
+  const heldReplay = await held.service.start({
+    auth: held.auth, userToken: 'circle-user-token-long-enough',
+    requestId: heldRequestId, sourceDomain: DOMAIN, amountRaw: AMOUNT,
+  });
+  assert.equal(heldReplay.state, 'APPROVAL_PENDING');
+  assert.equal(heldReplay.depositChallengeId, null);
+  assert.equal(held.createChallengeCalls, 1, 'pending start replay must not issue a deposit challenge');
+  held.setApprovalReadSequence([
+    { balanceRaw: '5000000', allowanceRaw: AMOUNT },
+  ], heldStarted.actionId);
+  const heldAdvanced = await held.service.verifyApproval({
+    auth: held.auth, actionId: heldStarted.actionId, userToken: 'circle-user-token-long-enough',
+  }, held.sessionDeps);
+  assert.equal(heldAdvanced.state, 'DEPOSIT_CHALLENGE');
+
+  const transient = createCirclePendingServiceFixture();
+  const transientStarted = await transient.service.start({
+    auth: transient.auth, userToken: 'circle-user-token-long-enough',
+    requestId: '78787878-7878-4787-8787-787878787878', sourceDomain: DOMAIN, amountRaw: AMOUNT,
+  });
+  const transportFailure = Object.assign(new Error('source transport unavailable'), { code: 'ETIMEDOUT' });
+  transient.setApprovalReadSequence([
+    transportFailure,
+    { balanceRaw: '5000000', allowanceRaw: AMOUNT },
+  ], transientStarted.actionId);
+  transient.approve(transientStarted.approvalChallengeId, `0x${'73'.repeat(32)}`);
+  const transientResolved = await transient.service.verifyApproval({
+    auth: transient.auth, actionId: transientStarted.actionId, userToken: 'circle-user-token-long-enough',
+  }, transient.sessionDeps);
+  assert.equal(transientResolved.state, 'DEPOSIT_CHALLENGE');
+  assert.equal(transient.sourceReadObservations.length, 2);
+  assert.equal(transient.sourceReadObservations[0].durableState, 'APPROVAL_PENDING');
+
+  const mismatch = createCirclePendingServiceFixture();
+  const mismatchStarted = await mismatch.service.start({
+    auth: mismatch.auth, userToken: 'circle-user-token-long-enough',
+    requestId: '79797979-7979-4797-8797-797979797979', sourceDomain: DOMAIN, amountRaw: AMOUNT,
+  });
+  mismatch.setApprovalReadSequence([
+    new Error('gateway_source_chain_id_mismatch'),
+  ], mismatchStarted.actionId);
+  mismatch.approve(mismatchStarted.approvalChallengeId, `0x${'74'.repeat(32)}`);
+  await rejectsCode(
+    () => mismatch.service.verifyApproval({
+      auth: mismatch.auth, actionId: mismatchStarted.actionId, userToken: 'circle-user-token-long-enough',
+    }, mismatch.sessionDeps),
+    'gateway_source_chain_id_mismatch',
+  );
+  assert.equal(mismatch.sourceReadObservations.length, 1, 'security errors must not enter the retry rail');
+  assert.equal(mismatch.database.rows.get(mismatchStarted.actionId).state, 'APPROVAL_PENDING');
 }
 
 // ---------------------------------------------------------------------------
@@ -2662,8 +2952,8 @@ function verifyWalletPageDepositRecoveryWiringLegacy() {
   assert.ok(copy.includes('gatewayFinalityFormNotice: "{amount} USDC {network} üzerinden gönderildi. Gateway kesinleşmesi Aktivite bölümünde devam ediyor. İşlem gerekmiyor. Başka bir ağdan fonlayabilirsiniz."'));
   assert.ok(copy.includes('gatewayFinalitySourceHint: "This source is finalizing in Activity. Choose another source to fund now."'));
   assert.ok(copy.includes('gatewayFinalitySourceHint: "Bu kaynak Aktivite bölümünde kesinleşiyor. Şimdi fonlamak için başka bir kaynak seç."'));
-  assert.ok(copy.includes('gatewayApprovalStatusPending: "Approval submitted. We’re still checking its status."'));
-  assert.ok(copy.includes('gatewayApprovalStatusPending: "Onay gönderildi. Durumunu kontrol etmeye devam ediyoruz."'));
+  assert.ok(copy.includes('gatewayApprovalStatusPending: "Approval submitted — checking source confirmation…"'));
+  assert.ok(copy.includes('gatewayApprovalStatusPending: "Onay gönderildi — kaynak doğrulaması kontrol ediliyor…"'));
   assert.ok(!/gatewayPrepareBody:[^\n]*EIP-712/.test(copy), 'primary Gateway copy must not expose EIP-712');
   // Primary product copy is in the i18n tables, not inline locale ternaries.
   for (const literal of [
@@ -2799,6 +3089,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   const depositApi = fs.readFileSync(path.join(__dirname, '../../app/lib/backend-api.ts'), 'utf8');
   const depositRoute = fs.readFileSync(path.join(__dirname, '../../backend/src/routes/wallet.js'), 'utf8');
   const depositService = fs.readFileSync(path.join(__dirname, '../../backend/src/services/gatewayDepositService.js'), 'utf8');
+  const sourceChainService = fs.readFileSync(path.join(__dirname, '../../backend/src/services/gatewaySourceChainService.js'), 'utf8');
   const styles = fs.readFileSync(path.join(__dirname, '../../app/globals.css'), 'utf8');
   const header = fs.readFileSync(path.join(__dirname, '../../app/product-components.tsx'), 'utf8');
   const copy = fs.readFileSync(path.join(__dirname, '../../app/i18n.tsx'), 'utf8');
@@ -2902,6 +3193,15 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(depositService, /const reconcilingRows = rows\.filter/);
   assert.match(depositService, /reconcile\(row, balance\)/);
   assert.match(depositService, /readUnifiedUsdcBalance\(auth\.walletAddress\)/);
+  assert.match(depositService, /const state = phaseName === 'APPROVAL' \? 'APPROVAL_PENDING' : 'DEPOSIT_PENDING';/);
+  assert.match(depositService, /\$\{prefix\}_circle_transaction_id = \$5,\s+state = \$6/);
+  assert.match(depositService, /confirmApprovalSourceState\(row, source\)/);
+  assert.match(depositService, /row\.state === 'APPROVAL_PENDING'[\s\S]{0,220}return \{ row, challenge: null, step: 'APPROVAL_REQUIRED' \}/);
+  assert.match(depositService, /row\.state === 'DEPOSIT_PENDING'[\s\S]{0,220}return \{ row, challenge: null, step: 'DEPOSIT_REQUIRED' \}/);
+  assert.match(depositService, /state IN \('APPROVAL_CHALLENGE', 'APPROVAL_PENDING'\)/);
+  assert.match(depositService, /state IN \('DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING'\)/);
+  assert.match(sourceChainService, /function isTransientSourceReadError\(error\)/);
+  assert.match(sourceChainService, /'gateway_source_chain_id_mismatch'/, 'chain identity remains an explicit non-transient error');
   assert.match(depositApi, /gatewayDepositActivity\(\)/);
   assert.match(depositApi, /GatewayDepositActivityItem/);
   assert.match(handler, /function clearTerminalBrowserRecovery\(\)/);
@@ -2917,6 +3217,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(reconcilingBranch, /void refreshActivity\(\)/);
   assert.ok(!reconcilingBranch.includes('restoreBrowserRecovery'));
   assert.match(handler, /phase === "DEPOSIT_CHALLENGE"\) setDepositPhase\("confirmDeposit"\)/);
+  assert.match(handler, /phase === "APPROVAL_PENDING"\) setDepositPhase\("approvalSubmitted"\)/);
   assert.match(handler, /phase === "DEPOSIT_PENDING"\) setDepositPhase\("depositSubmitted"\)/);
   assert.match(handler, /phase === "RECONCILING"\) setDepositPhase\("waitingFinality"\)/);
   assert.match(depositMarkup, /disabled=\{depositBusy \|\| Boolean\(depositRecovery\)\}/);
@@ -2992,6 +3293,20 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(gatewayActions, /circle_service_unavailable/);
   assert.match(gatewayActions, /circle_rate_limited/);
   assert.match(gatewayActions, /gateway_deposit_approval_status_pending/);
+  assert.match(gatewayActions, /current\.state === "APPROVAL_PENDING"/);
+  assert.match(gatewayActions, /current\.state === "DEPOSIT_PENDING"/);
+  assert.match(gatewayActions, /result\.state !== "APPROVAL_PENDING"/);
+  assert.match(gatewayActions, /result\.state !== "DEPOSIT_PENDING"/);
+  const approvalPendingStart = gatewayActions.indexOf('if (current.state === "APPROVAL_PENDING")');
+  const approvalChallengeStart = gatewayActions.indexOf('if (current.state === "APPROVAL_CHALLENGE")', approvalPendingStart);
+  const approvalPendingBranch = gatewayActions.slice(approvalPendingStart, approvalChallengeStart);
+  assert.ok(approvalPendingStart > -1 && approvalChallengeStart > approvalPendingStart);
+  assert.doesNotMatch(approvalPendingBranch, /executeHostedChallenge/);
+  const depositPendingStart = gatewayActions.indexOf('if (current.state === "DEPOSIT_PENDING")');
+  const depositChallengeStart = gatewayActions.indexOf('if (current.state === "DEPOSIT_CHALLENGE")', depositPendingStart);
+  const depositPendingBranch = gatewayActions.slice(depositPendingStart, depositChallengeStart);
+  assert.ok(depositPendingStart > -1 && depositChallengeStart > depositPendingStart);
+  assert.doesNotMatch(depositPendingBranch, /executeHostedChallenge/);
   assert.match(handler, /gateway_deposit_approval_status_pending/);
   assert.match(handler, /restoreBrowserRecovery\(\)/);
   console.log('GATEWAY_FINALITY_FORM_HANDOFF_NOTICE=PASS');
@@ -3248,8 +3563,10 @@ function verifyPoolRefreshWiring() {
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleClientTwoChallengeFlow();
   await verifyCircleClientApprovalPendingResume();
+  await verifyCircleClientDepositPendingResume();
   await verifyCircleClientTransientApprovalRead();
   await verifyCircleBranch();
+  await verifyCirclePendingStateDurability();
   await verifyMultiChainCircleBranch();
   await verifySameSourceReviewGuard();
   await verifyEngineBlockchainDefaulting();

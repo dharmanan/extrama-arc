@@ -30,6 +30,8 @@ const circleExecutionEngine = require('./circleExecutionEngine');
 const { EXECUTION_MODES, isHumanExecutionMode } = require('./executionIdentityService');
 
 const DEPOSIT_TTL_MS = 30 * 60 * 1000;
+const SOURCE_CONFIRMATION_MAX_ATTEMPTS = 6;
+const SOURCE_CONFIRMATION_RETRY_DELAY_MS = 1_000;
 
 // The real source chain configurations, derived from the one canonical network
 // table. A test injects its own `sourceChains` map into
@@ -156,6 +158,9 @@ function activityStatusFor(row) {
     case 'APPROVAL_REQUIRED':
       return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_REQUIRED, actionRequired: true };
     case 'APPROVAL_CHALLENGE':
+      if (hasDurableValue(row.approval_tx_hash)) {
+        return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_SUBMITTED, actionRequired: false };
+      }
       return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_REQUIRED, actionRequired: true };
     case 'APPROVAL_PENDING':
       return { stage: 'APPROVAL', phase: ACTIVITY_PHASES.APPROVAL_SUBMITTED, actionRequired: false };
@@ -163,6 +168,9 @@ function activityStatusFor(row) {
     case 'DEPOSIT_REQUIRED':
       return { stage: 'DEPOSIT', phase: ACTIVITY_PHASES.DEPOSIT_PREPARING, actionRequired: false };
     case 'DEPOSIT_CHALLENGE':
+      if (hasDurableValue(row.deposit_tx_hash)) {
+        return { stage: 'DEPOSIT', phase: ACTIVITY_PHASES.DEPOSIT_SUBMITTED, actionRequired: false };
+      }
       return { stage: 'DEPOSIT', phase: ACTIVITY_PHASES.DEPOSIT_CONFIRMATION_REQUIRED, actionRequired: true };
     case 'DEPOSIT_PENDING':
     case 'DEPOSIT_VERIFIED':
@@ -259,6 +267,7 @@ function createGatewayDepositService({
   engine = circleExecutionEngine,
   sourceChains = SOURCE_CHAINS,
   now = () => Date.now(),
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
   function isExpired(row) {
     return new Date(row.expires_at).getTime() <= now();
@@ -333,11 +342,13 @@ function createGatewayDepositService({
       },
       async bindTransaction(userId, actionId, walletAddress, _circleWalletId, phaseName, transaction) {
         const prefix = phaseName === 'APPROVAL' ? 'approval' : 'deposit';
+        const state = phaseName === 'APPROVAL' ? 'APPROVAL_PENDING' : 'DEPOSIT_PENDING';
         await database.query(
           `UPDATE gateway_deposit_actions
-              SET ${prefix}_tx_hash = $4, ${prefix}_circle_transaction_id = $5, updated_at = NOW()
+              SET ${prefix}_tx_hash = $4, ${prefix}_circle_transaction_id = $5,
+                  state = $6, updated_at = NOW()
             WHERE id = $1 AND user_id = $2 AND lower(wallet_address) = lower($3)`,
-          [actionId, userId, walletAddress, transaction.txHash, transaction.id],
+          [actionId, userId, walletAddress, transaction.txHash, transaction.id, state],
         );
         return toEnginePhaseShape(await fetchRow(actionId, userId, walletAddress));
       },
@@ -456,6 +467,26 @@ function createGatewayDepositService({
     if (['APPROVAL_REQUIRED', 'APPROVAL_CHALLENGE'].includes(row.state)) return 'APPROVAL_REQUIRED';
     if (['DEPOSIT_REQUIRED', 'DEPOSIT_CHALLENGE'].includes(row.state)) return 'DEPOSIT_REQUIRED';
     return row.state;
+  }
+
+  // Once Circle has supplied a valid transaction hash, a source-chain read is
+  // only a read-after-write confirmation. Retry narrowly on provider
+  // transport noise or a stale allowance; never retry a chain/identity or
+  // malformed-read failure. Exhaustion leaves the already-bound action in
+  // APPROVAL_PENDING so the next read can resume the same action safely.
+  async function confirmApprovalSourceState(row, source) {
+    for (let attempt = 0; attempt < SOURCE_CONFIRMATION_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const chainState = await source.readChainState(row.wallet_address);
+        if (BigInt(chainState.allowanceRaw) >= BigInt(row.amount_raw)) return true;
+      } catch (error) {
+        if (!gatewaySourceChainService.isTransientSourceReadError(error)) throw error;
+      }
+      if (attempt < SOURCE_CONFIRMATION_MAX_ATTEMPTS - 1) {
+        await sleep(SOURCE_CONFIRMATION_RETRY_DELAY_MS);
+      }
+    }
+    return false;
   }
 
   // --- External wallet branch --------------------------------------------
@@ -597,6 +628,19 @@ function createGatewayDepositService({
     const enginePhase = toEnginePhaseShape(row);
     const port = depositPort();
 
+    // A bound approval/deposit is already a financial submission. Never let a
+    // repeated start call skip its read-only confirmation merely because an
+    // older row still has a challenge-shaped state or because the pending
+    // state carries its tx evidence.
+    if (row.state === 'APPROVAL_PENDING' ||
+      (row.state === 'APPROVAL_CHALLENGE' && row.approval_tx_hash)) {
+      return { row, challenge: null, step: 'APPROVAL_REQUIRED' };
+    }
+    if (row.state === 'DEPOSIT_PENDING' ||
+      (row.state === 'DEPOSIT_CHALLENGE' && row.deposit_tx_hash)) {
+      return { row, challenge: null, step: 'DEPOSIT_REQUIRED' };
+    }
+
     if (!row.deposit_tx_hash && !row.approval_tx_hash) {
       const chainState = await source.readChainState(row.wallet_address);
       if (BigInt(chainState.balanceRaw) < BigInt(row.amount_raw)) {
@@ -655,15 +699,20 @@ function createGatewayDepositService({
       };
     }
 
+    row = await fetchRow(row.id, row.user_id, row.wallet_address);
     if (phaseName === 'APPROVAL') {
-      const refreshed = await source.readChainState(row.wallet_address);
-      if (BigInt(refreshed.allowanceRaw) < BigInt(row.amount_raw)) {
-        throw new Error('gateway_deposit_approval_failed');
+      const allowanceConfirmed = await confirmApprovalSourceState(row, source);
+      if (!allowanceConfirmed) {
+        return {
+          pending: true,
+          transactionObserved: true,
+          row,
+        };
       }
       const result = await database.query(
         `UPDATE gateway_deposit_actions
             SET state = 'DEPOSIT_REQUIRED', last_error = NULL, updated_at = NOW()
-          WHERE id = $1 AND state = 'APPROVAL_CHALLENGE'
+          WHERE id = $1 AND state IN ('APPROVAL_CHALLENGE', 'APPROVAL_PENDING')
           RETURNING *`,
         [row.id],
       );
@@ -673,7 +722,7 @@ function createGatewayDepositService({
     const result = await database.query(
       `UPDATE gateway_deposit_actions
           SET state = 'RECONCILING', last_error = NULL, updated_at = NOW()
-        WHERE id = $1 AND state = 'DEPOSIT_CHALLENGE'
+        WHERE id = $1 AND state IN ('DEPOSIT_CHALLENGE', 'DEPOSIT_PENDING')
         RETURNING *`,
       [row.id],
     );

@@ -75,6 +75,7 @@ type DepositPhaseLabel =
   | "reading"
   | "preparingApproval"
   | "confirmApproval"
+  | "approvalSubmitted"
   | "approvalConfirmed"
   | "confirmDeposit"
   | "depositSubmitted"
@@ -1078,7 +1079,7 @@ export default function WalletPage() {
         },
         (phase) => {
           if (phase === "APPROVAL_REQUIRED" || phase === "APPROVAL_CHALLENGE") setDepositPhase("preparingApproval");
-          else if (phase === "APPROVAL_PENDING") setDepositPhase("confirmApproval");
+          else if (phase === "APPROVAL_PENDING") setDepositPhase("approvalSubmitted");
           else if (phase === "DEPOSIT_REQUIRED" || phase === "DEPOSIT_CHALLENGE") setDepositPhase("confirmDeposit");
           else if (phase === "DEPOSIT_PENDING") setDepositPhase("depositSubmitted");
           else if (phase === "RECONCILING") setDepositPhase("waitingFinality");
@@ -1748,6 +1749,7 @@ export default function WalletPage() {
                             {depositBusy
                               ? (depositPhase === "preparingApproval" ? t.wallet.gatewayPreparingApproval
                                 : depositPhase === "confirmApproval" ? (executionMode === "CIRCLE_USER_WALLET" ? t.wallet.gatewayConfirmApprovalCircle : t.wallet.gatewayConfirmApprovalWallet)
+                                : depositPhase === "approvalSubmitted" ? t.wallet.gatewayApprovalStatusPending
                                 : depositPhase === "confirmDeposit" ? t.wallet.gatewayConfirmDeposit
                                 : depositPhase === "depositSubmitted" ? t.wallet.gatewayDepositSubmitted
                                 : depositPhase === "waitingFinality" ? t.wallet.gatewayWaitingFinality

@@ -349,6 +349,26 @@ async function runCircleDeposit(
       onStatus?.("RECONCILING");
       return current;
     }
+    if (current.state === "APPROVAL_PENDING") {
+      // The approval transaction is durably bound. Only re-read the same
+      // action until the source confirmation advances it; never execute a
+      // hosted challenge from this state.
+      onStatus?.("APPROVAL_PENDING");
+      current = await pollDeposit(
+        () => backendApi.wallet.verifyGatewayDepositApproval(
+          recovery!.actionId,
+          { circleUserToken: auth.userToken },
+        ),
+        (result) => !result.pending || (
+          result.state !== "APPROVAL_CHALLENGE" && result.state !== "APPROVAL_PENDING"
+        ),
+        45,
+        4000,
+        "gateway_deposit_approval_status_pending",
+      );
+      syncCircleRecoveryToBackendPhase(current);
+      continue;
+    }
     if (current.state === "APPROVAL_CHALLENGE") {
       onStatus?.("APPROVAL_CHALLENGE");
       if (!current.transactionObserved && current.approvalChallengeId) {
@@ -365,10 +385,28 @@ async function runCircleDeposit(
       );
       current = await pollDeposit(
         readApprovalAfterHostedChallenge,
-        (result) => !result.pending || result.state !== "APPROVAL_CHALLENGE",
+        (result) => !result.pending || (
+          result.state !== "APPROVAL_CHALLENGE" && result.state !== "APPROVAL_PENDING"
+        ),
         45,
         4000,
         "gateway_deposit_approval_status_pending",
+      );
+      syncCircleRecoveryToBackendPhase(current);
+      continue;
+    }
+    if (current.state === "DEPOSIT_PENDING") {
+      // The deposit transaction is durably bound. Reconcile it read-only and
+      // never re-open the hosted deposit challenge.
+      onStatus?.("DEPOSIT_PENDING");
+      current = await pollDeposit(
+        () => backendApi.wallet.verifyGatewayDeposit(
+          recovery!.actionId,
+          { circleUserToken: auth.userToken },
+        ),
+        (result) => !result.pending || (
+          result.state !== "DEPOSIT_CHALLENGE" && result.state !== "DEPOSIT_PENDING"
+        ),
       );
       syncCircleRecoveryToBackendPhase(current);
       continue;
@@ -383,7 +421,9 @@ async function runCircleDeposit(
       onStatus?.("DEPOSIT_PENDING");
       current = await pollDeposit(
         () => backendApi.wallet.verifyGatewayDeposit(recovery!.actionId, { circleUserToken: auth.userToken }),
-        (result) => !result.pending || result.state !== "DEPOSIT_CHALLENGE",
+        (result) => !result.pending || (
+          result.state !== "DEPOSIT_CHALLENGE" && result.state !== "DEPOSIT_PENDING"
+        ),
       );
       syncCircleRecoveryToBackendPhase(current);
       continue;
