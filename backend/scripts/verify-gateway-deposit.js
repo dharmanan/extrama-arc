@@ -27,6 +27,7 @@ global.fetch = async () => {
 const {
   createGatewayDepositService,
   RECOVERY_DISPOSITIONS,
+  ACTIVE_RESUMABLE_STATES,
   hasSubmittedFinancialEvidence,
   recoveryDispositionFor,
 } = require('../src/services/gatewayDepositService');
@@ -616,18 +617,18 @@ async function verifySameSourceReviewGuard() {
       source_domain: overrides.source_domain,
       source_chain_id: overrides.source_chain_id,
       amount_raw: AMOUNT,
-      source_circle_wallet_id: null,
+      source_circle_wallet_id: overrides.source_circle_wallet_id ?? null,
       baseline_domain_balance_raw: '0',
-      approval_tx_hash: null,
+      approval_tx_hash: overrides.approval_tx_hash ?? null,
       approval_circle_challenge_id: overrides.approval_circle_challenge_id ?? null,
       approval_circle_idempotency_key: null,
       approval_circle_ref_id: null,
-      approval_circle_transaction_id: null,
+      approval_circle_transaction_id: overrides.approval_circle_transaction_id ?? null,
       deposit_tx_hash: null,
-      deposit_circle_challenge_id: null,
+      deposit_circle_challenge_id: overrides.deposit_circle_challenge_id ?? null,
       deposit_circle_idempotency_key: null,
       deposit_circle_ref_id: null,
-      deposit_circle_transaction_id: null,
+      deposit_circle_transaction_id: overrides.deposit_circle_transaction_id ?? null,
       state: overrides.state,
       last_error: null,
       expires_at: overrides.expires_at ?? new Date(Date.now() + 30 * 60 * 1000),
@@ -635,14 +636,19 @@ async function verifySameSourceReviewGuard() {
     });
   }
 
-  // A. An existing, unresolved (RESUME-disposition) OP action with no browser
-  // recovery: a freshly minted request id for the SAME source domain must be
-  // refused before any row is inserted and before any Circle challenge.
+  // A. An existing active DEPOSIT_CHALLENGE is RESUME-capable even though its
+  // approval tx, Circle transaction and deposit challenge are durable
+  // evidence. A freshly minted request id for the SAME source must still be
+  // refused before any row is inserted or Circle challenge.
   {
     const database = createFakeDatabase();
     seedRow(database, {
       id: 'existing-op-resume', request_id: 'aaaaaaaa-0000-4000-8000-000000000001',
-      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'BASELINE_READ',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'DEPOSIT_CHALLENGE',
+      source_circle_wallet_id: 'op-wallet',
+      approval_tx_hash: `0x${'12'.repeat(32)}`,
+      approval_circle_transaction_id: 'approval-transaction-op',
+      deposit_circle_challenge_id: 'deposit-challenge-op',
     });
     const service = createGatewayDepositService({ database, gateway, circle, sourceChains });
     await rejectsCode(
@@ -747,7 +753,11 @@ async function verifySameSourceReviewGuard() {
     const database = createFakeDatabase();
     seedRow(database, {
       id: 'existing-op-resume-same-request', request_id: 'aaaaaaaa-0000-4000-8000-000000000007',
-      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'BASELINE_READ',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'DEPOSIT_CHALLENGE',
+      source_circle_wallet_id: 'op-wallet',
+      approval_tx_hash: `0x${'13'.repeat(32)}`,
+      approval_circle_transaction_id: 'approval-transaction-resume',
+      deposit_circle_challenge_id: 'deposit-challenge-resume',
     });
     const service = createGatewayDepositService({ database, gateway, circle: {
       ...circle,
@@ -759,9 +769,11 @@ async function verifySameSourceReviewGuard() {
       requestId: 'aaaaaaaa-0000-4000-8000-000000000007', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
     });
     assert.equal(resumed.actionId, 'existing-op-resume-same-request', 'the SAME request id must resume the SAME action');
+    assert.equal(resumed.state, 'DEPOSIT_CHALLENGE', 'the SAME request id must resume the existing active phase');
     assert.equal(database.rows.size, 1, 'resuming the same request id must never insert a second row');
   }
 
+  console.log('GATEWAY_RESUME_STILL_BLOCKS_DUPLICATE=PASS');
   console.log('GATEWAY_SAME_SOURCE_REVIEW_GUARD=PASS');
 }
 
@@ -873,6 +885,90 @@ async function verifyExternalBranch() {
   );
 
   console.log('GATEWAY_DEPOSIT_EXTERNAL=PASS');
+}
+
+function verifyRecoveryDispositionClassification() {
+  const expectedActiveStates = [
+    'STARTED',
+    'BASELINE_READ',
+    'APPROVAL_REQUIRED',
+    'APPROVAL_CHALLENGE',
+    'APPROVAL_PENDING',
+    'APPROVAL_VERIFIED',
+    'DEPOSIT_REQUIRED',
+    'DEPOSIT_CHALLENGE',
+    'DEPOSIT_PENDING',
+    'DEPOSIT_VERIFIED',
+  ];
+  assert.deepEqual(
+    [...ACTIVE_RESUMABLE_STATES],
+    expectedActiveStates,
+    'every normal pre-finality state must be explicitly resumable',
+  );
+
+  const activeEvidence = {
+    approval_tx_hash: `0x${'11'.repeat(32)}`,
+    approval_circle_challenge_id: 'approval-challenge-evidence',
+    approval_circle_transaction_id: 'approval-transaction-evidence',
+    deposit_circle_challenge_id: 'deposit-challenge-evidence',
+  };
+  for (const state of expectedActiveStates) {
+    assert.equal(
+      hasSubmittedFinancialEvidence({ state, ...activeEvidence }),
+      true,
+      `${state} evidence remains visible to terminal safety checks`,
+    );
+    assert.equal(
+      recoveryDispositionFor({ state, ...activeEvidence }),
+      RECOVERY_DISPOSITIONS.RESUME,
+      `${state} must resume the SAME active action even when evidence exists`,
+    );
+  }
+
+  assert.equal(
+    recoveryDispositionFor({ state: 'DEPOSIT_CHALLENGE', ...activeEvidence }),
+    RECOVERY_DISPOSITIONS.RESUME,
+    'an active deposit challenge with approval and deposit evidence must resume',
+  );
+  assert.equal(
+    recoveryDispositionFor({
+      state: 'APPROVAL_CHALLENGE',
+      approval_circle_challenge_id: 'approval-challenge-evidence',
+    }),
+    RECOVERY_DISPOSITIONS.RESUME,
+    'an active approval challenge with challenge evidence must resume',
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'RECONCILING' }),
+    RECOVERY_DISPOSITIONS.RECONCILE,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'RECONCILIATION_REQUIRED' }),
+    RECOVERY_DISPOSITIONS.RECONCILE,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'EXPIRED', approval_circle_challenge_id: 'expired-evidence' }),
+    RECOVERY_DISPOSITIONS.RECONCILE,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'EXPIRED' }),
+    RECOVERY_DISPOSITIONS.CLEAR,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'FAILED' }),
+    RECOVERY_DISPOSITIONS.CLEAR,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'COMPLETED', ...activeEvidence }),
+    RECOVERY_DISPOSITIONS.CLEAR,
+  );
+  assert.equal(
+    recoveryDispositionFor({ state: 'UNCLASSIFIED_STATE', ...activeEvidence }),
+    RECOVERY_DISPOSITIONS.RECONCILE,
+    'unknown states must fail closed even when their evidence is incomplete',
+  );
+
+  console.log('GATEWAY_ACTIVE_RECOVERY_RESUMABLE=PASS');
 }
 
 // A submitted deposit has already crossed the user's source wallet boundary.
@@ -2354,6 +2450,13 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(finality, /current\.recoveryDisposition === "CLEAR"[\s\S]{0,700}clearTerminalRecovery\(\)/);
   assert.match(finality, /current\.state === "RECONCILING"[\s\S]{0,240}window\.setTimeout\(readStatus, 10_000\)/);
   assert.match(finality, /needsGatewayDepositRecoveryReview\(current\)[\s\S]{0,700}window\.setTimeout\(readStatus, 10_000\)/);
+  const reviewReadStart = finality.indexOf('if (needsGatewayDepositRecoveryReview(current))');
+  const reviewReadEnd = finality.indexOf('\n        }\n      } catch', reviewReadStart);
+  assert.ok(reviewReadStart > -1 && reviewReadEnd > reviewReadStart);
+  const reviewRead = finality.slice(reviewReadStart, reviewReadEnd);
+  assert.match(reviewRead, /setDepositError\(""\)/);
+  assert.doesNotMatch(reviewRead, /t\.wallet\.gatewayDeposit(?:Expired|StatusNeedsReview)/,
+    'the ACTION column owns the single review message');
   assert.doesNotMatch(finality, /current\.state === "EXPIRED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
   assert.doesNotMatch(finality, /current\.state === "FAILED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
   assert.doesNotMatch(finality, /current\.state === "RECONCILIATION_REQUIRED"[\s\S]{0,180}clearTerminalRecovery\(\)/);
@@ -2371,6 +2474,23 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(depositMarkup, /depositAwaitingFinality && \(/);
   assert.match(depositMarkup, /data-state="active"/);
   assert.match(depositMarkup, /onClick=\{\(\) => void handleGatewaySourceDeposit\(selectedGatewaySource\.domain\)\}/);
+  const actionReviewStart = depositMarkup.indexOf('depositRecoveryNeedsReview ?');
+  const actionReviewEnd = depositMarkup.indexOf(') : depositAwaitingFinality ?', actionReviewStart);
+  assert.ok(actionReviewStart > -1 && actionReviewEnd > actionReviewStart);
+  const actionReview = depositMarkup.slice(actionReviewStart, actionReviewEnd);
+  assert.equal(
+    [...actionReview.matchAll(/t\.wallet\.gatewayDepositStatusNeedsReview/g)].length,
+    1,
+    'a genuine RECONCILE state renders one review message in ACTION',
+  );
+  assert.ok(!/<button/.test(actionReview), 'a genuine RECONCILE state exposes no financial resume button');
+  const resumeLabel = depositMarkup.indexOf('t.wallet.gatewayResumeDeposit');
+  assert.ok(resumeLabel > actionReviewEnd, 'the RESUME branch remains available after the review branch');
+  assert.ok(
+    depositMarkup.indexOf('depositRecoveryNeedsReview ?') < depositMarkup.indexOf('depositAwaitingFinality ?') &&
+    depositMarkup.indexOf('depositAwaitingFinality ?') < resumeLabel,
+    'review and finality locks are evaluated before the same-action resume button',
+  );
   assert.ok(!walletPage.includes('Status: ${result.state}') && !walletPage.includes('Durum: ${result.state}'));
 
   // -------------------------------------------------------------------
@@ -2570,6 +2690,8 @@ function verifyWalletPageDepositRecoveryWiring() {
   console.log('GATEWAY_SELECTED_SOURCE_BALANCE_UI=PASS');
   console.log('GATEWAY_UNCERTAIN_RECOVERY_FAILS_CLOSED=PASS');
   console.log('GATEWAY_CIRCLE_FINALITY_RAIL=PASS');
+  console.log('GATEWAY_REVIEW_MESSAGE_RENDERED_ONCE=PASS');
+  console.log('GATEWAY_RESUME_UI=PASS');
   console.log('GATEWAY_HEADER_ACCOUNT_FOOTPRINT=PASS');
   console.log('GATEWAY_SESSION_CONTROLS=PASS');
   console.log('GATEWAY_WALLET_UI=PASS');
@@ -2611,6 +2733,7 @@ function verifyPoolRefreshWiring() {
 (async () => {
   await verifyExternalBranch();
   await verifyMultiChainDeposit();
+  verifyRecoveryDispositionClassification();
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleClientTwoChallengeFlow();
   await verifyCircleClientApprovalPendingResume();

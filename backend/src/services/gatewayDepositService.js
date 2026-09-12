@@ -51,6 +51,24 @@ const RECOVERY_DISPOSITIONS = Object.freeze({
   RECONCILE: 'RECONCILE',
 });
 
+const ACTIVE_RESUMABLE_STATES = new Set([
+  'STARTED',
+  'BASELINE_READ',
+  'APPROVAL_REQUIRED',
+  'APPROVAL_CHALLENGE',
+  'APPROVAL_PENDING',
+  'APPROVAL_VERIFIED',
+  'DEPOSIT_REQUIRED',
+  'DEPOSIT_CHALLENGE',
+  'DEPOSIT_PENDING',
+  'DEPOSIT_VERIFIED',
+]);
+
+const RECONCILIATION_STATES = new Set([
+  'RECONCILING',
+  'RECONCILIATION_REQUIRED',
+]);
+
 const SUBMITTED_FINANCIAL_STATES = new Set([
   'APPROVAL_PENDING',
   'APPROVAL_VERIFIED',
@@ -81,10 +99,18 @@ function hasSubmittedFinancialEvidence(row) {
 }
 
 function recoveryDispositionFor(row) {
+  if (!row || typeof row.state !== 'string') return RECOVERY_DISPOSITIONS.RECONCILE;
   if (row.state === 'COMPLETED') return RECOVERY_DISPOSITIONS.CLEAR;
-  if (hasSubmittedFinancialEvidence(row)) return RECOVERY_DISPOSITIONS.RECONCILE;
-  if (row.state === 'FAILED' || row.state === 'EXPIRED') return RECOVERY_DISPOSITIONS.CLEAR;
-  return RECOVERY_DISPOSITIONS.RESUME;
+  if (ACTIVE_RESUMABLE_STATES.has(row.state)) return RECOVERY_DISPOSITIONS.RESUME;
+  if (RECONCILIATION_STATES.has(row.state)) return RECOVERY_DISPOSITIONS.RECONCILE;
+  if (row.state === 'FAILED' || row.state === 'EXPIRED') {
+    return hasSubmittedFinancialEvidence(row)
+      ? RECOVERY_DISPOSITIONS.RECONCILE
+      : RECOVERY_DISPOSITIONS.CLEAR;
+  }
+  // A new state is not evidence of a clean terminal outcome. Keep the action
+  // closed until its semantics are explicitly classified.
+  return RECOVERY_DISPOSITIONS.RECONCILE;
 }
 
 function publicAction(row, options = {}) {
@@ -680,6 +706,7 @@ const gatewayDepositService = createGatewayDepositService();
 module.exports = {
   DEPOSIT_TTL_MS,
   RECOVERY_DISPOSITIONS,
+  ACTIVE_RESUMABLE_STATES,
   SOURCE_CHAINS,
   hasSubmittedFinancialEvidence,
   recoveryDispositionFor,

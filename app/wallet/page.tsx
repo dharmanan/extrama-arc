@@ -955,11 +955,10 @@ export default function WalletPage() {
 
         if (needsGatewayDepositRecoveryReview(current)) {
           setDepositPhase("");
-          setDepositError(
-            current.state === "EXPIRED"
-              ? t.wallet.gatewayDepositExpired
-              : t.wallet.gatewayDepositStatusNeedsReview,
-          );
+          // The ACTION column already renders the human-facing review copy.
+          // Clear any stale banner from an earlier attempt so genuine
+          // RECONCILE states do not show the same message twice.
+          setDepositError("");
           // This request is status-only. An uncertain terminal result may be
           // resolved later by the durable backend action, but it must never
           // cause a new approval, deposit, or hosted Circle challenge here.
@@ -1147,11 +1146,9 @@ export default function WalletPage() {
       } else if (needsGatewayDepositRecoveryReview(result)) {
         restoreBrowserRecovery();
         setDepositStatus(result);
-        setDepositError(
-          result.state === "EXPIRED"
-            ? t.wallet.gatewayDepositExpired
-            : t.wallet.gatewayDepositStatusNeedsReview,
-        );
+        // The ACTION column owns the single review message. Do not duplicate
+        // it in the full-width error banner after a status-only response.
+        setDepositError("");
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "";
