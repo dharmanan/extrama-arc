@@ -27,6 +27,7 @@ const gatewayNetworks = require('../src/services/gatewayNetworks');
 const gatewayService = require('../src/services/gatewayService');
 const gatewaySourceChainService = require('../src/services/gatewaySourceChainService');
 const circleUserWalletService = require('../src/services/circleUserWalletService');
+const config = require('../src/config');
 
 // The canonical table, restated here independently so a silent edit to the
 // config is a test failure rather than a new truth. Values come from Circle's
@@ -352,6 +353,25 @@ function verifyFourSourceChains() {
   console.log('GATEWAY_SOURCE_CHAIN_RECONCILIATION=PASS');
 }
 
+function verifyEthereumSepoliaFallbackConfig() {
+  const configSource = fs.readFileSync(path.join(__dirname, '../src/config.js'), 'utf8');
+  assert.match(
+    configSource,
+    /ETHEREUM_SEPOLIA_RPC_FALLBACK_URL: z\.string\(\)\.url\(\)\.default\("https:\/\/public\.1rpc\.io\/sepolia"\)/,
+  );
+  if (process.env.ETHEREUM_SEPOLIA_RPC_FALLBACK_URL) {
+    assert.equal(
+      config.ETHEREUM_SEPOLIA_RPC_FALLBACK_URL,
+      process.env.ETHEREUM_SEPOLIA_RPC_FALLBACK_URL,
+      'the environment override must win over the default',
+    );
+  } else {
+    assert.equal(config.ETHEREUM_SEPOLIA_RPC_FALLBACK_URL, 'https://public.1rpc.io/sepolia');
+  }
+  assert.equal(gatewayNetworks.networkForDomain(0).chainId, 11155111);
+  console.log('ETHEREUM_SEPOLIA_FALLBACK_CONFIG=PASS');
+}
+
 function verifyBurnIntentSetTypeString() {
   // Circle's own evm-gateway-contracts source defines these typehash strings.
   // EXTREMA does not sign a BurnIntentSet (see gatewayService), but the
@@ -382,6 +402,7 @@ function verifyBurnIntentSetTypeString() {
   verifySameChainWithdrawal();
   verifyCircleBlockchainIdentifiers();
   verifyFourSourceChains();
+  verifyEthereumSepoliaFallbackConfig();
   verifyBurnIntentSetTypeString();
   assert.equal(liveNetworkCalls, 0);
   console.log('GATEWAY_NETWORKS_LIVE_NETWORK_CALLS=0');

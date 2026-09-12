@@ -27,6 +27,7 @@ import {
   type CircleApprovalActionType,
   type CircleEntryApprovalVerifyResponse,
   type CircleEntryVerifyResponse,
+  type GatewayFundingResponse,
 } from "./backend-api";
 import {
   clearCircleActionRecovery,
@@ -520,6 +521,30 @@ function gatewayRecoveryFrom(
   };
 }
 
+export const GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION = "gateway_funding_terminal_no_submission";
+
+// This is deliberately evidence-aware. A state name alone cannot release a
+// browser recovery record: a transfer id or transaction hash means there is a
+// durable financial outcome to reconcile, even when the row is failed.
+export function isGatewayFundingTerminalWithoutSubmission(
+  action: GatewayFundingResponse,
+) {
+  return action.terminal === true &&
+    (action.state === "SIGNATURE_FAILED" || action.state === "FAILED" || action.state === "EXPIRED") &&
+    action.readyToBroadcast === false &&
+    action.broadcast === "NOT_SUBMITTED" &&
+    action.transferId === null &&
+    action.transactionHash === null;
+}
+
+function releaseCircleGatewayFundingRecovery(action: GatewayFundingResponse): never {
+  if (isGatewayFundingTerminalWithoutSubmission(action)) {
+    clearCircleGatewayFundingRecovery();
+    throw new Error(GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION);
+  }
+  throw new Error("gateway_signature_challenge_unavailable");
+}
+
 // The browser prepares and verifies the exact Gateway signatures, then stops at
 // READY_TO_BROADCAST. Submission is a server-side gated operation; the client
 // never gets a broadcast control and refreshes only recover the same action.
@@ -543,6 +568,7 @@ export async function confirmCircleGatewayFunding(
     throw new Error("circle_pending_action_for_different_intent");
   }
 
+  let current: GatewayFundingResponse;
   if (!recovery) {
     const started = await withFreshExtremaCircleSession(
       auth.userToken,
@@ -553,14 +579,23 @@ export async function confirmCircleGatewayFunding(
     );
     recovery = gatewayRecoveryFrom(input, started);
     storeCircleGatewayFundingRecovery(recovery);
+    current = started;
+  } else {
+    // Hydration is a read-only probe of the SAME durable action. In
+    // particular, it must observe a terminal failed challenge before any
+    // attempt could execute the old Circle challenge again.
+    current = await withFreshExtremaCircleSession(
+      auth.userToken,
+      () => backendApi.wallet.gatewayFunding(recovery!.actionId),
+    );
   }
 
-  let current = await withFreshExtremaCircleSession(
-    auth.userToken,
-    () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
-      circleUserToken: auth.userToken,
-    }),
-  );
+  if (isGatewayFundingTerminalWithoutSubmission(current)) {
+    releaseCircleGatewayFundingRecovery(current);
+  }
+  if (current.terminal) {
+    throw new Error("gateway_signature_challenge_uncertain");
+  }
 
   // One pass per allocation, bounded by Circle's own 16 intent cap so a
   // misbehaving response can never spin here.
@@ -583,7 +618,36 @@ export async function confirmCircleGatewayFunding(
     storeCircleGatewayFundingRecovery(recovery);
     onProgress?.(current.signatureIndex, current.intentCount);
 
-    const result = await executeHostedChallenge(current.challengeId);
+    let result: CircleChallengeResult | undefined;
+    try {
+      result = await executeHostedChallenge(current.challengeId);
+    } catch (error) {
+      // The hosted widget can report failure before the browser receives a
+      // signature. Probe the same backend action once, read-only from the
+      // financial perspective, so the server can persist SIGNATURE_FAILED
+      // and its typed-data diagnostic. If the server still says pending, keep
+      // recovery and fail closed rather than re-executing the old challenge.
+      if (error instanceof Error && error.message === "circle_transaction_failed") {
+        try {
+          const failed = await withFreshExtremaCircleSession(
+            auth.userToken,
+            () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
+              circleUserToken: auth.userToken,
+            }),
+          );
+          if (isGatewayFundingTerminalWithoutSubmission(failed)) {
+            releaseCircleGatewayFundingRecovery(failed);
+          }
+          throw new Error("gateway_signature_challenge_uncertain");
+        } catch (probeError) {
+          if (probeError instanceof Error && (
+            probeError.message === GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION ||
+            probeError.message === "gateway_signature_challenge_uncertain"
+          )) throw probeError;
+        }
+      }
+      throw error;
+    }
     const signature = result?.data?.signature;
     if (typeof signature !== "string") throw new Error("gateway_signature_required");
     current = await withFreshExtremaCircleSession(
@@ -593,6 +657,10 @@ export async function confirmCircleGatewayFunding(
         signature,
       }),
     );
+    if (isGatewayFundingTerminalWithoutSubmission(current)) {
+      releaseCircleGatewayFundingRecovery(current);
+    }
+    if (current.terminal) throw new Error("gateway_signature_challenge_uncertain");
   }
 
   throw new Error("gateway_signature_challenge_unavailable");

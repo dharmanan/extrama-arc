@@ -28,7 +28,7 @@ const schema = z.object({
   ARBITRUM_SEPOLIA_RPC_URL: z.string().url().default("https://sepolia-rollup.arbitrum.io/rpc"),
   ARBITRUM_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://arbitrum-sepolia-rpc.publicnode.com"),
   ETHEREUM_SEPOLIA_RPC_URL: z.string().url().default("https://ethereum-sepolia-rpc.publicnode.com"),
-  ETHEREUM_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://sepolia.drpc.org"),
+  ETHEREUM_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://public.1rpc.io/sepolia"),
   // Maximum simultaneous HTTP reads PER Arc RPC endpoint.
   // Financial transaction broadcasts use a separate primary-only provider
   // and are deliberately not routed through this queue.

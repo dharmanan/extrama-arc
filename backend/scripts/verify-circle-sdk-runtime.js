@@ -13,14 +13,18 @@ process.env.JWT_SECRET =
 
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const { ethers } = require('ethers');
 const {
   initiateUserControlledWalletsClient,
 } = require('@circle-fin/user-controlled-wallets');
 const {
+  buildCircleTypedDataWirePayload,
   createCircleUserWalletService,
   matchesContractExecutionTransaction,
   matchesFetchedContractExecutionTransaction,
 } = require('../src/services/circleUserWalletService');
+const { buildGatewayBurnIntent } = require('../src/services/gatewayService');
+const { hashPayload } = require('../src/services/gatewayFundingService');
 
 const WALLET_ID = '11111111-1111-4111-8111-111111111111';
 const REF_ID = '22222222-2222-4222-8222-222222222222:approval';
@@ -30,7 +34,156 @@ const TX_HASH = `0x${'a'.repeat(64)}`;
 const CHALLENGE_ID = '44444444-4444-4444-8444-444444444444';
 const USER_TOKEN = 'circle-user-token-long-enough-for-runtime-smoke';
 
+async function verifyGatewayCircleWirePayload() {
+  const built = buildGatewayBurnIntent({
+    walletAddress: '0x1111111111111111111111111111111111111111',
+    sourceDomain: 6,
+    destinationDomain: 26,
+    valueRaw: '1000000',
+    maxFeeRaw: '10000',
+    maxBlockHeight: '999999999',
+    salt: `0x${'ab'.repeat(32)}`,
+  });
+  const internalTypes = JSON.parse(JSON.stringify(built.typedData.types));
+  const internalDomain = JSON.parse(JSON.stringify(built.typedData.domain));
+  const digestBefore = ethers.TypedDataEncoder.hash(
+    built.typedData.domain, built.typedData.types, built.typedData.message,
+  );
+  const payload = {
+    destinationDomain: 26,
+    valueRaw: '1000000',
+    allocations: [{ sourceDomain: 6, valueRaw: '1000000' }],
+    burnIntents: [built.burnIntent],
+  };
+  const payloadHashBefore = hashPayload(payload);
+
+  const wire = buildCircleTypedDataWirePayload(built.typedData);
+  const expectedDomainDeclaration = [
+    { name: 'name', type: 'string' },
+    { name: 'version', type: 'string' },
+  ];
+  assert.deepEqual(wire.types.EIP712Domain, expectedDomainDeclaration);
+  assert.deepEqual(wire.domain, internalDomain);
+  assert.deepEqual(built.typedData.types, internalTypes);
+  assert.deepEqual(built.typedData.domain, internalDomain);
+  const extendedWire = buildCircleTypedDataWirePayload({
+    ...built.typedData,
+    domain: {
+      ...built.typedData.domain,
+      chainId: 11155111,
+      verifyingContract: '0x2222222222222222222222222222222222222222',
+      salt: `0x${'cd'.repeat(32)}`,
+    },
+  });
+  assert.deepEqual(extendedWire.types.EIP712Domain, [
+    { name: 'name', type: 'string' },
+    { name: 'version', type: 'string' },
+    { name: 'chainId', type: 'uint256' },
+    { name: 'verifyingContract', type: 'address' },
+    { name: 'salt', type: 'bytes32' },
+  ]);
+  const digestAfter = ethers.TypedDataEncoder.hash(
+    built.typedData.domain, built.typedData.types, built.typedData.message,
+  );
+  const payloadHashAfter = hashPayload({
+    ...payload,
+    burnIntents: [wire.message],
+  });
+  assert.equal(digestAfter, digestBefore);
+  assert.equal(payloadHashAfter, payloadHashBefore);
+  console.log('GATEWAY_CIRCLE_WIRE_EIP712_DOMAIN=PASS');
+  console.log('GATEWAY_CIRCLE_WIRE_DOMAIN_MATCH=PASS');
+  console.log('GATEWAY_CIRCLE_WIRE_DIGEST_PRESERVED=PASS');
+  console.log('GATEWAY_CIRCLE_WIRE_INTERNAL_TYPES_UNCHANGED=PASS');
+
+  assert.throws(
+    () => buildCircleTypedDataWirePayload({
+      ...built.typedData,
+      domain: { ...built.typedData.domain, privateKey: 'must-not-cross-the-wire' },
+    }),
+    (error) => error?.message === 'circle_typed_data_invalid',
+  );
+  assert.throws(
+    () => buildCircleTypedDataWirePayload({
+      ...built.typedData,
+      types: {
+        EIP712Domain: [{ name: 'name', type: 'string' }],
+        ...built.typedData.types,
+      },
+    }),
+    (error) => error?.message === 'circle_typed_data_invalid',
+  );
+  const matchingDeclaration = buildCircleTypedDataWirePayload({
+    ...built.typedData,
+    types: { EIP712Domain: expectedDomainDeclaration, ...built.typedData.types },
+  });
+  assert.deepEqual(matchingDeclaration.types.EIP712Domain, expectedDomainDeclaration);
+  console.log('GATEWAY_CIRCLE_WIRE_UNKNOWN_DOMAIN_FAILS_CLOSED=PASS');
+
+  let sent;
+  const service = createCircleUserWalletService({
+    apiKey: 'TEST_API_KEY',
+    client: {
+      async signTypedData(input) {
+        sent = input;
+        return { data: { challengeId: CHALLENGE_ID } };
+      },
+      async getUserChallenge() {
+        return { data: { challenge: { id: CHALLENGE_ID, status: 'FAILED', type: 'SIGN_TYPEDDATA' } } };
+      },
+    },
+  });
+  await service.createTypedDataChallenge({
+    userToken: USER_TOKEN,
+    walletId: WALLET_ID,
+    typedData: built.typedData,
+    idempotencyKey: '55555555-5555-4555-8555-555555555555',
+  });
+  assert.deepEqual(JSON.parse(sent.data), wire);
+
+  const diagnosticClient = {
+    async getUserChallenge() {
+      return {
+        data: {
+          challenge: {
+            id: CHALLENGE_ID,
+            status: 'FAILED',
+            type: 'SIGN_TYPEDDATA',
+            errorCode: 156026,
+            errorMessage: 'error: there is extra data provided in the message (0 < 2)',
+          },
+        },
+      };
+    },
+  };
+  const diagnosticService = createCircleUserWalletService({
+    apiKey: 'TEST_API_KEY', client: diagnosticClient,
+  });
+  const diagnostic = await diagnosticService.getTypedDataChallenge({
+    userToken: USER_TOKEN, challengeId: CHALLENGE_ID,
+  });
+  assert.equal(diagnostic.errorCode, 156026);
+  assert.equal(diagnostic.errorMessage, 'error: there is extra data provided in the message (0 < 2)');
+  assert.ok(diagnostic.errorMessage.length <= 300);
+
+  diagnosticClient.getUserChallenge = async () => ({
+    data: {
+      challenge: {
+        id: CHALLENGE_ID, status: 'FAILED', type: 'SIGN_TYPEDDATA',
+        errorCode: 155000, errorMessage: 'generic signature failure',
+      },
+    },
+  });
+  const generic = await diagnosticService.getTypedDataChallenge({
+    userToken: USER_TOKEN, challengeId: CHALLENGE_ID,
+  });
+  assert.equal(generic.errorCode, 155000);
+  assert.equal(generic.errorMessage, 'generic signature failure');
+  console.log('GATEWAY_CIRCLE_TYPED_DATA_FAILURE_DIAGNOSTICS=PASS');
+}
+
 async function main() {
+  await verifyGatewayCircleWirePayload();
   assert.equal(
     matchesFetchedContractExecutionTransaction(
       {

@@ -31,6 +31,8 @@ import {
   readExternalGatewayDepositRecovery,
   readCircleTabAuth,
   storeCircleTabAuth,
+  clearCircleGatewayFundingRecovery,
+  clearExternalGatewayFundingRecovery,
   readCircleSourceWalletRecovery,
   storeCircleSourceWalletRecovery,
   clearCircleSourceWalletRecovery,
@@ -44,6 +46,10 @@ import {
 } from "../lib/circle-auth";
 import { confirmGatewaySourceDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
 import { ensureCircleFinancialAuth, executeHostedChallenge } from "../lib/circle-actions";
+import {
+  GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION,
+  isGatewayFundingTerminalWithoutSubmission,
+} from "../lib/circle-actions";
 import { getCircleDeviceId } from "../lib/circle-actions";
 import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
@@ -575,6 +581,16 @@ export default function WalletPage() {
         const current = await backendApi.wallet.gatewayFunding(recoveredActionId);
         if (cancelled) return;
         setGatewayFundingStatus(current);
+        if (isGatewayFundingTerminalWithoutSubmission(current)) {
+          if (executionMode === "CIRCLE_USER_WALLET") clearCircleGatewayFundingRecovery();
+          else if (executionMode === "EXTERNAL_WALLET") clearExternalGatewayFundingRecovery();
+          setGatewayFundingRecovery(null);
+          setGatewayFundingStatus(null);
+          setGatewayAmount("");
+          setGatewayFundingNotice("");
+          setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
+          return;
+        }
         if (["SUBMITTING", "SUBMITTED", "RECONCILIATION_REQUIRED"].includes(current.state)) {
           timer = window.setTimeout(poll, 5000);
         }
@@ -588,7 +604,7 @@ export default function WalletPage() {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [executionMode, gatewayFundingRecovery?.actionId]);
+  }, [executionMode, gatewayFundingRecovery?.actionId, t.wallet]);
 
   // Every funding chain's SOURCE WALLET balance in one server-side read. Each
   // chain is read independently there, so one unreachable endpoint degrades
@@ -1335,13 +1351,21 @@ export default function WalletPage() {
         throw new Error("gateway_signature_challenge_unavailable");
       }
       setGatewayFundingRecovery(null);
-      setGatewayFundingNotice(t.wallet.gatewayTransferPrepared);
+      setGatewayFundingNotice(
+        `${t.wallet.gatewayTransferPrepared} ${t.wallet.gatewaySubmissionDisabled}`,
+      );
     } catch (cause) {
       // Same rule as the source deposit path: a Circle auth restore failure
       // is not a transfer preparation failure at all, and no financial start
       // call was ever made. Route to the existing reauthentication UI.
       if (cause instanceof Error && cause.message === "circle_reauthentication_required") {
         setCircleReauthRequired(true);
+      } else if (cause instanceof Error && cause.message === GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION) {
+        setGatewayFundingRecovery(null);
+        setGatewayFundingStatus(null);
+        setGatewayAmount("");
+        setGatewayFundingNotice("");
+        setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
       } else {
         setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
       }

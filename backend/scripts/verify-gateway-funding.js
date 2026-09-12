@@ -122,8 +122,8 @@ const fakeDb = {
       return out(row);
     }
     if (text.includes("state = 'SIGNATURE_FAILED'")) {
-      row.state = 'SIGNATURE_FAILED'; row.last_error = 'gateway_signature_challenge_failed';
-      return out(null);
+      row.state = 'SIGNATURE_FAILED'; row.last_error = params[1];
+      return out(row);
     }
     if (text.includes('SET signatures_json = $2')) {
       if (row.state !== 'SIGNATURE_PENDING') return out(null);
@@ -156,6 +156,7 @@ const fakeDb = {
 };
 
 let challengeStatus = 'PENDING';
+let challengeErrorCode = null;
 let challengeCreates = 0;
 let submitCalls = 0;
 let statusCalls = 0;
@@ -170,7 +171,12 @@ const fakeCircle = {
   },
   async getTypedDataChallenge({ challengeId }) {
     assert.match(challengeId, /^gateway-sign-challenge-\d+$/);
-    return { id: challengeId, type: 'SIGN_TYPEDDATA', status: challengeStatus };
+    return {
+      id: challengeId,
+      type: 'SIGN_TYPEDDATA',
+      status: challengeStatus,
+      ...(challengeErrorCode === null ? {} : { errorCode: challengeErrorCode }),
+    };
   },
 };
 
@@ -357,7 +363,102 @@ function verifyPreparingSchemaLifecycle() {
   const completed = await service.status({ auth, actionId: started.actionId });
   assert.equal(completed.state, 'COMPLETED');
   assert.equal(completed.broadcast, 'COMPLETED');
+  assert.equal(completed.terminal, true);
   assert.equal(completed.transactionHash, `0x${'ab'.repeat(32)}`);
+
+  // A failed hosted signature challenge is a durable terminal state. It is
+  // returned by verify/get, never retried, and carries no submission evidence.
+  const failedRequest = '55555555-5555-4555-8555-555555555555';
+  challengeStatus = 'PENDING';
+  challengeErrorCode = null;
+  const failedStart = await service.start({
+    auth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: failedRequest,
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  const challengeCreatesBeforeFailure = challengeCreates;
+  challengeStatus = 'FAILED';
+  challengeErrorCode = 156026;
+  const failed = await service.verifySignature({
+    auth, actionId: failedStart.actionId, userToken: 'circle_user_token_long_enough',
+  });
+  assert.equal(failed.state, 'SIGNATURE_FAILED');
+  assert.equal(failed.terminal, true);
+  assert.equal(failed.readyToBroadcast, false);
+  assert.equal(failed.broadcast, 'NOT_SUBMITTED');
+  assert.equal(failed.transferId, null);
+  assert.equal(failed.transactionHash, null);
+  assert.equal(failed.lastError, 'gateway_signature_typed_data_invalid');
+  const failedRead = await service.get({ auth, actionId: failedStart.actionId });
+  assert.equal(failedRead.state, 'SIGNATURE_FAILED');
+  assert.equal(failedRead.terminal, true);
+  const failedReplay = await service.verifySignature({
+    auth, actionId: failedStart.actionId, userToken: 'circle_user_token_long_enough',
+  });
+  assert.equal(failedReplay.state, 'SIGNATURE_FAILED');
+  assert.equal(challengeCreates, challengeCreatesBeforeFailure, 'terminal verify must not create a new challenge');
+  console.log('GATEWAY_FUNDING_SIGNATURE_FAILED_TERMINAL=PASS');
+  console.log('GATEWAY_FUNDING_NO_AUTOMATIC_RESIGN=PASS');
+
+  challengeStatus = 'PENDING';
+  challengeErrorCode = null;
+  const genericFailureStart = await service.start({
+    auth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  challengeStatus = 'FAILED';
+  challengeErrorCode = 155000;
+  const genericFailure = await service.verifySignature({
+    auth, actionId: genericFailureStart.actionId, userToken: 'circle_user_token_long_enough',
+  });
+  assert.equal(genericFailure.lastError, 'gateway_signature_challenge_failed');
+  assert.notEqual(genericFailure.lastError, 'gateway_signature_typed_data_invalid');
+
+  // FAILED and EXPIRED are terminal only when this read shape has no
+  // submitted evidence; neither status is allowed back into signature flow.
+  for (const [index, state] of ['FAILED', 'EXPIRED'].entries()) {
+    const terminalId = `f000000${index + 1}-0000-4000-8000-00000000000${index + 1}`;
+    rows.set(terminalId, {
+      ...rows.get(failedStart.actionId),
+      id: terminalId,
+      request_id: `f111111${index + 1}-1111-4111-8111-11111111111${index + 1}`,
+      state,
+      last_error: 'gateway_signature_challenge_failed',
+      gateway_transfer_id: null,
+      gateway_transaction_hash: null,
+    });
+    const terminalRead = await service.get({ auth, actionId: terminalId });
+    assert.equal(terminalRead.terminal, true);
+    assert.equal(terminalRead.readyToBroadcast, false);
+    assert.equal(terminalRead.broadcast, 'NOT_SUBMITTED');
+    const terminalVerify = await service.verifySignature({
+      auth, actionId: terminalId, userToken: 'circle_user_token_long_enough',
+    });
+    assert.equal(terminalVerify.state, state);
+  }
+  console.log('GATEWAY_FUNDING_TERMINAL_STATES_FAIL_CLOSED=PASS');
+
+  // A new transfer is possible only after a new user-requested request id; it
+  // creates a distinct durable action and a distinct hosted challenge.
+  challengeStatus = 'PENDING';
+  challengeErrorCode = null;
+  const challengeCreatesBeforeFresh = challengeCreates;
+  const fresh = await service.start({
+    auth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  assert.notEqual(fresh.actionId, failedStart.actionId);
+  assert.equal(challengeCreates, challengeCreatesBeforeFresh + 1);
+  console.log('GATEWAY_FUNDING_FRESH_REQUEST_AFTER_TERMINAL=PASS');
+  challengeStatus = 'COMPLETE';
 
   const other = new ethers.Wallet(`0x${'22'.repeat(32)}`);
   const badSignature = await other.signTypedData(
@@ -646,7 +747,30 @@ function verifyPreparingSchemaLifecycle() {
   assert.equal(externalReady.state, 'READY_TO_BROADCAST');
   assert.equal(externalReady.readyToBroadcast, true);
   assert.equal(externalReady.broadcast, 'NOT_SUBMITTED');
+  assert.equal(externalReady.terminal, false);
   assert.equal(challengeCreates, challengeCreatesBeforeExternal, 'reaching READY_TO_BROADCAST must still never call Circle');
+
+  // UI recovery is released only after the same action's read-only status
+  // proves a terminal, non-submitted result; evidence-bearing terminal rows
+  // remain locked for reconciliation and never get a fresh signature.
+  const circleActions = fs.readFileSync(path.join(__dirname, '../../app/lib/circle-actions.ts'), 'utf8');
+  const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
+  const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
+  assert.match(circleActions, /backendApi\.wallet\.gatewayFunding\(recovery!\.actionId\)/);
+  assert.match(circleActions, /clearCircleGatewayFundingRecovery\(\)/);
+  assert.match(circleActions, /isGatewayFundingTerminalWithoutSubmission/);
+  assert.match(gatewayActions, /backendApi\.wallet\.gatewayFunding\(recovery\.actionId\)/);
+  assert.match(walletPage, /gatewayTransferAuthorizationFailed/);
+  console.log('GATEWAY_FUNDING_TERMINAL_RECOVERY_RELEASE=PASS');
+
+  // The explicit READY state is preparation only; the default runtime gate
+  // remains closed and the browser has no submit/broadcast path.
+  assert.equal(externalReady.readyToBroadcast, true);
+  assert.equal(externalReady.broadcast, 'NOT_SUBMITTED');
+  assert.match(walletPage, /gatewayFundingStatus\?\.readyToBroadcast === true/);
+  assert.match(walletPage, /gatewayTransferPrepared\} \$\{t\.wallet\.gatewaySubmissionDisabled/);
+  assert.ok(!walletPage.includes('submitGatewayFunding'));
+  console.log('GATEWAY_FUNDING_READY_NOT_BROADCAST=PASS');
 
   console.log('GATEWAY_FUNDING=PASS');
   console.log('GATEWAY_FUNDING_SUBMIT_MOCK=PASS');

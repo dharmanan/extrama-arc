@@ -687,6 +687,7 @@ export type GatewayFundingResponse = {
   // signs each through its own hosted challenge.
   typedDataList: GatewayTypedData[];
   state: "PREPARING" | "SIGN_CHALLENGE_CREATING" | "SIGNATURE_PENDING" | "READY_TO_BROADCAST" | "SUBMITTING" | "SUBMITTED" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "SIGNATURE_FAILED" | "EXPIRED";
+  terminal: boolean;
   pending: boolean;
   readyToBroadcast: boolean;
   broadcast: "NOT_SUBMITTED" | "SUBMITTED" | "COMPLETED";

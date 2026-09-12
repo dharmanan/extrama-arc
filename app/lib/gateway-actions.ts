@@ -27,7 +27,13 @@ import {
   type HumanExecutionMode,
   type TransactionRequest,
 } from "./backend-api";
-import { confirmCircleGatewayFunding, ensureCircleFinancialAuth, executeHostedChallenge } from "./circle-actions";
+import {
+  confirmCircleGatewayFunding,
+  ensureCircleFinancialAuth,
+  executeHostedChallenge,
+  GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION,
+  isGatewayFundingTerminalWithoutSubmission,
+} from "./circle-actions";
 import {
   clearCircleGatewayDepositRecovery,
   clearExternalGatewayDepositRecovery,
@@ -146,11 +152,18 @@ export async function confirmGatewayBurnSignature(
   // A reload resumes the SAME action under the same request id. start is
   // idempotent by request id, so this never creates a second plan.
   const requestId = recovery?.requestId || crypto.randomUUID();
-  const started = await backendApi.wallet.startGatewayFunding({
-    requestId,
-    destinationDomain: input.destinationDomain,
-    valueRaw: input.valueRaw,
-  });
+  const started = recovery
+    ? await backendApi.wallet.gatewayFunding(recovery.actionId)
+    : await backendApi.wallet.startGatewayFunding({
+      requestId,
+      destinationDomain: input.destinationDomain,
+      valueRaw: input.valueRaw,
+    });
+  if (isGatewayFundingTerminalWithoutSubmission(started)) {
+    clearExternalGatewayFundingRecovery();
+    throw new Error(GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION);
+  }
+  if (started.terminal) throw new Error("gateway_signature_challenge_uncertain");
   if (started.readyToBroadcast) {
     clearExternalGatewayFundingRecovery();
     return started;

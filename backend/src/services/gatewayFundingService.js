@@ -23,6 +23,9 @@ const circleUserWalletService = require('./circleUserWalletService');
 const { EXECUTION_MODES, isHumanExecutionMode } = require('./executionIdentityService');
 
 const FUNDING_TTL_MS = 30 * 60 * 1000;
+const TERMINAL_FUNDING_STATES = new Set([
+  'COMPLETED', 'FAILED', 'SIGNATURE_FAILED', 'EXPIRED',
+]);
 
 function canonicalJson(value) {
   if (value === null) return 'null';
@@ -197,6 +200,7 @@ function publicAction(row, options = {}) {
     // sessions sign each through its own hosted challenge.
     typedDataList,
     state: row.state,
+    terminal: TERMINAL_FUNDING_STATES.has(row.state),
     pending: options.pending === true,
     readyToBroadcast: row.state === 'READY_TO_BROADCAST',
     broadcast: row.state === 'COMPLETED'
@@ -794,7 +798,7 @@ function createGatewayFundingService({
   }) {
     assertHumanGatewaySession(auth);
     let row = await markExpired(await findById(auth, actionId));
-    if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
+    if (TERMINAL_FUNDING_STATES.has(row.state)) return publicAction(row);
     if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
     if (row.state !== 'SIGNATURE_PENDING') {
       throw new Error('gateway_signature_challenge_unavailable');
@@ -835,13 +839,18 @@ function createGatewayFundingService({
           return publicAction(row, { pending: true });
         }
         if (challenge.status !== 'COMPLETE') {
-          await database.query(
+          const failure = challenge.errorCode === 156026
+            ? 'gateway_signature_typed_data_invalid'
+            : 'gateway_signature_challenge_failed';
+          const failedResult = await database.query(
             `UPDATE gateway_funding_actions
-                SET state = 'SIGNATURE_FAILED', last_error = 'gateway_signature_challenge_failed', updated_at = NOW()
-              WHERE id = $1`,
-            [row.id],
+                SET state = 'SIGNATURE_FAILED', last_error = $2, updated_at = NOW()
+              WHERE id = $1
+              RETURNING *`,
+            [row.id, failure],
           );
-          throw new Error('gateway_signature_challenge_failed');
+          row = failedResult.rows[0] || await findById(auth, row.id);
+          return publicAction(row);
         }
       }
 

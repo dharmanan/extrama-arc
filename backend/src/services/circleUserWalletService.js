@@ -12,6 +12,135 @@ const ALREADY_INITIALIZED_CODE = 155106;
 const PAGE_SIZE = 50;
 const MAX_PAGES = 20;
 const READINESS_CACHE_MS = 60 * 1000;
+const CIRCLE_EIP712_DOMAIN_FIELDS = [
+  { name: 'name', type: 'string' },
+  { name: 'version', type: 'string' },
+  { name: 'chainId', type: 'uint256' },
+  { name: 'verifyingContract', type: 'address' },
+  { name: 'salt', type: 'bytes32' },
+];
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJsonValue(value) {
+  if (Array.isArray(value)) return value.map(cloneJsonValue);
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneJsonValue(entry)]));
+  }
+  return value;
+}
+
+function assertCircleDomainValue(name, value) {
+  if (name === 'name' || name === 'version') {
+    if (typeof value !== 'string') throw new Error('circle_typed_data_invalid');
+    return value;
+  }
+  if (name === 'chainId') {
+    if (
+      (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) &&
+      (typeof value !== 'bigint' || value < 0n) &&
+      !(typeof value === 'string' && /^(?:0|[1-9]\d*|0x[0-9a-fA-F]+)$/.test(value))
+    ) throw new Error('circle_typed_data_invalid');
+    return typeof value === 'bigint' ? value.toString() : value;
+  }
+  if (name === 'verifyingContract') {
+    if (typeof value !== 'string' || !ethers.isAddress(value)) {
+      throw new Error('circle_typed_data_invalid');
+    }
+    return ethers.getAddress(value);
+  }
+  if (name === 'salt') {
+    if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+      throw new Error('circle_typed_data_invalid');
+    }
+    return value;
+  }
+  throw new Error('circle_typed_data_invalid');
+}
+
+function circleDomainDeclaration(domain) {
+  if (!isRecord(domain)) throw new Error('circle_typed_data_invalid');
+  const supported = new Set(CIRCLE_EIP712_DOMAIN_FIELDS.map((field) => field.name));
+  if (Object.keys(domain).some((key) => !supported.has(key))) {
+    throw new Error('circle_typed_data_invalid');
+  }
+
+  const values = {};
+  const declaration = [];
+  for (const field of CIRCLE_EIP712_DOMAIN_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(domain, field.name)) continue;
+    values[field.name] = assertCircleDomainValue(field.name, domain[field.name]);
+    declaration.push({ ...field });
+  }
+  if (!declaration.length) throw new Error('circle_typed_data_invalid');
+  return { values, declaration };
+}
+
+function assertMatchingCircleDomainDeclaration(declaration, expected) {
+  if (!Array.isArray(declaration) || declaration.length !== expected.length) {
+    throw new Error('circle_typed_data_invalid');
+  }
+  declaration.forEach((field, index) => {
+    if (!isRecord(field) || Object.keys(field).sort().join(',') !== 'name,type' ||
+      field.name !== expected[index].name || field.type !== expected[index].type) {
+      throw new Error('circle_typed_data_invalid');
+    }
+  });
+}
+
+// The installed Circle SDK accepts an EIP-712 JSON string and requires the
+// EIP712Domain declaration to be present in that wire object. Gateway's
+// internal typed data intentionally omits that declaration because ethers'
+// TypedDataEncoder derives the domain separately. Keep this transformation at
+// the Circle boundary and never mutate the persisted/internal object.
+function buildCircleTypedDataWirePayload(typedData) {
+  if (!isRecord(typedData) || !isRecord(typedData.types) ||
+    typeof typedData.primaryType !== 'string' || !typedData.primaryType ||
+    !isRecord(typedData.message)) {
+    throw new Error('circle_typed_data_invalid');
+  }
+
+  const { values: domain, declaration } = circleDomainDeclaration(typedData.domain);
+  if (Object.prototype.hasOwnProperty.call(typedData.types, 'EIP712Domain')) {
+    assertMatchingCircleDomainDeclaration(typedData.types.EIP712Domain, declaration);
+  }
+
+  const types = { EIP712Domain: declaration };
+  for (const [name, fields] of Object.entries(typedData.types)) {
+    if (name !== 'EIP712Domain') types[name] = cloneJsonValue(fields);
+  }
+
+  const wirePayload = {
+    domain: cloneJsonValue(domain),
+    types,
+    primaryType: typedData.primaryType,
+    message: cloneJsonValue(typedData.message),
+  };
+  try {
+    JSON.stringify(wirePayload);
+  } catch {
+    throw new Error('circle_typed_data_invalid');
+  }
+  return wirePayload;
+}
+
+function circleChallengeErrorCode(challenge) {
+  const candidate = challenge?.errorCode;
+  if (Number.isInteger(candidate) && candidate >= 0 && candidate <= 999999) return candidate;
+  if (typeof candidate === 'string' && /^\d{1,6}$/.test(candidate)) return Number(candidate);
+  return null;
+}
+
+function safeCircleChallengeErrorMessage(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized || /(?:bearer|token|secret|api[-_ ]?key|private[-_ ]?key|password|credential)/i.test(normalized)) {
+    return null;
+  }
+  return normalized.slice(0, 300);
+}
 
 function circleErrorCode(error) {
   const candidates = [error?.code, error?.response?.data?.code, error?.body?.code];
@@ -526,7 +655,7 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       const response = await getClient().signTypedData({
         userToken,
         walletId,
-        data: JSON.stringify(typedData),
+        data: JSON.stringify(buildCircleTypedDataWirePayload(typedData)),
         memo: typeof memo === 'string' ? memo.slice(0, 512) : undefined,
         xRequestId: idempotencyKey,
       });
@@ -552,7 +681,15 @@ function createCircleUserWalletService({ apiKey = config.CIRCLE_API_KEY, client 
       if (challenge.id !== challengeId || challenge.type !== 'SIGN_TYPEDDATA') {
         throw new Error('circle_challenge_mismatch');
       }
-      return { id: challenge.id, status: challenge.status, type: challenge.type };
+      const errorCode = circleChallengeErrorCode(challenge);
+      const errorMessage = safeCircleChallengeErrorMessage(challenge.errorMessage);
+      return {
+        id: challenge.id,
+        status: challenge.status,
+        type: challenge.type,
+        ...(errorCode === null ? {} : { errorCode }),
+        ...(errorMessage ? { errorMessage } : {}),
+      };
     } catch (error) {
       if (error?.message?.startsWith('circle_')) throw error;
       throw safeCircleError(error);
@@ -657,6 +794,9 @@ module.exports = {
   assertGatewaySourceBlockchain,
   circleErrorCode,
   safeCircleError,
+  buildCircleTypedDataWirePayload,
+  circleChallengeErrorCode,
+  safeCircleChallengeErrorMessage,
   pickArcEoa,
   pickBaseSepoliaEoa,
   pickEoaForBlockchain,
