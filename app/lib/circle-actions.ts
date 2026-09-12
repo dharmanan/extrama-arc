@@ -31,6 +31,7 @@ import {
 import {
   clearCircleActionRecovery,
   clearCircleEntryRecovery,
+  clearCircleGatewayFundingRecovery,
   matchesCircleEntryRecovery,
   readCircleActionRecovery,
   readCircleEntryRecovery,
@@ -431,17 +432,19 @@ export async function confirmCircleEntry(input: {
 
 function isGatewayFundingRecoveryFor(
   recovery: CircleGatewayFundingRecovery,
-  input: { sourceDomain: number; valueRaw: string },
+  input: { destinationDomain: number; valueRaw: string },
 ) {
-  return recovery.sourceDomain === input.sourceDomain && recovery.valueRaw === input.valueRaw;
+  return recovery.destinationDomain === input.destinationDomain &&
+    recovery.valueRaw === input.valueRaw;
 }
 
 function gatewayRecoveryFrom(
-  input: { requestId: string; sourceDomain: number; valueRaw: string },
+  input: { requestId: string; destinationDomain: number; valueRaw: string },
   started: {
     actionId: string;
     payloadHash: string | null;
     challengeId: string | null;
+    signatureIndex: number;
     expiresAt: string;
   },
 ): CircleGatewayFundingRecovery {
@@ -450,18 +453,27 @@ function gatewayRecoveryFrom(
     actionId: started.actionId,
     payloadHash: started.payloadHash,
     challengeId: started.challengeId,
+    signatureIndex: started.signatureIndex,
     expiresAtMs: Date.parse(started.expiresAt),
   };
 }
 
-// The browser prepares and verifies the exact Gateway signature, then stops at
+// The browser prepares and verifies the exact Gateway signatures, then stops at
 // READY_TO_BROADCAST. Submission is a server-side gated operation; the client
 // never gets a broadcast control and refreshes only recover the same action.
-export async function confirmCircleGatewayFunding(input: {
-  requestId: string;
-  sourceDomain: number;
-  valueRaw: string;
-}) {
+//
+// The server may resolve the requested amount across several source balances,
+// in which case it asks for one signature per allocation and names which one
+// it wants next. This loop signs exactly the allocation the server asks for,
+// in the order it asks, and stores the resumable position after each step.
+export async function confirmCircleGatewayFunding(
+  input: {
+    requestId: string;
+    destinationDomain: number;
+    valueRaw: string;
+  },
+  onProgress?: (signed: number, total: number) => void,
+) {
   const auth = readCircleTabAuth();
   if (!auth) throw new Error("circle_reauthentication_required");
 
@@ -482,31 +494,47 @@ export async function confirmCircleGatewayFunding(input: {
     storeCircleGatewayFundingRecovery(recovery);
   }
 
-  const current = await withFreshExtremaCircleSession(
+  let current = await withFreshExtremaCircleSession(
     auth.userToken,
     () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
       circleUserToken: auth.userToken,
     }),
   );
-  if (current.readyToBroadcast) {
-    return current;
-  }
-  if (!current.pending || !recovery.challengeId) {
-    throw new Error("gateway_signature_challenge_unavailable");
+
+  // One pass per allocation, bounded by Circle's own 16 intent cap so a
+  // misbehaving response can never spin here.
+  for (let pass = 0; pass <= 16; pass += 1) {
+    if (current.readyToBroadcast) {
+      clearCircleGatewayFundingRecovery();
+      return current;
+    }
+    if (!current.pending || current.signatureIndex < 0 || !current.challengeId) {
+      throw new Error("gateway_signature_challenge_unavailable");
+    }
+
+    // Track the position BEFORE executing, so a reload resumes this exact
+    // allocation and its exact challenge rather than restarting the plan.
+    recovery = {
+      ...recovery,
+      signatureIndex: current.signatureIndex,
+      challengeId: current.challengeId,
+    };
+    storeCircleGatewayFundingRecovery(recovery);
+    onProgress?.(current.signatureIndex, current.intentCount);
+
+    const result = await executeHostedChallenge(current.challengeId);
+    const signature = result?.data?.signature;
+    if (typeof signature !== "string") throw new Error("gateway_signature_required");
+    current = await withFreshExtremaCircleSession(
+      auth.userToken,
+      () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
+        circleUserToken: auth.userToken,
+        signature,
+      }),
+    );
   }
 
-  const result = await executeHostedChallenge(recovery.challengeId);
-  const signature = result?.data?.signature;
-  if (typeof signature !== "string") throw new Error("gateway_signature_required");
-  const completed = await withFreshExtremaCircleSession(
-    auth.userToken,
-    () => backendApi.wallet.verifyGatewayFunding(recovery!.actionId, {
-      circleUserToken: auth.userToken,
-      signature,
-    }),
-  );
-  if (!completed.readyToBroadcast) throw new Error("gateway_signature_challenge_unavailable");
-  return completed;
+  throw new Error("gateway_signature_challenge_unavailable");
 }
 
 // ---------------------------------------------------------------------------
