@@ -1931,7 +1931,7 @@ img{max-width:100%}
 .ex-wallet-activity__heading h2{margin:0;font-family:var(--serif);font-size:clamp(1.2rem,1.9vw,1.5rem);font-weight:400}
 .ex-wallet-activity__close{padding:0;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink-2);font-size:.78rem;cursor:pointer}
 .ex-wallet-activity__empty{margin:0;color:var(--muted);font-size:.9rem}
-.ex-wallet-activity__list{display:grid;gap:12px;margin:0;padding:0;list-style:none}
+.ex-wallet-activity__list{display:grid;gap:12px;max-height:440px;margin:0;padding:0;overflow-x:hidden;overflow-y:auto;list-style:none;scrollbar-color:var(--line-strong) transparent;scrollbar-width:thin}
 .ex-wallet-activity__item{display:grid;gap:10px;padding-block:12px;border-bottom:1px solid var(--line)}
 .ex-wallet-activity__top{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
 .ex-wallet-activity__network{font-family:var(--serif);font-size:1.1rem}
@@ -1971,6 +1971,7 @@ img{max-width:100%}
   .ex-wallet-alt button{align-self:flex-start}
   .ex-wallet-address{flex-direction:column;align-items:flex-start;gap:10px}
   .ex-wallet-address__actions{justify-content:flex-start}
+  .ex-wallet-activity__list{max-height:55vh}
   .ex-wallet-activity__top{flex-direction:column;align-items:flex-start;gap:4px}
   .ex-wallet-activity__stages{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 6px}
   .ex-wallet-panel__actions{flex-direction:column;align-items:stretch}
