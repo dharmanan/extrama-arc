@@ -233,6 +233,26 @@ function createGatewayDepositService({
     return result.rows[0] || null;
   }
 
+  // A lost browser recovery (sessionStorage cleared, new tab, split-brain
+  // Circle auth) must never be the only thing standing between a genuinely
+  // uncertain durable action and a second, concurrent one for the SAME
+  // source domain: the browser has no memory of the first, but the backend
+  // still does, and it is the only durable authority here. Scoped to
+  // (user, wallet, execution mode, source domain) only: an unresolved OP
+  // action must never block a distinct, intentionally selected Arbitrum
+  // deposit, and a COMPLETED or evidence-free FAILED/EXPIRED row is CLEAR,
+  // so funding the same source again afterward is never blocked.
+  async function findUnresolvedForSource(auth, sourceDomain) {
+    const result = await database.query(
+      `SELECT * FROM gateway_deposit_actions
+        WHERE user_id = $1 AND execution_mode = $2 AND lower(wallet_address) = lower($3)
+          AND source_domain = $4
+        ORDER BY created_at DESC`,
+      [auth.userId, auth.executionMode, auth.walletAddress, sourceDomain],
+    );
+    return result.rows.find((row) => recoveryDispositionFor(row) !== RECOVERY_DISPOSITIONS.CLEAR) || null;
+  }
+
   async function findById(auth, actionId) {
     const result = await database.query(
       `SELECT * FROM gateway_deposit_actions
@@ -573,6 +593,16 @@ function createGatewayDepositService({
     const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
     if (isCircle && (typeof userToken !== 'string' || userToken.length < 16)) {
       throw new Error('circle_request_invalid');
+    }
+
+    // Only a genuinely NEW request id can create a second concurrent action.
+    // The normal resume path (same request id already has a row) is
+    // untouched: this guard runs only when this request id has never been
+    // seen before, so a lost browser recovery can never bypass it merely by
+    // minting a fresh request id for the same source.
+    if (!(await findByRequest(auth, requestId))) {
+      const unresolved = await findUnresolvedForSource(auth, sourceDomain);
+      if (unresolved) throw new Error('gateway_deposit_source_review_required');
     }
 
     let row = await createOrGet(auth, { requestId, sourceDomain, amountRaw });

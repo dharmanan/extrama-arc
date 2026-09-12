@@ -111,7 +111,7 @@ function evalCondition(row, cond, params) {
 }
 
 function evalWhere(row, sql, params) {
-  const match = /WHERE\s+([\s\S]+?)(?:\s+RETURNING\s+\*|\s+LIMIT\s+\d+|$)/i.exec(sql);
+  const match = /WHERE\s+([\s\S]+?)(?:\s+RETURNING\s+\*|\s+LIMIT\s+\d+|\s+ORDER\s+BY\s|$)/i.exec(sql);
   if (!match) return true;
   return match[1].split(/\bAND\b/i).every((cond) => evalCondition(row, cond, params));
 }
@@ -172,9 +172,18 @@ function createFakeDatabase() {
       const hasReturning = /RETURNING\s+\*/i.test(sql);
       const isUpdate = /^UPDATE/i.test(sql);
 
-      const matches = [...rows.values()].filter((row) => evalWhere(row, sql, params));
+      let matches = [...rows.values()].filter((row) => evalWhere(row, sql, params));
       if (isSelect) {
-        return { rows: matches.length ? [copy(matches[0])] : [], rowCount: matches.length ? 1 : 0 };
+        // Every pre-existing caller matches at most one row (request_id or id
+        // is unique per user), so returning every match instead of only the
+        // first is behavior-preserving for them. It is required for a query
+        // like findUnresolvedForSource's, which can genuinely match several
+        // historical rows for the same source domain and relies on scanning
+        // all of them.
+        if (/ORDER\s+BY\s+created_at\s+DESC/i.test(sql)) {
+          matches = [...matches].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        }
+        return { rows: matches.map(copy), rowCount: matches.length };
       }
       if (isUpdate) {
         if (!matches.length) return { rows: [], rowCount: 0 };
@@ -402,6 +411,323 @@ async function verifyMultiChainDeposit() {
   }
 
   console.log('GATEWAY_MULTI_CHAIN_DEPOSIT=PASS');
+}
+
+// ---------------------------------------------------------------------------
+// The Circle branch, for all four funding chains. verifyCircleBranch() below
+// proves the full phase-transition/idempotency/mismatch behavior in depth for
+// one chain; this proves the three facts that must hold identically for every
+// chain and that a Base-only hardcode would silently get right only for
+// domain 6: the Circle challenge signs with THAT chain's own companion
+// wallet id (never the Arc session wallet id), the reported source chain id
+// is that chain's own, and reconciliation requests the Circle transaction as
+// that chain's own circleBlockchain, never defaulting to ARC-TESTNET.
+// ---------------------------------------------------------------------------
+
+async function verifyMultiChainCircleBranch() {
+  for (const entry of MULTI_CHAIN_SOURCES) {
+    const walletAddress = ethers.getAddress(`0x${'5'.repeat(38)}${entry.domain.toString(16).padStart(2, '0')}`);
+    const sourceCircleWalletId = `source-wallet-${entry.domain}`;
+    const arcCircleWalletId = 'arc-wallet-should-never-sign-a-source-deposit';
+    const auth = {
+      userId: `circle-multi-user-${entry.domain}`,
+      executionMode: 'CIRCLE_USER_WALLET',
+      walletAddress,
+      circleWalletId: arcCircleWalletId,
+    };
+    const source = createFakeSourceChain(entry);
+    const balances = { domainRaw: '0' };
+    const gateway = {
+      async readUnifiedUsdcBalance() {
+        return { balances: [{ domain: entry.domain, balanceRaw: balances.domainRaw, transferable: true }] };
+      },
+    };
+
+    const challenges = new Map();
+    let nextChallengeId = 1;
+    const transactionLookupCalls = [];
+    const circle = {
+      async listEoaForBlockchain(userToken, blockchain) {
+        assert.equal(
+          blockchain, entry.circleBlockchain,
+          `the companion wallet lookup for domain ${entry.domain} must use its own Circle blockchain`,
+        );
+        return { id: sourceCircleWalletId, address: walletAddress, blockchain, accountType: 'EOA' };
+      },
+      async createContractExecutionChallenge({ walletId }) {
+        assert.equal(
+          walletId, sourceCircleWalletId,
+          `domain ${entry.domain} must sign with its own source wallet id, never the Arc session wallet id`,
+        );
+        const challengeId = `challenge-${entry.domain}-${nextChallengeId}`;
+        nextChallengeId += 1;
+        challenges.set(challengeId, { status: 'PENDING', txHash: null });
+        return { challengeId };
+      },
+      async getContractExecutionChallenge({ challengeId }) {
+        const challenge = challenges.get(challengeId);
+        return { id: challengeId, status: challenge.status, transactionId: challenge.txHash ? challengeId : null };
+      },
+      async getContractExecutionTransaction({ id, blockchain }) {
+        transactionLookupCalls.push(blockchain);
+        const challenge = challenges.get(id);
+        if (!challenge?.txHash) return null;
+        // Reproduces circleUserWalletService's real behavior: a transaction
+        // genuinely on this chain is rejected if looked up under any other
+        // blockchain, including the engine's ARC-TESTNET default.
+        if (blockchain !== entry.circleBlockchain) throw new Error('circle_transaction_mismatch');
+        return { id, state: 'COMPLETE', txHash: challenge.txHash, blockchain: entry.circleBlockchain };
+      },
+      async findContractExecutionTransaction({ blockchain } = {}) {
+        transactionLookupCalls.push(blockchain);
+        return null;
+      },
+    };
+
+    function approveChallenge(challengeId, txHash) {
+      const challenge = challenges.get(challengeId);
+      challenge.status = 'COMPLETE';
+      challenge.txHash = txHash;
+    }
+
+    const service = createGatewayDepositService({
+      database: createFakeDatabase(), gateway, circle,
+      sourceChains: new Map([[entry.domain, source]]),
+    });
+    const sessionDeps = { listArcEoa: async () => ({ id: arcCircleWalletId, address: walletAddress }) };
+    const requestId = `cccccccc-0000-4000-8000-00000000000${entry.domain}`;
+
+    const started = await service.start({
+      auth, userToken: 'circle-user-token-long-enough', requestId, sourceDomain: entry.domain, amountRaw: AMOUNT,
+    });
+    assert.equal(started.state, 'APPROVAL_CHALLENGE');
+    assert.equal(started.sourceChainId, entry.chainId, `domain ${entry.domain} must report its own chain id`);
+
+    const approvalHash = `0x${'a3'.repeat(32)}`;
+    source.state.allowanceRaw = AMOUNT;
+    approveChallenge(started.approvalChallengeId, approvalHash);
+    const approved = await service.verifyApproval({
+      auth, actionId: started.actionId, userToken: 'circle-user-token-long-enough',
+    }, sessionDeps);
+    assert.equal(approved.state, 'DEPOSIT_CHALLENGE');
+    assert.ok(
+      transactionLookupCalls.includes(entry.circleBlockchain),
+      `domain ${entry.domain} approval reconciliation must request its own circleBlockchain`,
+    );
+    assert.ok(
+      !transactionLookupCalls.includes('ARC-TESTNET'),
+      `domain ${entry.domain} must never default a Circle transaction lookup to ARC-TESTNET`,
+    );
+
+    const depositHash = `0x${'b4'.repeat(32)}`;
+    approveChallenge(approved.depositChallengeId, depositHash);
+    const deposited = await service.verifyDeposit({
+      auth, actionId: started.actionId, userToken: 'circle-user-token-long-enough',
+    }, sessionDeps);
+    assert.equal(deposited.state, 'RECONCILING');
+
+    balances.domainRaw = AMOUNT;
+    const completed = await service.status({ auth, actionId: started.actionId });
+    assert.equal(completed.state, 'COMPLETED');
+  }
+
+  console.log('GATEWAY_MULTI_CHAIN_CIRCLE_PREFLIGHT=PASS');
+}
+
+// ---------------------------------------------------------------------------
+// Same-source-domain duplicate safety. Production evidence proved that a lost
+// browser recovery (sessionStorage cleared, split-brain Circle auth) leaves a
+// historical, unresolved durable action with no local memory of it at all: a
+// user who mints a fresh request id for the SAME source domain must never be
+// allowed to create a second concurrent action while the first is genuinely
+// uncertain. Scoped to (user, wallet, execution mode, source domain) only, so
+// an unresolved review on one source never blocks a distinct, intentionally
+// selected source.
+// ---------------------------------------------------------------------------
+
+async function verifySameSourceReviewGuard() {
+  const walletAddress = ethers.getAddress(`0x${'7'.repeat(40)}`);
+  const auth = {
+    userId: 'review-guard-user', executionMode: 'CIRCLE_USER_WALLET',
+    walletAddress, circleWalletId: 'arc-wallet-review-guard',
+  };
+  const OP_DOMAIN = 2;
+  const ARB_DOMAIN = 3;
+  const gateway = {
+    async readUnifiedUsdcBalance() {
+      return { balances: [{ domain: OP_DOMAIN, balanceRaw: '0', transferable: true }, { domain: ARB_DOMAIN, balanceRaw: '0', transferable: true }] };
+    },
+  };
+  const circle = {
+    async listEoaForBlockchain() { return null; }, // never reached: start() must fail before this
+    async createContractExecutionChallenge() { throw new Error('must never create a Circle challenge here'); },
+  };
+  const opSource = createFakeSourceChain(
+    MULTI_CHAIN_SOURCES.find((entry) => entry.domain === OP_DOMAIN),
+  );
+  const arbSource = createFakeSourceChain(
+    MULTI_CHAIN_SOURCES.find((entry) => entry.domain === ARB_DOMAIN),
+  );
+  const sourceChains = new Map([[OP_DOMAIN, opSource], [ARB_DOMAIN, arbSource]]);
+
+  function seedRow(database, overrides) {
+    const id = overrides.id;
+    database.rows.set(id, {
+      id,
+      user_id: auth.userId,
+      request_id: overrides.request_id,
+      execution_mode: auth.executionMode,
+      wallet_address: walletAddress,
+      source_domain: overrides.source_domain,
+      source_chain_id: overrides.source_chain_id,
+      amount_raw: AMOUNT,
+      source_circle_wallet_id: null,
+      baseline_domain_balance_raw: '0',
+      approval_tx_hash: null,
+      approval_circle_challenge_id: overrides.approval_circle_challenge_id ?? null,
+      approval_circle_idempotency_key: null,
+      approval_circle_ref_id: null,
+      approval_circle_transaction_id: null,
+      deposit_tx_hash: null,
+      deposit_circle_challenge_id: null,
+      deposit_circle_idempotency_key: null,
+      deposit_circle_ref_id: null,
+      deposit_circle_transaction_id: null,
+      state: overrides.state,
+      last_error: null,
+      expires_at: overrides.expires_at ?? new Date(Date.now() + 30 * 60 * 1000),
+      created_at: overrides.created_at ?? new Date(),
+    });
+  }
+
+  // A. An existing, unresolved (RESUME-disposition) OP action with no browser
+  // recovery: a freshly minted request id for the SAME source domain must be
+  // refused before any row is inserted and before any Circle challenge.
+  {
+    const database = createFakeDatabase();
+    seedRow(database, {
+      id: 'existing-op-resume', request_id: 'aaaaaaaa-0000-4000-8000-000000000001',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'BASELINE_READ',
+    });
+    const service = createGatewayDepositService({ database, gateway, circle, sourceChains });
+    await rejectsCode(
+      () => service.start({
+        auth, userToken: 'circle-user-token-long-enough',
+        requestId: 'bbbbbbbb-0000-4000-8000-000000000001', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
+      }),
+      'gateway_deposit_source_review_required',
+    );
+    assert.equal(database.rows.size, 1, 'no second row may be inserted for the same unresolved source');
+  }
+
+  // D. The exact historical shape: an EXPIRED row that nonetheless carries a
+  // durable approval challenge id (submitted financial evidence) must be
+  // treated as REVIEW, not as a clean, safely-restartable EXPIRED action.
+  {
+    const database = createFakeDatabase();
+    seedRow(database, {
+      id: 'existing-op-expired-with-evidence', request_id: 'aaaaaaaa-0000-4000-8000-000000000002',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'EXPIRED',
+      approval_circle_challenge_id: 'historical-op-approval-challenge',
+      expires_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const service = createGatewayDepositService({ database, gateway, circle, sourceChains });
+    await rejectsCode(
+      () => service.start({
+        auth, userToken: 'circle-user-token-long-enough',
+        requestId: 'bbbbbbbb-0000-4000-8000-000000000002', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
+      }),
+      'gateway_deposit_source_review_required',
+    );
+    assert.equal(database.rows.size, 1, 'an EXPIRED-with-evidence row must never be silently superseded');
+  }
+
+  // B. An existing, CLEAR (COMPLETED) OP action: a manually requested new
+  // deposit for the same source must be allowed to proceed normally.
+  {
+    const database = createFakeDatabase();
+    seedRow(database, {
+      id: 'existing-op-completed', request_id: 'aaaaaaaa-0000-4000-8000-000000000003',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'COMPLETED',
+    });
+    const service = createGatewayDepositService({ database, gateway, circle: {
+      ...circle,
+      async listEoaForBlockchain() { return { id: 'op-wallet', address: walletAddress, blockchain: 'OP-SEPOLIA', accountType: 'EOA' }; },
+      async createContractExecutionChallenge() { return { challengeId: 'fresh-challenge-after-completed' }; },
+    }, sourceChains });
+    const started = await service.start({
+      auth, userToken: 'circle-user-token-long-enough',
+      requestId: 'bbbbbbbb-0000-4000-8000-000000000003', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
+    });
+    assert.equal(started.state, 'APPROVAL_CHALLENGE', 'a CLEAR prior action must never block a new one');
+    assert.equal(database.rows.size, 2, 'the new action is a genuinely separate row');
+  }
+
+  // C. An existing, CLEAR (FAILED, no evidence) OP action: a manually
+  // requested new deposit for the same source must be allowed.
+  {
+    const database = createFakeDatabase();
+    seedRow(database, {
+      id: 'existing-op-failed-no-evidence', request_id: 'aaaaaaaa-0000-4000-8000-000000000004',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'FAILED',
+    });
+    const service = createGatewayDepositService({ database, gateway, circle: {
+      ...circle,
+      async listEoaForBlockchain() { return { id: 'op-wallet', address: walletAddress, blockchain: 'OP-SEPOLIA', accountType: 'EOA' }; },
+      async createContractExecutionChallenge() { return { challengeId: 'fresh-challenge-after-failed' }; },
+    }, sourceChains });
+    const started = await service.start({
+      auth, userToken: 'circle-user-token-long-enough',
+      requestId: 'bbbbbbbb-0000-4000-8000-000000000004', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
+    });
+    assert.equal(started.state, 'APPROVAL_CHALLENGE', 'a CLEAR FAILED-with-no-evidence row must never block a new one');
+  }
+
+  // E. The unresolved OP review must never block a distinct, intentionally
+  // selected Arbitrum source deposit for the same user/wallet.
+  {
+    const database = createFakeDatabase();
+    seedRow(database, {
+      id: 'existing-op-resume-2', request_id: 'aaaaaaaa-0000-4000-8000-000000000005',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'BASELINE_READ',
+    });
+    const service = createGatewayDepositService({ database, gateway, circle: {
+      ...circle,
+      async listEoaForBlockchain() { return { id: 'arb-wallet', address: walletAddress, blockchain: 'ARB-SEPOLIA', accountType: 'EOA' }; },
+      async createContractExecutionChallenge() { return { challengeId: 'fresh-arbitrum-challenge' }; },
+    }, sourceChains });
+    const started = await service.start({
+      auth, userToken: 'circle-user-token-long-enough',
+      requestId: 'bbbbbbbb-0000-4000-8000-000000000006', sourceDomain: ARB_DOMAIN, amountRaw: AMOUNT,
+    });
+    assert.equal(
+      started.state, 'APPROVAL_CHALLENGE',
+      'an unresolved OP action must never block a distinct Arbitrum source intent',
+    );
+  }
+
+  // The normal resume path is untouched: replaying the SAME request id for an
+  // unresolved action must still resume it, never throw the review error.
+  {
+    const database = createFakeDatabase();
+    seedRow(database, {
+      id: 'existing-op-resume-same-request', request_id: 'aaaaaaaa-0000-4000-8000-000000000007',
+      source_domain: OP_DOMAIN, source_chain_id: 11155420, state: 'BASELINE_READ',
+    });
+    const service = createGatewayDepositService({ database, gateway, circle: {
+      ...circle,
+      async listEoaForBlockchain() { return { id: 'op-wallet', address: walletAddress, blockchain: 'OP-SEPOLIA', accountType: 'EOA' }; },
+      async createContractExecutionChallenge() { return { challengeId: 'resumed-challenge' }; },
+    }, sourceChains });
+    const resumed = await service.start({
+      auth, userToken: 'circle-user-token-long-enough',
+      requestId: 'aaaaaaaa-0000-4000-8000-000000000007', sourceDomain: OP_DOMAIN, amountRaw: AMOUNT,
+    });
+    assert.equal(resumed.actionId, 'existing-op-resume-same-request', 'the SAME request id must resume the SAME action');
+    assert.equal(database.rows.size, 1, 'resuming the same request id must never insert a second row');
+  }
+
+  console.log('GATEWAY_SAME_SOURCE_REVIEW_GUARD=PASS');
 }
 
 // ---------------------------------------------------------------------------
@@ -2022,6 +2348,8 @@ function verifyPoolRefreshWiring() {
   await verifyMultiChainDeposit();
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleBranch();
+  await verifyMultiChainCircleBranch();
+  await verifySameSourceReviewGuard();
   await verifyEngineBlockchainDefaulting();
   await verifyProductionApprovalReconciliation();
   await verifyWrongBlockchainStillFailsClosed();

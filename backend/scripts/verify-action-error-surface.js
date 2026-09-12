@@ -154,6 +154,100 @@ assertPublic(
   'marketplace',
 );
 
+// Gateway SOURCE deposit (Base/OP/Arbitrum/Ethereum Sepolia) and its Circle
+// companion-wallet preparation, added with the multichain generalization.
+// Every one of these was reachable in production but absent from the
+// allow-list, so any real failure on a non-Base source collapsed to a bare
+// "internal_server_error" with no distinguishable code at all -- exactly the
+// symptom production smoke found for OP Sepolia and Arbitrum Sepolia deposits.
+assertPublic(
+  [
+    'gateway_wallet_session_required',
+    'gateway_deposit_source_unsupported',
+    'gateway_deposit_request_id_conflict',
+    'gateway_deposit_action_not_found',
+    'gateway_deposit_insufficient_usdc',
+    'gateway_deposit_source_wallet_required',
+    'gateway_deposit_source_wallet_mismatch',
+    'gateway_deposit_source_review_required',
+    'gateway_deposit_approval_failed',
+    'gateway_deposit_approval_already_bound',
+    'gateway_deposit_approval_transaction_not_found',
+    'gateway_deposit_transaction_not_found',
+    'gateway_deposit_already_bound',
+    'gateway_deposit_failed',
+    'gateway_deposit_txhash_invalid',
+    'gateway_deposit_sender_mismatch',
+    'gateway_deposit_target_mismatch',
+    'gateway_deposit_value_mismatch',
+    'gateway_deposit_calldata_mismatch',
+    'gateway_deposit_chain_mismatch',
+    'gateway_deposit_chain_unavailable',
+    'gateway_source_wallet_invalid',
+    'gateway_source_chain_id_mismatch',
+    'gateway_source_rpc_unavailable',
+    'circle_source_eoa_ambiguous',
+    'circle_source_eoa_not_found',
+    'circle_source_address_mismatch',
+    'circle_source_arc_address_invalid',
+    'circle_source_blockchain_unsupported',
+  ],
+  'gateway_deposit',
+);
+
+// Every error the deposit/source-chain/Circle-source-wallet services can
+// actually throw is read directly from their own source text, so a new error
+// code introduced later fails this test immediately instead of silently
+// falling through to the generic 500 the way the codes above once did.
+function collectThrownLiteralCodes(filePath) {
+  const text = fs.readFileSync(path.resolve(__dirname, filePath), 'utf8');
+  const direct = [...text.matchAll(/throw new Error\('([a-z_0-9]+)'\)/g)].map((m) => m[1]);
+  // A few codes are passed as call-site string literals into a shared
+  // throw-by-name helper (source.readTransaction(txHash, notFoundError,
+  // failureError)) rather than thrown directly; catch those too.
+  const viaHelper = [...text.matchAll(/readTransaction\(\s*\n?\s*txHash,\s*'([a-z_0-9]+)',\s*'([a-z_0-9]+)',/g)]
+    .flatMap((m) => [m[1], m[2]]);
+  return [...direct, ...viaHelper];
+}
+
+const depositPathErrorSources = [
+  '../src/services/gatewayDepositService.js',
+  '../src/services/gatewaySourceChainService.js',
+  '../src/services/circleUserWalletService.js',
+];
+const genericAssertionExemptCodes = new Set([
+  // Pre-existing generic codes these modules also throw, verified elsewhere
+  // (Circle onboarding/action tests) and deliberately not part of the
+  // gateway_deposit assertion above.
+  'circle_request_invalid',
+  'circle_response_invalid',
+  'circle_service_not_configured',
+  'circle_arc_eoa_not_found',
+  'circle_challenge_mismatch',
+  'circle_transaction_ambiguous',
+  'circle_transaction_mismatch',
+  'circle_wallet_listing_incomplete',
+  'circle_arc_eoa_ambiguous',
+  'circle_base_sepolia_eoa_ambiguous',
+  'circle_base_sepolia_address_mismatch',
+  'circle_base_sepolia_arc_address_invalid',
+  'circle_base_sepolia_eoa_not_found',
+  'gateway_request_id_invalid',
+  'gateway_value_invalid',
+]);
+for (const file of depositPathErrorSources) {
+  for (const code of collectThrownLiteralCodes(file)) {
+    if (genericAssertionExemptCodes.has(code)) continue;
+    assert.equal(
+      publicCodes.has(code),
+      true,
+      `${file} can throw '${code}', which is not in server.js's safeKnownErrors -- ` +
+      `it would collapse to a bare internal_server_error at the HTTP boundary`,
+    );
+  }
+}
+console.log('GATEWAY_DEPOSIT_ERRORS_SAFE_LISTED=PASS');
+
 assertGeneric(
   [
     'arc_chain_id_mismatch',

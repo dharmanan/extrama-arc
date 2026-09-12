@@ -159,6 +159,15 @@ app.use((error, req, res, next) => {
     'circle_request_id_conflict',
     'circle_challenge_mismatch',
     'circle_transaction_pending',
+    // Circle companion source-wallet preparation (Base/OP/Arbitrum/Ethereum
+    // Sepolia funding wallets), added with the multichain Gateway
+    // generalization. None of these leak anything beyond the same descriptive
+    // detail already public for the Arc-only circle_arc_eoa_* codes above.
+    'circle_source_eoa_ambiguous',
+    'circle_source_eoa_not_found',
+    'circle_source_address_mismatch',
+    'circle_source_arc_address_invalid',
+    'circle_source_blockchain_unsupported',
     'gateway_circle_wallet_required',
     'gateway_request_id_invalid',
     'gateway_request_id_conflict',
@@ -192,6 +201,41 @@ app.use((error, req, res, next) => {
     'gateway_status_unknown',
     'gateway_transfer_not_found',
     'gateway_transfer_failed',
+    // Gateway SOURCE deposit (USDC.approve then GatewayWallet.deposit) and its
+    // shared source-chain reads, added with the multichain generalization
+    // (Base/OP/Arbitrum/Ethereum Sepolia). Before this, every one of these
+    // codes fell through to the generic 500 below, so the frontend and any
+    // production diagnosis saw only "internal_server_error" regardless of
+    // which of these actually happened. None of these leak anything beyond
+    // the same descriptive detail already public for the entry/claim/refund/
+    // marketplace codes above.
+    'gateway_wallet_session_required',
+    'gateway_deposit_source_unsupported',
+    'gateway_deposit_request_id_conflict',
+    'gateway_deposit_action_not_found',
+    'gateway_deposit_insufficient_usdc',
+    'gateway_deposit_source_wallet_required',
+    'gateway_deposit_source_wallet_mismatch',
+    // A lost browser recovery must never let a second concurrent deposit be
+    // created for a source domain that already has an unresolved action:
+    // this is what the client sees instead of a silently duplicated action.
+    'gateway_deposit_source_review_required',
+    'gateway_deposit_approval_failed',
+    'gateway_deposit_approval_already_bound',
+    'gateway_deposit_approval_transaction_not_found',
+    'gateway_deposit_transaction_not_found',
+    'gateway_deposit_already_bound',
+    'gateway_deposit_failed',
+    'gateway_deposit_txhash_invalid',
+    'gateway_deposit_sender_mismatch',
+    'gateway_deposit_target_mismatch',
+    'gateway_deposit_value_mismatch',
+    'gateway_deposit_calldata_mismatch',
+    'gateway_deposit_chain_mismatch',
+    'gateway_deposit_chain_unavailable',
+    'gateway_source_wallet_invalid',
+    'gateway_source_chain_id_mismatch',
+    'gateway_source_rpc_unavailable',
     'system_seed_wallet_forbidden',
     'action_authorization_expired',
     'claim_request_invalid',

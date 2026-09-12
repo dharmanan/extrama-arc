@@ -263,8 +263,8 @@ function verifyWalletPageWiring() {
 
   assert.match(
     walletPage,
-    /import \{ executeHostedChallenge \} from "\.\.\/lib\/circle-actions";/,
-    'must reuse the existing hosted challenge executor, not a second implementation',
+    /import \{ ensureCircleFinancialAuth, executeHostedChallenge \} from "\.\.\/lib\/circle-actions";/,
+    'must reuse the existing hosted challenge executor and the shared Circle auth bootstrap, not a second implementation of either',
   );
   assert.match(
     walletPage,
@@ -435,6 +435,27 @@ function verifyWalletPageWiring() {
   assert.ok(!mountEffect.includes('handlePrepareSourceWallet'));
   assert.ok(!mountEffect.includes('prepareSourceWallet'));
   assert.ok(!mountEffect.includes('crypto.randomUUID()'));
+
+  // Split-brain auth: the application session can be ready for up to seven
+  // days while this tab's Circle credentials are gone. This same read-only
+  // effect is what restores them, non-financially, before it ever reports a
+  // funding chain "ready" -- so the page never shows a clickable Add to
+  // Gateway control that would only fail after the click.
+  assert.match(mountEffect, /void ensureCircleFinancialAuth\(\)/);
+  assert.match(mountEffect, /\.catch\(\(\) => \{[\s\S]{0,80}setCircleReauthRequired\(true\)/);
+  assert.ok(
+    !mountEffect.includes('readCircleTabAuth()'),
+    'the readiness effect must restore auth through the shared bootstrap, never assert it directly',
+  );
+
+  // Preparing a companion source wallet is a distinct Circle-authenticated
+  // action and must restore auth the same way, never its own copy.
+  const prepareHandlerStart = walletPage.indexOf('async function handlePrepareSourceWallet(domain: number) {');
+  assert.ok(prepareHandlerStart > -1);
+  const prepareHandlerAuthSlice = walletPage.slice(prepareHandlerStart, prepareHandlerStart + 300);
+  assert.match(prepareHandlerAuthSlice, /auth = await ensureCircleFinancialAuth\(\);/);
+  assert.match(prepareHandlerAuthSlice, /catch \{\s*\n\s*setCircleReauthRequired\(true\);/);
+  assert.ok(!prepareHandlerAuthSlice.includes('readCircleTabAuth()'));
 
   // External wallet Gateway behavior is unaffected: it needs no companion
   // wallet at all (the same address exists on every EVM chain it switches

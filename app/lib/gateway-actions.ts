@@ -27,13 +27,12 @@ import {
   type HumanExecutionMode,
   type TransactionRequest,
 } from "./backend-api";
-import { confirmCircleGatewayFunding, executeHostedChallenge } from "./circle-actions";
+import { confirmCircleGatewayFunding, ensureCircleFinancialAuth, executeHostedChallenge } from "./circle-actions";
 import {
   clearCircleGatewayDepositRecovery,
   clearExternalGatewayDepositRecovery,
   clearExternalGatewayFundingRecovery,
   readCircleGatewayDepositRecovery,
-  readCircleTabAuth,
   readExternalGatewayDepositRecovery,
   readExternalGatewayFundingRecovery,
   storeCircleGatewayDepositRecovery,
@@ -241,8 +240,12 @@ async function runCircleDeposit(
   input: { sourceDomain: number; amountRaw: string },
   onStatus?: (phase: CircleGatewayDepositPhase) => void,
 ): Promise<GatewayDepositResponse> {
-  const auth = readCircleTabAuth();
-  if (!auth) throw new Error("circle_reauthentication_required");
+  // The application session can be alive for up to seven days while this
+  // tab's Circle credentials are gone (reopened browser, new tab, cleared
+  // sessionStorage). Restoring them here, before any financial call, is what
+  // let the same click that used to fail with circle_reauthentication_required
+  // before ever reaching the backend now continue the SAME requested deposit.
+  const auth = await ensureCircleFinancialAuth();
 
   let recovery = readCircleGatewayDepositRecovery();
   if (recovery && (recovery.sourceDomain !== input.sourceDomain || recovery.amountRaw !== input.amountRaw)) {

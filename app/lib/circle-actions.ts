@@ -44,6 +44,7 @@ import {
   type CircleActionRecovery,
   type CircleEntryRecovery,
   type CircleGatewayFundingRecovery,
+  type CircleTabAuth,
 } from "./circle-auth";
 
 type CircleChallengeResult = {
@@ -74,6 +75,68 @@ const EXTREMA_SESSION_ERRORS = new Set([
 ]);
 
 let circleSessionRefreshPromise: Promise<unknown> | null = null;
+
+// The EXTREMA application session lasts seven days; Circle's userToken and
+// encryptionKey are deliberately kept tab-scoped only (sessionStorage), never
+// persisted. That split is intentional, but it means the application session
+// can legitimately be alive while a tab's Circle credentials are gone -- a
+// reopened browser, a new tab, or sessionStorage simply being cleared. Every
+// Circle FINANCIAL entry point must go through this helper instead of
+// asserting readCircleTabAuth() directly, so that state restores the tab
+// credentials via the existing secure refresh (bound to the SAME session
+// identity, server-verified) and continues the SAME requested financial
+// intent, rather than failing before the request ever reaches the backend.
+//
+// This performs authentication restoration ONLY: no financial intent, no
+// Circle challenge, no approve, no deposit, no transfer, no broadcast.
+let circleFinancialAuthBootstrapPromise: Promise<CircleTabAuth> | null = null;
+
+export async function ensureCircleFinancialAuth(): Promise<CircleTabAuth> {
+  const existing = readCircleTabAuth();
+  if (existing) return existing;
+
+  // Single-flight: if several financial callers discover missing auth at
+  // once, exactly one refresh request is made and every caller receives the
+  // same restored credentials, never a separate credential rotation each.
+  if (!circleFinancialAuthBootstrapPromise) {
+    circleFinancialAuthBootstrapPromise = (async (): Promise<CircleTabAuth> => {
+      let refreshed: Awaited<ReturnType<typeof backendApi.circle.refreshSession>>;
+      try {
+        refreshed = await backendApi.circle.refreshSession(await getCircleDeviceId());
+      } catch {
+        // The backend's own refresh route is already the authority on
+        // whether this session may restore Circle credentials: it requires
+        // the live EXTREMA session, reads only that session's own encrypted
+        // refresh credentials, and re-verifies the rotated token resolves to
+        // the SAME wallet id and address before returning anything. Any
+        // failure there -- no stored credentials, identity mismatch, Circle
+        // itself refusing the rotation -- means this tab cannot safely
+        // restore Circle auth, and the only correct outcome is the same
+        // reauthentication prompt a cold session would show.
+        throw new Error("circle_reauthentication_required");
+      }
+      if (
+        typeof refreshed?.userToken !== "string" || !refreshed.userToken ||
+        typeof refreshed?.encryptionKey !== "string" || !refreshed.encryptionKey
+      ) {
+        throw new Error("circle_reauthentication_required");
+      }
+      // Store ONLY the credential pair every other Circle tab record already
+      // expects; the rest of the refresh response (wallet identity) is not
+      // persisted here.
+      const auth: CircleTabAuth = {
+        userToken: refreshed.userToken,
+        encryptionKey: refreshed.encryptionKey,
+      };
+      storeCircleTabAuth(auth);
+      return auth;
+    })().finally(() => {
+      circleFinancialAuthBootstrapPromise = null;
+    });
+  }
+
+  return circleFinancialAuthBootstrapPromise;
+}
 
 // This creates only the Circle SDK device context needed by the documented
 // refresh endpoint. It does not set authentication, create a challenge, or
@@ -158,9 +221,9 @@ async function verifyCircleEntryOnce(
 // Exported for gateway-actions.ts's Circle deposit flow, which executes the
 // same hosted challenges through the same SDK entry point.
 export async function executeHostedChallenge(challengeId: string) {
-  const auth = readCircleTabAuth();
   const appId = process.env.NEXT_PUBLIC_CIRCLE_APP_ID;
-  if (!auth || !appId) throw new Error("circle_reauthentication_required");
+  if (!appId) throw new Error("circle_reauthentication_required");
+  const auth = await ensureCircleFinancialAuth();
   const module = await import("@circle-fin/w3s-pw-web-sdk");
   const sdk = new module.W3SSdk({ appSettings: { appId } }) as unknown as CircleSdk;
   // The hosted SDK establishes its device context before a challenge executes.
@@ -329,8 +392,7 @@ export async function confirmCircleEntry(input: {
   predictionPriceCents: number;
   requestId: string;
 }) {
-  const auth = readCircleTabAuth();
-  if (!auth) throw new Error("circle_reauthentication_required");
+  const auth = await ensureCircleFinancialAuth();
 
   let pending = readCircleEntryRecovery();
 
@@ -474,8 +536,7 @@ export async function confirmCircleGatewayFunding(
   },
   onProgress?: (signed: number, total: number) => void,
 ) {
-  const auth = readCircleTabAuth();
-  if (!auth) throw new Error("circle_reauthentication_required");
+  const auth = await ensureCircleFinancialAuth();
 
   let recovery = readCircleGatewayFundingRecovery();
   if (recovery && !isGatewayFundingRecoveryFor(recovery, input)) {
@@ -736,8 +797,7 @@ export type CircleActionIntent<T extends CircleActionType> = {
 export async function confirmCircleAction<T extends CircleActionType>(
   intent: CircleActionIntent<T>,
 ): Promise<CircleActionResultMap[T]> {
-  const auth = readCircleTabAuth();
-  if (!auth) throw new Error("circle_reauthentication_required");
+  const auth = await ensureCircleFinancialAuth();
 
   let pending = readCircleActionRecovery();
 

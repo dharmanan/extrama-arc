@@ -44,7 +44,7 @@ import {
   type CircleSourceWalletRecovery,
 } from "../lib/circle-auth";
 import { confirmGatewaySourceDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
-import { executeHostedChallenge } from "../lib/circle-actions";
+import { ensureCircleFinancialAuth, executeHostedChallenge } from "../lib/circle-actions";
 import { getCircleDeviceId } from "../lib/circle-actions";
 import { useCopy, useLocale } from "../i18n";
 import { CircleWalletOnboarding } from "../circle-wallet-onboarding";
@@ -666,15 +666,31 @@ export default function WalletPage() {
     ));
   }, [executionMode, sourceState]);
 
-  // One read-only Circle readiness check per funding chain, once each.
+  // One read-only Circle readiness check per funding chain, once each. The
+  // application session can be ready while this tab's Circle credentials are
+  // gone (reopened browser, new tab, cleared sessionStorage); restoring them
+  // once here, non-financially, is what keeps Gateway controls from looking
+  // ready while every Circle financial action would fail before it even
+  // reaches the backend. A restore failure falls back to the same Circle
+  // reauthentication UI the rest of the page already uses.
   useEffect(() => {
     if (executionMode !== "CIRCLE_USER_WALLET" || !sourceState) return;
-    const auth = readCircleTabAuth();
-    if (!auth) return;
-    for (const source of sourceState.sources) {
-      if (sourceWalletStatus[source.domain]) continue;
-      void refreshCircleSourceWalletStatus(source.domain, auth.userToken);
-    }
+    let cancelled = false;
+    void ensureCircleFinancialAuth()
+      .then((auth) => {
+        if (cancelled) return;
+        for (const source of sourceState.sources) {
+          if (sourceWalletStatus[source.domain]) continue;
+          void refreshCircleSourceWalletStatus(source.domain, auth.userToken);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCircleReauthRequired(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [executionMode, sourceState, sourceWalletStatus]);
 
   // Durable, idempotent Base Sepolia wallet preparation. Never mints a new
@@ -771,8 +787,10 @@ export default function WalletPage() {
   // Preparing a companion wallet creates a wallet and nothing else. It never
   // approves, deposits or transfers, for any chain.
   async function handlePrepareSourceWallet(domain: number) {
-    const auth = readCircleTabAuth();
-    if (!auth) {
+    let auth;
+    try {
+      auth = await ensureCircleFinancialAuth();
+    } catch {
       setCircleReauthRequired(true);
       return;
     }
@@ -1137,13 +1155,27 @@ export default function WalletPage() {
       }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "";
-      if (message === "gateway_deposit_expired") {
+      if (message === "circle_reauthentication_required") {
+        // The application session is still ready, but the shared Circle auth
+        // bootstrap could not restore this tab's credentials (no stored
+        // refresh, or the restored identity no longer matches the session).
+        // This is not a Gateway deposit failure at all: no financial start
+        // call was ever made. Route to the same Circle reauthentication UI
+        // the rest of the page already uses, never the generic message.
+        setCircleReauthRequired(true);
+      } else if (message === "gateway_deposit_expired") {
         // Expiry is not a proof that a source-chain or Circle action did not
         // land. Preserve the same durable recovery and require a later
         // read-only status reconciliation rather than opening a new deposit.
         setDepositError(t.wallet.gatewayDepositExpired);
       } else if (message === "gateway_deposit_pending_timeout") {
         setDepositError(t.wallet.gatewayDepositStatusNeedsReview);
+      } else if (message === "gateway_deposit_source_review_required") {
+        // A lost browser recovery must never be read as license to start a
+        // second concurrent action for the same source domain: the backend
+        // already refused before creating anything. This is a distinct,
+        // explicit message, never the generic deposit-failed one.
+        setDepositError(t.wallet.gatewayDepositSourceReviewRequired);
       } else {
         setDepositError(
           t.wallet.gatewayDepositCouldNotComplete,
@@ -1300,8 +1332,15 @@ export default function WalletPage() {
       }
       setGatewayFundingRecovery(null);
       setGatewayFundingNotice(t.wallet.gatewayTransferPrepared);
-    } catch {
-      setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
+    } catch (cause) {
+      // Same rule as the source deposit path: a Circle auth restore failure
+      // is not a transfer preparation failure at all, and no financial start
+      // call was ever made. Route to the existing reauthentication UI.
+      if (cause instanceof Error && cause.message === "circle_reauthentication_required") {
+        setCircleReauthRequired(true);
+      } else {
+        setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
+      }
     } finally {
       setGatewayFundingBusy(false);
       setGatewaySignStep(null);
