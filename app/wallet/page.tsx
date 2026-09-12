@@ -1662,6 +1662,8 @@ export default function WalletPage() {
         setGatewayFundingNotice("");
         setGatewayFundingTransactionUrl(null);
         setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
+      } else if (cause instanceof Error && cause.message === "gateway_insufficient_after_fees") {
+        setGatewayFundingError(t.wallet.gatewayInsufficientAfterFees);
       } else {
         setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
       }

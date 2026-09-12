@@ -34,6 +34,8 @@ const gatewayService = require('../src/services/gatewayService');
 const {
   canonicalJson,
   createGatewayFundingService,
+  FEE_AWARE_MAX_ESTIMATE_CALLS,
+  FEE_AWARE_MAX_ITERATIONS,
   hashPayload,
 } = require('../src/services/gatewayFundingService');
 
@@ -375,9 +377,16 @@ function createFeeGateway(walletAddress, balances, feeByDomain, state) {
     async estimateGatewayTransfer(specs) {
       state.estimateCalls += 1;
       state.estimatedSpecCounts.push(specs.length);
+      state.estimatedPlans?.push(specs.map((spec) => ({
+        sourceDomain: spec.sourceDomain,
+        valueRaw: spec.value,
+      })));
+      const feeFor = typeof feeByDomain === 'function'
+        ? feeByDomain
+        : (spec) => feeByDomain[spec.sourceDomain] || 0;
       return {
         intents: specs.map((spec) => ({
-          maxFeeRaw: String(feeByDomain[spec.sourceDomain] || 0),
+          maxFeeRaw: String(feeFor(spec, specs)),
           maxBlockHeight: '999999999',
         })),
         // Deliberately omit fees.total: the planner must have a safe fallback
@@ -448,7 +457,7 @@ async function verifyFeeAwarePlanner() {
     { sourceDomain: 6, valueRaw: '995000' },
     { sourceDomain: 2, valueRaw: '5000' },
   ]);
-  assert.deepEqual(spread.state.estimatedSpecCounts, [1, 1, 2]);
+  assert.deepEqual(spread.state.estimatedSpecCounts, [1, 1, 2, 2]);
 
   // A balance that would otherwise cover the amount cannot enter signing when
   // its maxFee reserve makes it short.
@@ -480,6 +489,195 @@ async function verifyFeeAwarePlanner() {
   assert.equal(second.result.payloadHash, first.result.payloadHash);
   assert.deepEqual(second.result.typedDataList, first.result.typedDataList);
   console.log('GATEWAY_FEE_SAFE_PLANNER=PASS');
+}
+
+async function verifyLiveArbitrumFeeAwareRegression() {
+  const wallet = new ethers.Wallet(`0x${'aa'.repeat(32)}`);
+  const auth = { userId: USER_ID, walletAddress: wallet.address, executionMode: 'EXTERNAL_WALLET' };
+  const liveBalances = [
+    balance(0, '2000000'),
+    balance(2, '1000000'),
+    balance(3, '974645'),
+    balance(6, '876452'),
+  ];
+  const liveOneSourceFees = { 0: '2000000', 2: '420778', 3: '11000', 6: '11000' };
+
+  async function prepare({
+    requestId,
+    balances,
+    feeByDomain,
+    valueRaw = '1000000',
+    targetWallet = wallet,
+  }) {
+    const rows = new Map();
+    const state = { estimateCalls: 0, estimatedSpecCounts: [], estimatedPlans: [] };
+    const service = createGatewayFundingService({
+      database: createFakeDb(rows),
+      gateway: createFeeGateway(targetWallet.address, balances, feeByDomain, state),
+      circle: {},
+    });
+    const result = await service.start({
+      auth: { ...auth, walletAddress: targetWallet.address },
+      requestId,
+      destinationDomain: 3,
+      valueRaw,
+    });
+    return { result, rows, state };
+  }
+
+  function allocationKey(allocations) {
+    return allocations.map((allocation) => `${allocation.sourceDomain}:${allocation.valueRaw}`).join('|');
+  }
+
+  function liveFeeFor(spec, specs) {
+    if (specs.length === 1) return liveOneSourceFees[spec.sourceDomain];
+    const domains = specs.map((item) => item.sourceDomain).sort((left, right) => left - right).join(',');
+    if (domains === '2,3') return spec.sourceDomain === 2 ? '420778' : '11000';
+    return '2000000';
+  }
+
+  const live = await prepare({
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01',
+    balances: liveBalances,
+    feeByDomain: liveFeeFor,
+  });
+  assert.deepEqual(live.result.sourcePlan, [
+    { sourceDomain: 2, valueRaw: '579222' },
+    { sourceDomain: 3, valueRaw: '420778' },
+  ]);
+  assert.ok(live.state.estimatedPlans.some((plan) => allocationKey(plan) === '2:999999|3:1'));
+  assert.ok(live.state.estimatedPlans.some((plan) => allocationKey(plan) === allocationKey(live.result.sourcePlan)));
+  assert.ok(live.state.estimateCalls <= FEE_AWARE_MAX_ESTIMATE_CALLS);
+  assert.ok(live.state.estimateCalls <= 5 + 26 * FEE_AWARE_MAX_ITERATIONS);
+  console.log('GATEWAY_ARBITRUM_LIVE_BALANCE_REGRESSION=PASS');
+  console.log('GATEWAY_FEE_AWARE_REALLOCATION=PASS');
+
+  const liveBalancesByDomain = new Map(liveBalances.map((item) => [item.domain, BigInt(item.balanceRaw)]));
+  const persisted = live.rows.get(live.result.actionId);
+  let exactTotal = 0n;
+  persisted.burn_intents_json.forEach((intent, index) => {
+    const sourceDomain = intent.spec.sourceDomain;
+    const value = BigInt(intent.spec.value);
+    const maxFee = BigInt(intent.maxFee);
+    exactTotal += value;
+    assert.ok(value > 0n);
+    assert.ok(liveBalancesByDomain.get(sourceDomain) >= value + maxFee);
+    assert.equal(live.result.sourcePlan[index].sourceDomain, sourceDomain);
+    assert.equal(live.result.sourcePlan[index].valueRaw, intent.spec.value);
+    assert.equal(
+      String(maxFee),
+      liveFeeFor(intent.spec, persisted.burn_intents_json.map((entry) => entry.spec)),
+    );
+  });
+  assert.equal(exactTotal, 1000000n);
+  console.log('GATEWAY_FEE_AWARE_FINAL_QUOTE_SOLVENT=PASS');
+  console.log('GATEWAY_FEE_AWARE_EXACT_SUM=PASS');
+  console.log('GATEWAY_FEE_AWARE_NO_ZERO_INTENTS=PASS');
+  console.log('GATEWAY_FEE_AWARE_REQUOTE=PASS');
+  console.log('GATEWAY_FEE_AWARE_BOUNDED_CONVERGENCE=PASS');
+
+  // A one-source plan that remains solvent wins before any multi-source plan.
+  const single = await prepare({
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02',
+    balances: [balance(6, '1200000'), balance(2, '1100000')],
+    feeByDomain: { 6: '100000', 2: '200000' },
+  });
+  assert.deepEqual(single.result.sourcePlan, [{ sourceDomain: 6, valueRaw: '1000000' }]);
+  assert.deepEqual(single.state.estimatedSpecCounts, [1, 1]);
+  console.log('GATEWAY_FEE_AWARE_MIN_SOURCE_COUNT=PASS');
+
+  // Gross balance can be enough while every source subset remains insolvent
+  // after its own independent maxFee reserves.
+  await rejectsCode(
+    () => prepare({
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03',
+      balances: [balance(6, '600000'), balance(2, '500000')],
+      feeByDomain: { 6: '100000', 2: '100000' },
+    }),
+    'gateway_insufficient_after_fees',
+  );
+
+  const threeSource = await prepare({
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04',
+    balances: [balance(6, '600000'), balance(2, '500000'), balance(0, '400000')],
+    feeByDomain: { 6: '100000', 2: '100000', 0: '100000' },
+  });
+  assert.equal(threeSource.result.sourcePlan.length, 3);
+  assert.equal(threeSource.result.sourcePlan.reduce((total, item) => total + BigInt(item.valueRaw), 0n), 1000000n);
+  assert.ok(threeSource.result.sourcePlan.every((item) => BigInt(item.valueRaw) > 0n));
+  console.log('GATEWAY_FEE_AWARE_THREE_SOURCE_REALLOCATION=PASS');
+
+  // A changed fee quote after the first reallocation requires another bounded
+  // iteration and then converges to a stable, independently solvent split.
+  const changingFees = (spec, specs) => {
+    if (specs.length === 1) return '300000';
+    if (spec.sourceDomain === 2) return spec.value === '999999' ? '600000' : '550000';
+    return spec.value === '1' ? '100000' : '150000';
+  };
+  const requoted = await prepare({
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa05',
+    balances: [balance(2, '1200000'), balance(6, '1200000')],
+    feeByDomain: changingFees,
+  });
+  assert.deepEqual(requoted.result.sourcePlan, [
+    { sourceDomain: 2, valueRaw: '650000' },
+    { sourceDomain: 6, valueRaw: '350000' },
+  ]);
+  assert.ok(requoted.state.estimatedPlans.some((plan) => allocationKey(plan) === '2:600000|6:400000'));
+  assert.ok(requoted.state.estimateCalls <= FEE_AWARE_MAX_ITERATIONS + 2);
+
+  // A quote-driven A -> B -> A cycle is not treated as convergence. The
+  // subset fails closed instead of accepting an unquoted or stale allocation.
+  const oscillatingFees = (spec, specs) => {
+    if (specs.length === 1) return '300000';
+    if (spec.sourceDomain === 2) return spec.value === '999999' ? '600000' : '100000';
+    return spec.value === '1' ? '100000' : '200000';
+  };
+  await rejectsCode(
+    () => prepare({
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa06',
+      balances: [balance(2, '1200000'), balance(6, '1200000')],
+      feeByDomain: oscillatingFees,
+    }),
+    'gateway_insufficient_after_fees',
+  );
+  console.log('GATEWAY_FEE_AWARE_OSCILLATION_FAIL_CLOSED=PASS');
+
+  // Among equally sized safe subsets, the actual final quoted fee wins.
+  const equalCountFees = (spec, specs) => {
+    if (specs.length === 1) return '100000';
+    const domains = specs.map((item) => item.sourceDomain).sort((left, right) => left - right).join(',');
+    if (domains === '0,2') return '50000';
+    if (domains === '2,6') return '100000';
+    return '150000';
+  };
+  const lowerFeeTie = await prepare({
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa07',
+    balances: [balance(0, '600000'), balance(2, '600000'), balance(6, '600000')],
+    feeByDomain: equalCountFees,
+  });
+  assert.deepEqual(lowerFeeTie.result.sourcePlan, [
+    { sourceDomain: 0, valueRaw: '550000' },
+    { sourceDomain: 2, valueRaw: '450000' },
+  ]);
+  assert.ok(lowerFeeTie.rows.get(lowerFeeTie.result.actionId).burn_intents_json.every((intent) => intent.maxFee === '50000'));
+  console.log('GATEWAY_FEE_AWARE_LOWEST_FEE_TIEBREAK=PASS');
+
+  // The live-shaped result is a deterministic replay: same request, balances
+  // and final quote produce the same allocation, payload hash and typed data.
+  const liveReplay = await prepare({
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01',
+    balances: liveBalances,
+    feeByDomain: liveFeeFor,
+  });
+  assert.deepEqual(liveReplay.result.sourcePlan, live.result.sourcePlan);
+  assert.equal(liveReplay.result.payloadHash, live.result.payloadHash);
+  assert.deepEqual(liveReplay.result.typedDataList, live.result.typedDataList);
+
+  const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
+  assert.match(walletPage, /gateway_insufficient_after_fees/);
+  assert.match(walletPage, /gatewayInsufficientAfterFees/);
+  console.log('GATEWAY_INSUFFICIENT_AFTER_FEES_ERROR_SURFACE=PASS');
 }
 
 async function verifyBoundedPlanner() {
@@ -601,8 +799,8 @@ async function verifyCircleMultiSource() {
   // The server resolved a three-way plan the browser never asked for.
   assert.deepEqual(started.sourcePlan, SPREAD_PLAN);
   assert.equal(started.intentCount, 3);
-  assert.equal(state.estimateCalls, 4, 'one-source probes plus one exact multi-source estimate');
-  assert.deepEqual(state.estimatedSpecCounts, [1, 1, 1, 3]);
+  assert.equal(state.estimateCalls, 5, 'one-source probes plus exact multi-source re-quote');
+  assert.deepEqual(state.estimatedSpecCounts, [1, 1, 1, 3, 3]);
   assert.equal(started.signatureIndex, 0, 'signing starts at the first allocation');
   assert.equal(started.challengeId, 'plan-challenge-1');
   assert.equal(challengeCreates, 1, 'only the first allocation has a challenge yet');
@@ -635,7 +833,7 @@ async function verifyCircleMultiSource() {
   assert.equal(replay.challengeId, 'plan-challenge-1');
   assert.equal(challengeCreates, 1);
   assert.deepEqual(replay.sourcePlan, SPREAD_PLAN);
-  assert.equal(state.estimateCalls, 4, 'a replay never re-prices the plan');
+  assert.equal(state.estimateCalls, 5, 'a replay never re-prices the plan');
 
   // Sign allocation by allocation. Each step issues the next challenge and the
   // action stays short of READY_TO_BROADCAST until every intent is signed.
@@ -993,6 +1191,7 @@ async function verifyBrowserCannotChooseSource() {
 (async () => {
   verifyPlanner();
   await verifyFeeAwarePlanner();
+  await verifyLiveArbitrumFeeAwareRegression();
   await verifyBoundedPlanner();
   await verifyCircleMultiSource();
   await verifyExternalPartialSignatureRecovery();

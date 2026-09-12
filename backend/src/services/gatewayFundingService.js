@@ -33,6 +33,11 @@ const ACTIVE_FUNDING_STATES = Object.freeze([
 const PRE_SUBMISSION_DISCARD_STATES = Object.freeze([
   'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING', 'READY_TO_BROADCAST',
 ]);
+const FEE_AWARE_MAX_ITERATIONS = 6;
+// Five canonical transfer sources produce 31 non-empty subsets. One-source
+// plans are quoted once; multi-source subsets may be requoted at most six
+// times, so preparation can make no more than 5 + 26 * 6 = 161 estimates.
+const FEE_AWARE_MAX_ESTIMATE_CALLS = 161;
 
 function canonicalJson(value) {
   if (value === null) return 'null';
@@ -402,15 +407,20 @@ function createGatewayFundingService({
         }),
       }));
       const estimate = await gateway.estimateGatewayTransfer(specs);
-      if (!estimate || !Array.isArray(estimate.intents) || estimate.intents.length !== specs.length) {
+      if (
+        !estimate || !Array.isArray(estimate.intents) || estimate.intents.length !== specs.length ||
+        estimate.intents.some((intent) => (
+          !intent || typeof intent.maxFeeRaw !== 'string' || !/^\d+$/.test(intent.maxFeeRaw) ||
+          typeof intent.maxBlockHeight !== 'string' || !/^\d+$/.test(intent.maxBlockHeight)
+        ))
+      ) {
         throw new Error('gateway_response_invalid');
       }
       return { plan, specs, estimate };
     }
 
-    // Price every one-source option first. This both selects the cheapest
-    // source when several can cover the request and supplies a conservative
-    // per-domain fee reserve for multi-source candidates.
+    // Price every one-source option first. A safe one-source plan wins before
+    // any multi-source subset is considered, preserving minimum source count.
     for (const source of sources) {
       const oneSourcePlan = {
         totalValueRaw: row.value_raw,
@@ -430,41 +440,88 @@ function createGatewayFundingService({
     let selected = validOneSource[0] || null;
 
     if (!selected) {
-      const feeByDomain = new Map(estimates.map((candidate) => [candidate.source.domain, candidate.feeRaw]));
-      const adjustedBalances = sources.map((source) => ({
-        ...source,
-        balanceRaw: (() => {
-          const adjusted = BigInt(source.balanceRaw) - (feeByDomain.get(source.domain) || 0n);
-          return adjusted > 0n ? adjusted.toString() : '0';
-        })(),
-      })).filter((source) => source.balanceRaw !== '0');
       const sourceByDomain = new Map(sources.map((source) => [source.domain, BigInt(source.balanceRaw)]));
       const maxCandidateSources = Math.min(
         gatewayService.MAX_BURN_INTENTS,
-        adjustedBalances.length,
+        sources.length,
       );
 
-      // The canonical transfer-source set has five domains, so this staged
-      // search can make at most 5 + 10 + 10 + 5 + 1 = 31 estimate calls. A
-      // smaller fee-safe source count always wins, so larger subsets are never
-      // priced after a valid level has been found.
+      function allocationKey(plan) {
+        return plan.allocations
+          .map((allocation) => `${allocation.sourceDomain}:${allocation.valueRaw}`)
+          .join('|');
+      }
+
+      function reallocateWithinSubset(plan, estimate) {
+        const capacities = plan.allocations.map((allocation, index) => {
+          const available = sourceByDomain.get(allocation.sourceDomain);
+          const fee = BigInt(estimate.intents[index].maxFeeRaw);
+          return available === undefined ? null : available - fee;
+        });
+        if (capacities.some((capacity) => capacity === null || capacity <= 0n)) return null;
+        const totalCapacity = capacities.reduce((total, capacity) => total + capacity, 0n);
+        if (totalCapacity < requested || requested < BigInt(plan.allocations.length)) return null;
+
+        // Preserve the enumerator's total deterministic source order. Reserve
+        // one raw unit for every included source, then fill each source up to
+        // its own fee-adjusted capacity. No source can pay another source's
+        // fee reserve, and no zero-value intent can be produced.
+        let remaining = requested - BigInt(plan.allocations.length);
+        const allocations = plan.allocations.map((allocation, index) => {
+          const minimum = 1n;
+          const extra = remaining > capacities[index] - minimum
+            ? capacities[index] - minimum
+            : remaining;
+          remaining -= extra;
+          return {
+            sourceDomain: allocation.sourceDomain,
+            valueRaw: (minimum + extra).toString(),
+          };
+        });
+        return remaining === 0n
+          ? { totalValueRaw: requested.toString(), allocations }
+          : null;
+      }
+
+      function isFeeSafe(plan, estimate) {
+        return estimate.intents.every((intent, index) => {
+          const available = sourceByDomain.get(plan.allocations[index].sourceDomain);
+          return available !== undefined &&
+            available >= BigInt(plan.allocations[index].valueRaw) + BigInt(intent.maxFeeRaw);
+        });
+      }
+
+      // The canonical transfer-source set has five domains. There are 26
+      // multi-source subsets; each gets at most six exact quote/reallocation
+      // iterations, and a smaller source count always wins before larger ones.
       for (let sourceCount = 2; sourceCount <= maxCandidateSources && !selected; sourceCount += 1) {
         const candidates = enumerate({
-          balances: adjustedBalances,
+          balances: sources,
           valueRaw: row.value_raw,
           maxSources: gatewayService.MAX_BURN_INTENTS,
           sourceCount,
         });
         const plans = Array.isArray(candidates) ? candidates : [];
         const pricedCandidates = [];
-        for (const plan of plans) {
-          const priced = await pricePlan(plan);
-          const safe = priced.estimate.intents.every((intent, index) => {
-            const allocation = plan.allocations[index];
-            const available = sourceByDomain.get(allocation.sourceDomain);
-            return available !== undefined && available >= BigInt(allocation.valueRaw) + BigInt(intent.maxFeeRaw);
-          });
-          if (safe) pricedCandidates.push(priced);
+        for (const initialPlan of plans) {
+          let plan = initialPlan;
+          const seen = new Set();
+          for (let iteration = 0; iteration < FEE_AWARE_MAX_ITERATIONS; iteration += 1) {
+            const key = allocationKey(plan);
+            if (seen.has(key)) break;
+            seen.add(key);
+
+            const priced = await pricePlan(plan);
+            const reallocated = reallocateWithinSubset(plan, priced.estimate);
+            if (!reallocated) break;
+            const nextKey = allocationKey(reallocated);
+            if (nextKey === key) {
+              if (isFeeSafe(plan, priced.estimate)) pricedCandidates.push(priced);
+              break;
+            }
+            if (seen.has(nextKey)) break;
+            plan = reallocated;
+          }
         }
         pricedCandidates.sort((left, right) => {
           const leftFee = feeScore(left.estimate);
@@ -1021,6 +1078,8 @@ module.exports = {
   hashPayload,
   ACTIVE_FUNDING_STATES,
   PRE_SUBMISSION_DISCARD_STATES,
+  FEE_AWARE_MAX_ITERATIONS,
+  FEE_AWARE_MAX_ESTIMATE_CALLS,
   createGatewayFundingService,
   ...gatewayFundingService,
 };
