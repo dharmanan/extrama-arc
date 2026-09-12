@@ -93,19 +93,12 @@ export function clearCircleEntryRecovery() {
 // local signer recovery.
 export const CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY = "extrema-circle-gateway-funding-recovery-v1";
 
-// The recovery record stores the DESTINATION the user chose, never a source
-// domain: the source allocation belongs to the server and is re-reported by
-// the action itself. A reload restores the destination and the amount and
-// resumes the same action under the same request id.
 export type CircleGatewayFundingRecovery = {
   requestId: string;
   actionId: string;
   payloadHash: string | null;
-  destinationDomain: number;
+  sourceDomain: number;
   valueRaw: string;
-  // Which allocation the stored challenge signs. A multi-source plan is signed
-  // one allocation at a time, so resuming must know where it stopped.
-  signatureIndex: number;
   challengeId: string | null;
   expiresAtMs: number;
 };
@@ -119,10 +112,9 @@ export function readCircleGatewayFundingRecovery(): CircleGatewayFundingRecovery
       typeof parsed.requestId !== "string" || !parsed.requestId ||
       typeof parsed.actionId !== "string" || !parsed.actionId ||
       !(typeof parsed.payloadHash === "string" || parsed.payloadHash === null) ||
-      typeof parsed.destinationDomain !== "number" ||
-      !Number.isInteger(parsed.destinationDomain) || parsed.destinationDomain < 0 ||
+      typeof parsed.sourceDomain !== "number" ||
+      !Number.isInteger(parsed.sourceDomain) || parsed.sourceDomain < 0 ||
       typeof parsed.valueRaw !== "string" || !/^[1-9][0-9]*$/.test(parsed.valueRaw) ||
-      typeof parsed.signatureIndex !== "number" || !Number.isInteger(parsed.signatureIndex) ||
       !(typeof parsed.challengeId === "string" || parsed.challengeId === null) ||
       typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
     ) return null;
@@ -140,90 +132,40 @@ export function clearCircleGatewayFundingRecovery() {
   window.sessionStorage.removeItem(CIRCLE_GATEWAY_FUNDING_RECOVERY_KEY);
 }
 
-// The same recovery need for an EXTERNAL_WALLET transfer. There is no hosted
-// challenge to resume, so this record carries only the action identity: enough
-// to resume the SAME action under the SAME request id after a reload, and to
-// restore the destination and amount the user chose.
-export const EXTERNAL_GATEWAY_FUNDING_RECOVERY_KEY = "extrema-external-gateway-funding-recovery-v1";
+// Prepare Base Sepolia (Part C) is a one-shot wallet creation challenge, not a
+// financial action, but Circle still dedupes by idempotency key: a reload
+// before the challenge completes must reuse the SAME key and challenge id
+// rather than asking Circle to create a second, unrelated wallet challenge.
+export const CIRCLE_BASE_WALLET_RECOVERY_KEY = "extrema-circle-base-wallet-recovery-v1";
 
-export type ExternalGatewayFundingRecovery = {
-  requestId: string;
-  actionId: string;
-  destinationDomain: number;
-  valueRaw: string;
-  expiresAtMs: number;
-};
-
-export function readExternalGatewayFundingRecovery(): ExternalGatewayFundingRecovery | null {
-  try {
-    const value = window.sessionStorage.getItem(EXTERNAL_GATEWAY_FUNDING_RECOVERY_KEY);
-    if (!value) return null;
-    const parsed = JSON.parse(value) as Partial<ExternalGatewayFundingRecovery>;
-    if (
-      typeof parsed.requestId !== "string" || !parsed.requestId ||
-      typeof parsed.actionId !== "string" || !parsed.actionId ||
-      typeof parsed.destinationDomain !== "number" ||
-      !Number.isInteger(parsed.destinationDomain) || parsed.destinationDomain < 0 ||
-      typeof parsed.valueRaw !== "string" || !/^[1-9][0-9]*$/.test(parsed.valueRaw) ||
-      typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
-    ) return null;
-    return parsed as ExternalGatewayFundingRecovery;
-  } catch {
-    return null;
-  }
-}
-
-export function storeExternalGatewayFundingRecovery(recovery: ExternalGatewayFundingRecovery) {
-  window.sessionStorage.setItem(EXTERNAL_GATEWAY_FUNDING_RECOVERY_KEY, JSON.stringify(recovery));
-}
-
-export function clearExternalGatewayFundingRecovery() {
-  window.sessionStorage.removeItem(EXTERNAL_GATEWAY_FUNDING_RECOVERY_KEY);
-}
-
-// Preparing a companion source wallet is a one-shot wallet creation challenge,
-// not a financial action, but Circle still dedupes by idempotency key: a
-// reload before the challenge completes must reuse the SAME key and challenge
-// id rather than asking Circle to create a second, unrelated wallet challenge.
-//
-// The record is per source chain, because preparing OP Sepolia says nothing
-// about Arbitrum Sepolia and the two must never share an idempotency key.
-export function circleSourceWalletRecoveryKey(domain: number) {
-  return `extrema-circle-source-wallet-recovery-v1-${domain}`;
-}
-
-export type CircleSourceWalletRecovery = {
-  domain: number;
+export type CircleBaseWalletRecovery = {
   idempotencyKey: string;
   challengeId: string | null;
   expiresAtMs: number;
 };
 
-export function readCircleSourceWalletRecovery(domain: number): CircleSourceWalletRecovery | null {
+export function readCircleBaseWalletRecovery(): CircleBaseWalletRecovery | null {
   try {
-    const value = window.sessionStorage.getItem(circleSourceWalletRecoveryKey(domain));
+    const value = window.sessionStorage.getItem(CIRCLE_BASE_WALLET_RECOVERY_KEY);
     if (!value) return null;
-    const parsed = JSON.parse(value) as Partial<CircleSourceWalletRecovery>;
+    const parsed = JSON.parse(value) as Partial<CircleBaseWalletRecovery>;
     if (
-      parsed.domain !== domain ||
       typeof parsed.idempotencyKey !== "string" || !parsed.idempotencyKey ||
       !(typeof parsed.challengeId === "string" || parsed.challengeId === null) ||
       typeof parsed.expiresAtMs !== "number" || !Number.isFinite(parsed.expiresAtMs)
     ) return null;
-    return parsed as CircleSourceWalletRecovery;
+    return parsed as CircleBaseWalletRecovery;
   } catch {
     return null;
   }
 }
 
-export function storeCircleSourceWalletRecovery(recovery: CircleSourceWalletRecovery) {
-  window.sessionStorage.setItem(
-    circleSourceWalletRecoveryKey(recovery.domain), JSON.stringify(recovery),
-  );
+export function storeCircleBaseWalletRecovery(recovery: CircleBaseWalletRecovery) {
+  window.sessionStorage.setItem(CIRCLE_BASE_WALLET_RECOVERY_KEY, JSON.stringify(recovery));
 }
 
-export function clearCircleSourceWalletRecovery(domain: number) {
-  window.sessionStorage.removeItem(circleSourceWalletRecoveryKey(domain));
+export function clearCircleBaseWalletRecovery() {
+  window.sessionStorage.removeItem(CIRCLE_BASE_WALLET_RECOVERY_KEY);
 }
 
 // Gateway SOURCE deposit (Part D/E/F) recovery. Distinct from the funding

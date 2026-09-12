@@ -18,17 +18,9 @@ const schema = z.object({
   ARC_TESTNET_RPC_URL: z.string().url().default("https://rpc.testnet.arc.network"),
   ARC_TESTNET_RPC_FALLBACK_URL: z.string().url().default("https://rpc.solidrpc.io/public/evm/5042002"),
   // Gateway source-chain reads (deposit approve/allowance/balance) never share
-  // the Arc provider above: every funding source is a distinct chain with its
-  // own RPC. One pair per deposit source network in gatewayNetworks; the
-  // config key names are declared there so the mapping is not duplicated.
+  // the Arc provider above: Base Sepolia is a distinct chain with its own RPC.
   BASE_SEPOLIA_RPC_URL: z.string().url().default("https://sepolia.base.org"),
   BASE_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://base-sepolia-rpc.publicnode.com"),
-  OP_SEPOLIA_RPC_URL: z.string().url().default("https://sepolia.optimism.io"),
-  OP_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://optimism-sepolia-rpc.publicnode.com"),
-  ARBITRUM_SEPOLIA_RPC_URL: z.string().url().default("https://sepolia-rollup.arbitrum.io/rpc"),
-  ARBITRUM_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://arbitrum-sepolia-rpc.publicnode.com"),
-  ETHEREUM_SEPOLIA_RPC_URL: z.string().url().default("https://ethereum-sepolia-rpc.publicnode.com"),
-  ETHEREUM_SEPOLIA_RPC_FALLBACK_URL: z.string().url().default("https://sepolia.drpc.org"),
   // Maximum simultaneous HTTP reads PER Arc RPC endpoint.
   // Financial transaction broadcasts use a separate primary-only provider
   // and are deliberately not routed through this queue.

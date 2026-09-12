@@ -2,7 +2,12 @@
 
 const crypto = require('node:crypto');
 const { ethers } = require('ethers');
-const gatewayNetworks = require('./gatewayNetworks');
+
+// Canonical Arc Testnet USDC, mirrored from arcService rather than imported:
+// arcService loads the backend config, and this module must stay usable without
+// database or secret environment variables. verify-gateway-service asserts the
+// two constants remain identical.
+const ARC_TESTNET_USDC_ADDRESS = '0x3600000000000000000000000000000000000000';
 
 const GATEWAY_API_URL = 'https://gateway-api-testnet.circle.com';
 const TOKEN = 'USDC';
@@ -13,12 +18,9 @@ const TOKEN = 'USDC';
 // contract, so Arc is usable as a Gateway transfer destination.
 const ARC_GATEWAY_DOMAIN = 26;
 
-// Contract addresses are not restated here: gatewayNetworks is the single
-// canonical Gateway network configuration for the whole backend.
-const { GATEWAY_WALLET_CONTRACT, GATEWAY_MINTER_CONTRACT } = gatewayNetworks;
-
-// Circle caps one transfer request at 16 burn intents.
-const MAX_BURN_INTENTS = 16;
+// Same addresses on every supported EVM testnet domain, per GET /v1/info.
+const GATEWAY_WALLET_CONTRACT = '0x0077777d7EBA4688BDeF3E311b846F25870A19B9';
+const GATEWAY_MINTER_CONTRACT = '0x0022222ABE238Cc2C7Bb1f21003F0a260052475B';
 
 // EIP-712 definition of a burn intent, copied field for field from Circle's
 // current EVM unified balance quickstart. The domain deliberately carries only
@@ -53,30 +55,6 @@ const BURN_INTENT_EIP712_TYPES = {
   ],
 };
 
-// Circle's EVM Gateway contracts also define a BurnIntentSet, which packs
-// several burn intents that share one sourceSigner into a single EIP-712
-// signature. Its exact type string, from the typehash in Circle's own
-// evm-gateway-contracts source, is:
-//
-//   BurnIntentSet(BurnIntent[] intents)BurnIntent(uint256 maxBlockHeight,
-//   uint256 maxFee,TransferSpec spec)TransferSpec(...)
-//
-// verify-gateway-service asserts that this local definition still encodes to
-// exactly that string, so the shape can never silently drift from Circle's.
-//
-// EXTREMA does NOT sign a set. Circle's documented multi-source example for
-// the forwarding path this module uses signs each intent on its own and posts
-// them as one array of { burnIntent, signature } entries to /v1/transfer, and
-// that per-intent array is the only multi-source shape confirmed end to end
-// against the current API. Keeping the definition here (verified, unused for
-// submission) records the deliberate choice instead of leaving a guess in its
-// place: a set signature would have to be matched by a set-shaped request
-// body, and inventing that body is exactly the failure mode to avoid.
-const BURN_INTENT_SET_EIP712_TYPES = {
-  ...BURN_INTENT_EIP712_TYPES,
-  BurnIntentSet: [{ name: 'intents', type: 'BurnIntent[]' }],
-};
-
 const TRANSFER_SPEC_VERSION = 1;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
@@ -96,28 +74,18 @@ function gatewayHeaders() {
 // currently supports is listed, with the token address taken from Circle's
 // published USDC contract addresses page as the single source of truth.
 //
-// Solana (5) is deliberately absent: it is not EVM and does not use this
-// EIP-712 signing path at all.
+// Two Gateway domains are deliberately absent:
+//   - Solana (5) is not EVM and does not use this EIP-712 signing path.
+//   - Arc (26) is the destination of this flow; see buildArcFundingBurnIntent.
 //
 // An unlisted domain fails closed rather than being guessed. Adding one
 // requires its address from official Circle documentation, never inference.
-//
-// The five domains EXTREMA presents as products (Arc, Base, OP, Arbitrum and
-// Ethereum) are NOT restated here: they are spread in from gatewayNetworks so
-// that one table owns them. The remaining entries are low-level protocol
-// metadata only; the automatic EXTREMA planner and its transferable total are
-// bounded by gatewayNetworks.TRANSFER_SOURCE_NETWORKS below.
-//
-// Arc (26) is present as a source as well as a destination. A unified balance
-// deposited on Arc is spendable like any other, and Gateway's instant transfer
-// path also allows a same chain withdrawal where source and destination match.
-const TRANSFER_SOURCE_USDC_BY_DOMAIN = new Map(
-  gatewayNetworks.TRANSFER_SOURCE_NETWORKS.map((network) => [network.domain, network.usdc]),
-);
-
 const SOURCE_USDC_BY_DOMAIN = new Map([
-  ...TRANSFER_SOURCE_USDC_BY_DOMAIN,
+  [0, '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238'], // Ethereum Sepolia
   [1, '0x5425890298aed601595a70AB815c96711a31Bc65'], // Avalanche Fuji
+  [2, '0x5fd84259d66Cd46123540766Be93DFE6D43130D7'], // OP Sepolia
+  [3, '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d'], // Arbitrum Sepolia
+  [6, '0x036CbD53842c5426634e7929541eC2318f3dCF7e'], // Base Sepolia
   [7, '0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582'], // Polygon PoS Amoy
   [10, '0x31d0220469e10c4E71834a79b1f276d740d3768F'], // Unichain Sepolia
   // Domain 13 is "Sonic / Testnet" per Gateway's supported blockchains page and
@@ -137,7 +105,7 @@ const SOURCE_USDC_BY_DOMAIN = new Map([
  * must never assume that a reported balance is transferable.
  */
 function isTransferableSourceDomain(domain) {
-  return TRANSFER_SOURCE_USDC_BY_DOMAIN.has(domain);
+  return SOURCE_USDC_BY_DOMAIN.has(domain);
 }
 
 async function readUnifiedUsdcBalance(depositor, fetchImpl = fetch) {
@@ -233,24 +201,9 @@ function assertPositiveIntegerString(value, errorName) {
   return value;
 }
 
-/**
- * Builds one Gateway transfer spec.
- *
- * The destination is selectable, but only as a DOMAIN NUMBER: the destination
- * token and the minter contract are always read from the canonical network
- * table, never accepted from a caller. A browser can therefore choose which
- * supported network to be paid on and nothing else. The recipient, depositor
- * and signer are all the authenticated session wallet.
- *
- * sourceDomain === destinationDomain is allowed on purpose. A balance
- * deposited on Base can legitimately be materialized back onto Base through
- * Gateway's same chain withdrawal path, so matching domains are a valid
- * transfer rather than an error.
- */
-function buildGatewayTransferSpec({
+function buildArcFundingTransferSpec({
   walletAddress,
   sourceDomain,
-  destinationDomain,
   valueRaw,
   salt = ethers.hexlify(crypto.randomBytes(32)),
 }) {
@@ -258,14 +211,12 @@ function buildGatewayTransferSpec({
   if (!Number.isInteger(sourceDomain) || sourceDomain < 0) {
     throw new Error('gateway_source_domain_invalid');
   }
-  if (!TRANSFER_SOURCE_USDC_BY_DOMAIN.has(sourceDomain)) {
+  if (sourceDomain === ARC_GATEWAY_DOMAIN) {
+    throw new Error('gateway_source_domain_is_destination');
+  }
+  if (!SOURCE_USDC_BY_DOMAIN.has(sourceDomain)) {
     throw new Error('gateway_source_domain_unsupported');
   }
-  if (!Number.isInteger(destinationDomain) || destinationDomain < 0) {
-    throw new Error('gateway_destination_domain_invalid');
-  }
-  const destination = gatewayNetworks.destinationForDomain(destinationDomain);
-  if (!destination) throw new Error('gateway_destination_domain_unsupported');
   assertPositiveIntegerString(valueRaw, 'gateway_value_invalid');
   if (!/^0x[0-9a-fA-F]{64}$/.test(salt)) throw new Error('gateway_salt_invalid');
 
@@ -273,11 +224,11 @@ function buildGatewayTransferSpec({
   return Object.freeze({
     version: TRANSFER_SPEC_VERSION,
     sourceDomain,
-    destinationDomain,
+    destinationDomain: ARC_GATEWAY_DOMAIN,
     sourceContract: toBytes32(GATEWAY_WALLET_CONTRACT),
     destinationContract: toBytes32(GATEWAY_MINTER_CONTRACT),
-    sourceToken: toBytes32(TRANSFER_SOURCE_USDC_BY_DOMAIN.get(sourceDomain)),
-    destinationToken: toBytes32(destination.usdc),
+    sourceToken: toBytes32(SOURCE_USDC_BY_DOMAIN.get(sourceDomain)),
+    destinationToken: toBytes32(ARC_TESTNET_USDC_ADDRESS),
     sourceDepositor: toBytes32(wallet),
     destinationRecipient: toBytes32(wallet),
     sourceSigner: toBytes32(wallet),
@@ -288,185 +239,16 @@ function buildGatewayTransferSpec({
   });
 }
 
-/**
- * Deterministically decides WHICH deposited source balances pay for a
- * transfer. This is protocol execution detail, resolved entirely on the
- * server: the product model is one unified balance, so a user picks an amount
- * and a destination and never nominates a source ledger.
- *
- * The rule is greedy largest first:
- *
- *   1. Keep only domains that hold a positive, spendable balance. A domain
- *      with nothing in it is never named in a plan.
- *   2. Order them by balance descending, then by domain ascending. Both keys
- *      together are unique, so the order is total and does not depend on the
- *      order Gateway happened to report balances in.
- *   3. Draw from each in turn, taking no more than that domain holds, until
- *      the requested value is covered.
- *
- * Largest first is what keeps the plan minimal: whenever a single domain can
- * cover the whole amount it produces exactly one intent and one signature, and
- * no allocation uses more chains than necessary. Replaying the same balances
- * and value always yields the identical plan.
- */
-function planSourceAllocation({ balances, valueRaw }) {
-  assertPositiveIntegerString(valueRaw, 'gateway_value_invalid');
-  if (!Array.isArray(balances)) throw new Error('gateway_source_plan_unavailable');
-
-  const spendable = balances
-    .filter((item) => (
-      item && item.transferable === true &&
-      Number.isInteger(item.domain) &&
-      typeof item.balanceRaw === 'string' && /^\d+$/.test(item.balanceRaw) &&
-      BigInt(item.balanceRaw) > 0n
-    ))
-    .map((item) => ({ domain: item.domain, availableRaw: BigInt(item.balanceRaw) }))
-    .sort((left, right) => {
-      if (left.availableRaw !== right.availableRaw) {
-        return left.availableRaw > right.availableRaw ? -1 : 1;
-      }
-      return left.domain - right.domain;
-    });
-
-  const requested = BigInt(valueRaw);
-  const totalAvailable = spendable.reduce((total, item) => total + item.availableRaw, 0n);
-  if (totalAvailable < requested) throw new Error('gateway_insufficient_usdc');
-
-  const allocations = [];
-  let remaining = requested;
-  for (const item of spendable) {
-    if (remaining === 0n) break;
-    const draw = item.availableRaw < remaining ? item.availableRaw : remaining;
-    allocations.push({ sourceDomain: item.domain, valueRaw: draw.toString() });
-    remaining -= draw;
-  }
-  // Unreachable while the total check above holds, but a plan that does not
-  // add up must never reach a signature.
-  if (remaining !== 0n) throw new Error('gateway_insufficient_usdc');
-  if (allocations.length > MAX_BURN_INTENTS) {
-    throw new Error('gateway_source_plan_too_many_intents');
-  }
-
-  return {
-    totalValueRaw: requested.toString(),
-    allocations,
-  };
-}
-
-// Fee-aware preparation needs to compare more than the one largest balance.
-// Keep the historical greedy planner above unchanged for legacy callers, and
-// expose a bounded deterministic candidate enumerator for the durable funding
-// service. Only the five canonical EXTREMA transfer-source domains are
-// returned; low-level metadata for other Gateway domains is never an automatic
-// spendability signal.
-function enumerateSourceAllocationPlans({
-  balances,
-  valueRaw,
-  maxSources = MAX_BURN_INTENTS,
-  sourceCount = null,
-}) {
-  assertPositiveIntegerString(valueRaw, 'gateway_value_invalid');
-  if (!Array.isArray(balances)) throw new Error('gateway_source_plan_unavailable');
-  if (!Number.isInteger(maxSources) || maxSources < 1) {
-    throw new Error('gateway_source_plan_unavailable');
-  }
-  if (sourceCount !== null && (!Number.isInteger(sourceCount) || sourceCount < 1)) {
-    throw new Error('gateway_source_plan_unavailable');
-  }
-
-  const spendable = balances
-    .filter((item) => (
-      item && item.transferable === true &&
-      TRANSFER_SOURCE_USDC_BY_DOMAIN.has(item.domain) &&
-      Number.isInteger(item.domain) &&
-      typeof item.balanceRaw === 'string' && /^\d+$/.test(item.balanceRaw) &&
-      BigInt(item.balanceRaw) > 0n
-    ))
-    .map((item) => ({ domain: item.domain, availableRaw: BigInt(item.balanceRaw) }))
-    .sort((left, right) => {
-      if (left.availableRaw !== right.availableRaw) {
-        return left.availableRaw > right.availableRaw ? -1 : 1;
-      }
-      return left.domain - right.domain;
-    });
-
-  const requested = BigInt(valueRaw);
-  const candidates = new Map();
-  function addOrderedCandidate(ordered) {
-    let remaining = requested;
-    const allocations = [];
-    for (let index = 0; index < ordered.length; index += 1) {
-      const item = ordered[index];
-      const remainingSources = ordered.length - index - 1;
-      // Keep at least one raw unit for every source in this candidate. This
-      // makes the candidate's source count truthful and prevents zero-value
-      // intents from entering the signing state machine.
-      if (remaining < BigInt(remainingSources + 1)) return;
-      const maximumDraw = remaining - BigInt(remainingSources);
-      const draw = item.availableRaw < maximumDraw ? item.availableRaw : maximumDraw;
-      if (draw <= 0n) return;
-      allocations.push({ sourceDomain: item.domain, valueRaw: draw.toString() });
-      remaining -= draw;
-    }
-    if (remaining !== 0n || allocations.length > maxSources) return;
-    const key = JSON.stringify(allocations);
-    candidates.set(key, { totalValueRaw: requested.toString(), allocations });
-  }
-
-  function choose(start, needed, subset) {
-    if (needed === 0) {
-      addOrderedCandidate(subset.slice().sort((left, right) => {
-        if (left.availableRaw !== right.availableRaw) {
-          return left.availableRaw > right.availableRaw ? -1 : 1;
-        }
-        return left.domain - right.domain;
-      }));
-      return;
-    }
-    for (let index = start; index <= spendable.length - needed; index += 1) {
-      choose(index + 1, needed - 1, subset.concat(spendable[index]));
-    }
-  }
-
-  const firstCount = sourceCount === null ? 1 : sourceCount;
-  const lastCount = sourceCount === null ? Math.min(maxSources, spendable.length) : sourceCount;
-  if (firstCount > lastCount || firstCount > maxSources || firstCount > spendable.length) return [];
-  for (let count = firstCount; count <= lastCount; count += 1) {
-    choose(0, count, []);
-  }
-
-  return [...candidates.values()].sort((left, right) => {
-    if (left.allocations.length !== right.allocations.length) {
-      return left.allocations.length - right.allocations.length;
-    }
-    return JSON.stringify(left.allocations).localeCompare(JSON.stringify(right.allocations));
-  });
-}
-
 // Estimate is a preparation read. Submission below is kept as a separate
 // explicit financial boundary and is only reached by the durable service when
 // the server-side broadcast gate is enabled.
-/**
- * Estimates every spec in a source plan in ONE request, and returns one
- * maxFee/maxBlockHeight pair per spec in the same order.
- *
- * Gateway's estimate endpoint already takes an array, which is also how a
- * multi-source transfer is submitted, so the plan is priced exactly as it will
- * be spent. A response that does not answer every spec fails closed instead of
- * letting one estimate be reused for a different source domain.
- */
-async function estimateGatewayTransfer(specs, fetchImpl = fetch) {
-  const list = Array.isArray(specs) ? specs : [specs];
-  if (!list.length || list.length > MAX_BURN_INTENTS) {
-    throw new Error('gateway_source_plan_unavailable');
-  }
-
+async function estimateArcFunding(spec, fetchImpl = fetch) {
   let response;
   try {
     response = await fetchImpl(`${GATEWAY_API_URL}/v1/estimate?enableForwarder=true`, {
       method: 'POST',
       headers: gatewayHeaders(),
-      body: JSON.stringify(list.map((spec) => ({ spec }))),
+      body: JSON.stringify([{ spec }]),
     });
   } catch {
     throw new Error('gateway_service_unavailable');
@@ -475,28 +257,17 @@ async function estimateGatewayTransfer(specs, fetchImpl = fetch) {
 
   let body;
   try { body = await response.json(); } catch { throw new Error('gateway_response_invalid'); }
-  const entries = body?.body;
-  if (!Array.isArray(entries) || entries.length !== list.length) {
+  const burnIntent = body?.body?.[0]?.burnIntent;
+  if (
+    !burnIntent ||
+    !/^\d+$/.test(String(burnIntent.maxFee)) ||
+    !/^[1-9]\d*$/.test(String(burnIntent.maxBlockHeight))
+  ) {
     throw new Error('gateway_response_invalid');
   }
-
-  const intents = entries.map((entry) => {
-    const burnIntent = entry?.burnIntent;
-    if (
-      !burnIntent ||
-      !/^\d+$/.test(String(burnIntent.maxFee)) ||
-      !/^[1-9]\d*$/.test(String(burnIntent.maxBlockHeight))
-    ) {
-      throw new Error('gateway_response_invalid');
-    }
-    return {
-      maxFeeRaw: String(burnIntent.maxFee),
-      maxBlockHeight: String(burnIntent.maxBlockHeight),
-    };
-  });
-
   return {
-    intents,
+    maxFeeRaw: String(burnIntent.maxFee),
+    maxBlockHeight: String(burnIntent.maxBlockHeight),
     fees: body?.fees && typeof body.fees === 'object' ? body.fees : null,
   };
 }
@@ -507,24 +278,16 @@ function gatewayError(code, metadata = {}) {
   return error;
 }
 
-// Submit an already-signed source plan to Circle's forwarding service as ONE
-// transfer. Each entry is an individually signed burn intent, which is the
-// official multi-source shape for this path: /v1/transfer takes the array and
-// mints the aggregate value once on the destination.
-//
-// The durable request id is validated by the caller/state machine, and the
-// state machine never retries this mutation after an uncertain response.
-async function submitGatewayTransfer({ requests, requestId }, fetchImpl = fetch) {
-  if (!Array.isArray(requests) || !requests.length || requests.length > MAX_BURN_INTENTS) {
+// Submit exactly one already-signed burn intent to Circle's forwarding
+// service. The durable request id is validated by the caller/state machine;
+// the body below is the official forwarding shape and the state machine never
+// retries this mutation after an uncertain response.
+async function submitArcFunding({ burnIntent, signature, requestId }, fetchImpl = fetch) {
+  if (!burnIntent || typeof burnIntent !== 'object') {
     throw new Error('gateway_burn_intent_invalid');
   }
-  for (const entry of requests) {
-    if (!entry?.burnIntent || typeof entry.burnIntent !== 'object') {
-      throw new Error('gateway_burn_intent_invalid');
-    }
-    if (typeof entry.signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(entry.signature)) {
-      throw new Error('gateway_signature_invalid');
-    }
+  if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new Error('gateway_signature_invalid');
   }
   if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) {
     throw new Error('gateway_request_id_invalid');
@@ -535,10 +298,7 @@ async function submitGatewayTransfer({ requests, requestId }, fetchImpl = fetch)
     response = await fetchImpl(`${GATEWAY_API_URL}/v1/transfer?enableForwarder=true`, {
       method: 'POST',
       headers: gatewayHeaders(),
-      body: JSON.stringify(requests.map((entry) => ({
-        burnIntent: entry.burnIntent,
-        signature: entry.signature,
-      }))),
+      body: JSON.stringify([{ burnIntent, signature }]),
     });
   } catch {
     throw gatewayError('gateway_transfer_submit_unknown');
@@ -564,7 +324,7 @@ async function submitGatewayTransfer({ requests, requestId }, fetchImpl = fetch)
   return { transferId };
 }
 
-async function readGatewayTransferStatus(transferId, fetchImpl = fetch) {
+async function readArcFundingTransferStatus(transferId, fetchImpl = fetch) {
   if (typeof transferId !== 'string' || !/^[0-9a-f-]{36}$/i.test(transferId)) {
     throw new Error('gateway_transfer_id_invalid');
   }
@@ -599,48 +359,42 @@ async function readGatewayTransferStatus(transferId, fetchImpl = fetch) {
 }
 
 /**
- * Builds one burn intent that moves part of a unified balance to the selected
- * destination network.
+ * Builds the burn intent that moves part of a unified balance to Arc Testnet.
  *
- * Every address in the payload is pinned rather than accepted from the caller:
- * the destination token and minter come from the canonical network table for
- * the chosen domain, and the depositor, recipient and signer are all the
- * wallet the authenticated session already owns. A browser can choose the
- * destination network and the amount; it can never redirect a signed burn
- * intent to another token, another contract or another recipient, which is the
- * only part of this payload that can lose funds.
+ * Every destination field is pinned rather than accepted from the caller: the
+ * destination is always Arc, always canonical Arc USDC, and always the wallet
+ * that the authenticated session already owns. A browser can therefore never
+ * redirect a signed burn intent to another chain, another token or another
+ * recipient, which is the only part of this payload that can lose funds.
  *
  * There is exactly one burn intent shape. Circle's quickstart submits the
  * signed EIP-712 message itself to /v1/transfer, so the returned `burnIntent`
  * and `typedData.message` are the same frozen object: what gets signed is
- * byte for byte what gets submitted, and the two cannot drift apart. For a
- * multi-source plan this holds per intent, since each is signed individually
- * and posted unchanged in the transfer array.
+ * byte for byte what gets submitted, and the two cannot drift apart.
  *
  * `maxFeeRaw` and `maxBlockHeight` are validated inputs, not values this module
  * may invent. They must come from POST /v1/estimate?enableForwarder=true, whose
  * response supplies the maxFee and maxBlockHeight for the intent. A caller must
  * never pass browser supplied figures straight through.
  */
-function buildGatewayBurnIntent({
+function buildArcFundingBurnIntent({
   walletAddress,
   sourceDomain,
-  destinationDomain,
   valueRaw,
   maxFeeRaw,
   maxBlockHeight,
   salt = ethers.hexlify(crypto.randomBytes(32)),
 }) {
-  // Preserve the original fail-closed precedence: identity/source/destination/
-  // value/salt are invalid independently of any estimate values supplied
-  // alongside them.
-  const spec = buildGatewayTransferSpec({
-    walletAddress, sourceDomain, destinationDomain, valueRaw, salt,
-  });
+  // Preserve the original fail-closed precedence: identity/source/value/salt
+  // are invalid independently of any estimate values supplied alongside them.
+  const spec = buildArcFundingTransferSpec({ walletAddress, sourceDomain, valueRaw, salt });
   assertPositiveIntegerString(maxBlockHeight, 'gateway_max_block_height_invalid');
 
   if (typeof maxFeeRaw !== 'string' || !/^\d+$/.test(maxFeeRaw)) {
     throw new Error('gateway_max_fee_invalid');
+  }
+  if (BigInt(maxFeeRaw) >= BigInt(valueRaw)) {
+    throw new Error('gateway_max_fee_exceeds_value');
   }
   const burnIntent = Object.freeze({ maxBlockHeight, maxFee: maxFeeRaw, spec });
 
@@ -686,20 +440,15 @@ module.exports = {
   ARC_GATEWAY_DOMAIN,
   BURN_INTENT_EIP712_DOMAIN,
   BURN_INTENT_EIP712_TYPES,
-  BURN_INTENT_SET_EIP712_TYPES,
   GATEWAY_API_URL,
   GATEWAY_MINTER_CONTRACT,
   GATEWAY_WALLET_CONTRACT,
-  MAX_BURN_INTENTS,
-  TRANSFER_SOURCE_USDC_BY_DOMAIN,
   SOURCE_USDC_BY_DOMAIN,
-  buildGatewayTransferSpec,
-  buildGatewayBurnIntent,
-  estimateGatewayTransfer,
-  enumerateSourceAllocationPlans,
-  planSourceAllocation,
-  submitGatewayTransfer,
-  readGatewayTransferStatus,
+  buildArcFundingTransferSpec,
+  buildArcFundingBurnIntent,
+  estimateArcFunding,
+  submitArcFunding,
+  readArcFundingTransferStatus,
   isTransferableSourceDomain,
   readUnifiedUsdcBalance,
   recoverBurnIntentSigner,

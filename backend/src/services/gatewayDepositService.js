@@ -7,12 +7,10 @@
 // balance to Arc via a signed burn intent; this module is what gets USDC into
 // that unified balance in the first place.
 //
-// Source chains are config driven: one state machine, four configurations.
-// Every deposit source network declared in gatewayNetworks (Base Sepolia,
-// OP Sepolia, Arbitrum Sepolia and Ethereum Sepolia) runs these exact phases,
-// and none of the logic below branches on which chain it is funding from. An
-// unlisted or non source domain fails closed with
-// gateway_deposit_source_unsupported.
+// Source chains are config driven. Only Base Sepolia (Gateway domain 6) is
+// enabled today; adding ETH Sepolia / Arbitrum Sepolia / OP Sepolia later is a
+// new SOURCE_CHAINS entry, not a state machine redesign. An unlisted or
+// disabled domain fails closed with gateway_deposit_source_unsupported.
 //
 // Financial safety: every phase transition that follows a Circle challenge or
 // an external transaction hash is a durable, idempotent step. A lost response
@@ -23,18 +21,28 @@ const crypto = require('crypto');
 const { ethers } = require('ethers');
 const db = require('../db');
 const gatewayService = require('./gatewayService');
-const gatewaySourceChainService = require('./gatewaySourceChainService');
+const baseSepoliaService = require('./baseSepoliaService');
 const circleUserWalletService = require('./circleUserWalletService');
 const circleExecutionEngine = require('./circleExecutionEngine');
 const { EXECUTION_MODES, isHumanExecutionMode } = require('./executionIdentityService');
 
 const DEPOSIT_TTL_MS = 30 * 60 * 1000;
 
-// The real source chain configurations, derived from the one canonical network
-// table. A test injects its own `sourceChains` map into
-// createGatewayDepositService so no deterministic verification ever reaches a
-// real RPC endpoint.
-const SOURCE_CHAINS = gatewaySourceChainService.sourceChainExecutionMap();
+// The default, real source chain configuration. A test may inject its own
+// `sourceChains` map into createGatewayDepositService so no deterministic
+// verification ever reaches a real RPC endpoint.
+const SOURCE_CHAINS = new Map([
+  [baseSepoliaService.BASE_SEPOLIA_GATEWAY_DOMAIN, {
+    chainId: baseSepoliaService.BASE_SEPOLIA_CHAIN_ID,
+    circleBlockchain: circleUserWalletService.BASE_SEPOLIA,
+    usdcAddress: baseSepoliaService.baseSepoliaUsdcAddress(),
+    readChainState: baseSepoliaService.readBaseUsdcState,
+    buildApprove: baseSepoliaService.buildApproveTransactionRequest,
+    buildDeposit: baseSepoliaService.buildDepositTransactionRequest,
+    assertTransaction: baseSepoliaService.assertTransaction,
+    readTransaction: baseSepoliaService.readTransaction,
+  }],
+]);
 
 function assertHumanSession(auth) {
   if (
@@ -379,23 +387,20 @@ function createGatewayDepositService({
 
   async function resolveCircleSourceWallet(auth, row, userToken) {
     if (row.source_circle_wallet_id) return row;
-    // Fail closed on a missing or ambiguous companion wallet for THIS source
-    // chain, or one that resolves to a different address than the Arc session
-    // (circleUserWalletService enforces both). The browser never nominates the
-    // wallet id, the blockchain or the address: the blockchain comes from the
-    // canonical source config for the row's own domain.
-    const source = sourceConfigFor(Number(row.source_domain));
-    const sourceWallet = await circle.listEoaForBlockchain(userToken, source.circleBlockchain);
-    if (!sourceWallet) throw new Error('gateway_deposit_source_wallet_required');
-    if (sourceWallet.address.toLowerCase() !== auth.walletAddress.toLowerCase()) {
-      throw new Error('gateway_deposit_source_wallet_mismatch');
+    // Fail closed on a missing or ambiguous Base wallet, or one that resolves
+    // to a different address than the Arc session (circleUserWalletService
+    // enforces both). The browser never nominates the wallet id or address.
+    const baseWallet = await circle.listBaseSepoliaEoa(userToken);
+    if (!baseWallet) throw new Error('gateway_deposit_base_wallet_required');
+    if (baseWallet.address.toLowerCase() !== auth.walletAddress.toLowerCase()) {
+      throw new Error('gateway_deposit_base_wallet_mismatch');
     }
     const result = await database.query(
       `UPDATE gateway_deposit_actions
           SET source_circle_wallet_id = $2, updated_at = NOW()
         WHERE id = $1 AND source_circle_wallet_id IS NULL
         RETURNING *`,
-      [row.id, sourceWallet.id],
+      [row.id, baseWallet.id],
     );
     return result.rows[0] || fetchRow(row.id, row.user_id, row.wallet_address);
   }
@@ -441,11 +446,11 @@ function createGatewayDepositService({
 
   async function resolveCirclePhase(auth, row, userToken, phaseName, dependencies = {}) {
     const walletId = row.source_circle_wallet_id;
-    if (!walletId) throw new Error('gateway_deposit_source_wallet_required');
+    if (!walletId) throw new Error('gateway_deposit_base_wallet_required');
     const source = sourceConfigFor(Number(row.source_domain));
     const contractAddress = phaseName === 'APPROVAL'
       ? source.usdcAddress
-      : source.gatewayWallet;
+      : gatewayService.GATEWAY_WALLET_CONTRACT;
 
     const resolved = await engine.resolvePhaseTransaction({
       auth, actionId: row.id, userToken, phaseName, dependencies,

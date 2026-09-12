@@ -6,8 +6,6 @@ const { z } = require('zod');
 const { requireAuth } = require('../middleware/auth');
 const arcService = require('../services/arcService');
 const gatewayService = require('../services/gatewayService');
-const gatewayNetworks = require('../services/gatewayNetworks');
-const gatewaySourceChainService = require('../services/gatewaySourceChainService');
 const gatewayFundingService = require('../services/gatewayFundingService');
 const gatewayDepositService = require('../services/gatewayDepositService');
 const { EXECUTION_MODES } = require('../services/executionIdentityService');
@@ -30,22 +28,15 @@ const gatewayFundingVerifyLimiter = rateLimit({
 // circleUserToken is required only for a CIRCLE_USER_WALLET session; an
 // EXTERNAL_WALLET session signs locally and never sends one. The service
 // enforces that requirement per session, not this schema.
-//
-// A transfer request carries a DESTINATION domain and an amount. It carries no
-// source domain at all: which deposited balances pay for the transfer is
-// resolved server-side from the wallet's own Gateway balances.
 const gatewayFundingStartSchema = z.object({
   requestId: z.string().uuid(),
-  destinationDomain: z.number().int().nonnegative(),
+  sourceDomain: z.number().int().nonnegative(),
   valueRaw: z.string().regex(/^[1-9][0-9]*$/),
   circleUserToken: z.string().min(16).max(8192).optional(),
 });
 const gatewayFundingVerifySchema = z.object({
   circleUserToken: z.string().min(16).max(8192).optional(),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/).optional(),
-  // A multi-source plan needs one signature per allocation. An external wallet
-  // may return them all at once; Circle mode advances one challenge at a time.
-  signatures: z.array(z.string().regex(/^0x[0-9a-fA-F]{130}$/)).min(1).max(16).optional(),
 });
 
 const gatewayDepositStartSchema = z.object({
@@ -104,10 +95,6 @@ router.get('/chain-state', async (req, res, next) => {
 
 // Gateway is available to both human execution modes. The depositor is
 // always the authenticated session wallet, never a browser-supplied address.
-//
-// The response carries the unified balance plus the canonical network lists
-// the UI renders from. Labels and domains only: a browser never learns, and
-// never needs, a token or contract address.
 router.get('/gateway-balance', async (req, res, next) => {
   try {
     const wallet = await resolveSessionWallet(req);
@@ -119,50 +106,8 @@ router.get('/gateway-balance', async (req, res, next) => {
 
     res.json({
       ...gateway,
-      destinations: gatewayNetworks.DESTINATION_NETWORKS.map(gatewayNetworks.publicNetwork),
-      depositSources: gatewayNetworks.DEPOSIT_SOURCE_NETWORKS.map(gatewayNetworks.publicNetwork),
       executionMode: req.auth.executionMode,
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// The four funding source cards. This reports the user's real SOURCE WALLET
-// USDC on each deposit chain, which is a different quantity from the Gateway
-// unified balance above and is never substituted for it.
-//
-// Each chain is read independently so that one unreachable RPC endpoint
-// degrades exactly one card instead of hiding every balance. A read that
-// fails reports `state: "error"` and no number: a zero is only ever shown when
-// the chain genuinely returned zero.
-router.get('/gateway-source-state', async (req, res, next) => {
-  try {
-    const wallet = await resolveSessionWallet(req);
-    if (!wallet?.address) {
-      return res.status(404).json({ error: 'wallet_not_found' });
-    }
-
-    const sources = await Promise.all(
-      gatewayNetworks.DEPOSIT_SOURCE_NETWORKS.map(async (network) => {
-        const base = gatewayNetworks.publicNetwork(network);
-        try {
-          const state = await gatewaySourceChainService.readSourceUsdcState(
-            network.domain, wallet.address,
-          );
-          return {
-            ...base,
-            state: 'ready',
-            balanceRaw: state.balanceRaw,
-            allowanceRaw: state.allowanceRaw,
-          };
-        } catch {
-          return { ...base, state: 'error', balanceRaw: null, allowanceRaw: null };
-        }
-      }),
-    );
-
-    res.json({ sources, executionMode: req.auth.executionMode });
   } catch (error) {
     next(error);
   }

@@ -413,15 +413,15 @@ assert.match(actions, /circleActionExecutionService\.verifyCircleActionApproval/
 assert.ok(!walletPage.includes('createCircleWallet'));
 
 // Gateway is available to both human execution modes. The wallet page may
-// read balances, prepare the transfer signatures, and drive a source chain
-// deposit, but it must never hold transfer/mint calldata implementation
-// itself or a direct Gateway broadcast path: all of that stays server-side
-// (gatewayService/gatewaySourceChainService) or in the shared gateway-actions
-// helper, which the page only calls into.
+// read balances, prepare the existing transfer signature, and drive a Base
+// Sepolia source deposit, but it must never hold transfer/mint calldata
+// implementation itself or a direct Gateway broadcast path: all of that
+// stays server-side (gatewayService/baseSepoliaService) or in the shared
+// gateway-actions helper, which the page only calls into.
 const gatewayActions = read('../../app/lib/gateway-actions.ts');
 assert.ok(walletPage.includes('backendApi.wallet.gatewayBalance()'));
 assert.ok(walletPage.includes('confirmGatewayBurnSignature'));
-assert.ok(walletPage.includes('confirmGatewaySourceDeposit'));
+assert.ok(walletPage.includes('confirmGatewayBaseDeposit'));
 assert.ok(gatewayActions.includes('confirmCircleGatewayFunding'), 'Circle Gateway funding support must be preserved');
 assert.ok(!/gatewayMint|burnIntent|\/v1\/transfer|encodeFunctionData/i.test(walletPage));
 assert.ok(!walletPage.includes('submitGatewayFunding'), 'the wallet page must not expose direct Gateway broadcast');

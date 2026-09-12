@@ -35,54 +35,34 @@ export const arcTestnet = {
   testnet: true,
 } as const satisfies Chain;
 
-// The Gateway funding chains. A USDC approve/deposit for one of these must be
-// signed on that exact chain, never on Arc, so the connected wallet is
-// switched here first and switched back to Arc for everything else the product
-// already does.
-//
-// The Gateway domain each chain maps to is server-side knowledge
-// (gatewayNetworks); the browser only ever needs the EVM chain id, which is
-// what a wallet switch is expressed in.
-function sourceChain(
-  id: number,
-  name: string,
-  rpcUrl: string,
-  explorerName: string,
-  explorerUrl: string,
-) {
-  return {
-    id,
-    name,
-    nativeCurrency: { name: "Sepolia Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: { default: { http: [rpcUrl] }, public: { http: [rpcUrl] } },
-    blockExplorers: { default: { name: explorerName, url: explorerUrl } },
-    testnet: true,
-  } as const satisfies Chain;
-}
-
-export const baseSepolia = sourceChain(
-  84532, "Base Sepolia", "https://sepolia.base.org",
-  "BaseScan", "https://sepolia.basescan.org",
-);
-
-export const opSepolia = sourceChain(
-  11155420, "OP Sepolia", "https://sepolia.optimism.io",
-  "Blockscout", "https://optimism-sepolia.blockscout.com",
-);
-
-export const arbitrumSepolia = sourceChain(
-  421614, "Arbitrum Sepolia", "https://sepolia-rollup.arbitrum.io/rpc",
-  "Arbiscan", "https://sepolia.arbiscan.io",
-);
-
-export const ethereumSepolia = sourceChain(
-  11155111, "Ethereum Sepolia", "https://ethereum-sepolia-rpc.publicnode.com",
-  "Etherscan", "https://sepolia.etherscan.io",
-);
-
-export const gatewaySourceChains = [
-  baseSepolia, opSepolia, arbitrumSepolia, ethereumSepolia,
-] as const;
+// The Gateway source chain for deposits. Only Base Sepolia is enabled today;
+// the connected wallet must be switched here (never signed on Arc) for a
+// USDC approve/deposit transaction, then switched back to Arc for everything
+// else the product already does.
+export const baseSepolia = {
+  id: 84532,
+  name: "Base Sepolia",
+  nativeCurrency: {
+    name: "Sepolia Ether",
+    symbol: "ETH",
+    decimals: 18,
+  },
+  rpcUrls: {
+    default: {
+      http: ["https://sepolia.base.org"],
+    },
+    public: {
+      http: ["https://sepolia.base.org"],
+    },
+  },
+  blockExplorers: {
+    default: {
+      name: "BaseScan",
+      url: "https://sepolia.basescan.org",
+    },
+  },
+  testnet: true,
+} as const satisfies Chain;
 
 const walletConnectProjectId =
   process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() || "";
@@ -111,14 +91,11 @@ const connectors = connectorsForWallets(
 );
 
 export const wagmiConfig = createConfig({
-  chains: [arcTestnet, baseSepolia, opSepolia, arbitrumSepolia, ethereumSepolia],
+  chains: [arcTestnet, baseSepolia],
   connectors,
   transports: {
     [arcTestnet.id]: http("https://rpc.testnet.arc.network"),
-    [baseSepolia.id]: http(baseSepolia.rpcUrls.default.http[0]),
-    [opSepolia.id]: http(opSepolia.rpcUrls.default.http[0]),
-    [arbitrumSepolia.id]: http(arbitrumSepolia.rpcUrls.default.http[0]),
-    [ethereumSepolia.id]: http(ethereumSepolia.rpcUrls.default.http[0]),
+    [baseSepolia.id]: http("https://sepolia.base.org"),
   },
   ssr: true,
 });

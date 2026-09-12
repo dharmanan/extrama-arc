@@ -613,23 +613,13 @@ export type OwnedTicketsResponse = {
   executionMode: HumanExecutionMode;
 };
 
-// A supported network, as the server presents it: a label to render and a
-// domain to send back. Deliberately no token or contract address, so a client
-// has nothing address-shaped to supply in the first place.
-export type GatewayNetwork = {
-  key: string;
-  label: string;
-  domain: number;
-  chainId: number;
-};
-
 export type GatewayBalanceResponse = {
   token: "USDC";
   depositor: string;
   totalRaw: string;
   totalUsdc: string;
   // Gateway reports every domain it knows about, including ones that cannot be
-  // spent through the burn intent path at all. The transferable totals cover
+  // spent to Arc through the burn intent path. The transferable totals cover
   // only the domains that can.
   transferableTotalRaw: string;
   transferableTotalUsdc: string;
@@ -639,21 +629,6 @@ export type GatewayBalanceResponse = {
     balance: string;
     balanceRaw: string;
     transferable: boolean;
-  }>;
-  // Canonical, server-owned network lists. The UI renders exactly these.
-  destinations: GatewayNetwork[];
-  depositSources: GatewayNetwork[];
-  executionMode: HumanExecutionMode;
-};
-
-// The user's real USDC position on each funding chain. This is a source WALLET
-// balance and is never the Gateway unified balance: a card that fails to read
-// reports "error" and no number rather than a misleading zero.
-export type GatewaySourceStateResponse = {
-  sources: Array<GatewayNetwork & {
-    state: "ready" | "error";
-    balanceRaw: string | null;
-    allowanceRaw: string | null;
   }>;
   executionMode: HumanExecutionMode;
 };
@@ -669,30 +644,20 @@ export type GatewayFundingResponse = {
   actionId: string;
   requestId: string;
   executionMode: HumanExecutionMode;
-  // The user's choice: where the unified balance is being sent.
-  destinationDomain: number;
-  destinationLabel: string | null;
+  sourceDomain: number;
   valueRaw: string;
-  // The source allocation the SERVER resolved. Reported for transparency and
-  // durable proof only: it is never an input, and the UI does not ask for it.
-  sourcePlan: Array<{ sourceDomain: number; valueRaw: string }>;
-  intentCount: number;
   payloadHash: string | null;
-  // Which allocation still needs a signature, or -1 when every one is signed.
-  signatureIndex: number;
-  // The Circle challenge that signs the allocation named by signatureIndex.
   challengeId: string | null;
-  // The exact EIP-712 messages to sign, one per source allocation. An
-  // EXTERNAL_WALLET session signs them locally; a CIRCLE_USER_WALLET session
-  // signs each through its own hosted challenge.
-  typedDataList: GatewayTypedData[];
+  // Only meaningful for an EXTERNAL_WALLET session: the exact EIP-712 message
+  // to sign locally. A CIRCLE_USER_WALLET session signs through the hosted
+  // challenge above instead and ignores this field.
+  typedData: GatewayTypedData | null;
   state: "PREPARING" | "SIGN_CHALLENGE_CREATING" | "SIGNATURE_PENDING" | "READY_TO_BROADCAST" | "SUBMITTING" | "SUBMITTED" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "SIGNATURE_FAILED" | "EXPIRED";
   pending: boolean;
   readyToBroadcast: boolean;
   broadcast: "NOT_SUBMITTED" | "SUBMITTED" | "COMPLETED";
   transferId: string | null;
   transactionHash: string | null;
-  lastError: string | null;
   expiresAt: string;
 };
 
@@ -1224,23 +1189,18 @@ export const backendApi = {
     // Both require an authenticated EXTREMA session (the proxy attaches it
     // from the session cookie); the comparison target is always that
     // session's own Arc address, never anything the browser supplies here.
-    //
-    // A funding source is addressed by its Gateway DOMAIN. The browser never
-    // sends a Circle blockchain identifier: the server maps the domain to one.
-    sourceWallet(domain: number, userToken: string) {
+    baseSepoliaWallet(userToken: string) {
       return post<{
-        wallet: { id: string; address: string; blockchain: string; accountType: "EOA" } | null;
-        domain: number;
+        wallet: { id: string; address: string; blockchain: "BASE-SEPOLIA"; accountType: "EOA" } | null;
         arcAddress: string;
-      }>(`/circle/wallet/source/${domain}`, { userToken });
+      }>("/circle/wallet/base-sepolia", { userToken });
     },
-    prepareSourceWallet(domain: number, userToken: string, idempotencyKey: string) {
+    prepareBaseSepoliaWallet(userToken: string, idempotencyKey: string) {
       return post<{
         status: "EXISTING" | "CHALLENGE_REQUIRED";
-        wallet: { id: string; address: string; blockchain: string; accountType: "EOA" } | null;
+        wallet: { id: string; address: string; blockchain: "BASE-SEPOLIA"; accountType: "EOA" } | null;
         challengeId: string | null;
-        domain: number;
-      }>(`/circle/wallet/source/${domain}/prepare`, { userToken, idempotencyKey });
+      }>("/circle/wallet/base-sepolia/prepare", { userToken, idempotencyKey });
     },
   },
   rounds: {
@@ -1449,14 +1409,9 @@ export const backendApi = {
     gatewayBalance() {
       return request<GatewayBalanceResponse>("/wallet/gateway-balance");
     },
-    gatewaySourceState() {
-      return request<GatewaySourceStateResponse>("/wallet/gateway-source-state");
-    },
-    // A transfer names a destination and an amount. There is deliberately no
-    // sourceDomain field: the server resolves the source allocation.
     startGatewayFunding(input: {
       requestId: string;
-      destinationDomain: number;
+      sourceDomain: number;
       valueRaw: string;
       circleUserToken?: string;
     }) {
@@ -1470,10 +1425,7 @@ export const backendApi = {
     },
     verifyGatewayFunding(actionId: string, input: {
       circleUserToken?: string;
-      // One signature for the allocation the server named, or the whole set at
-      // once (external wallets only, which sign locally with no challenge).
       signature?: string;
-      signatures?: string[];
     }) {
       return post<GatewayFundingResponse>(`/wallet/gateway-funding/${actionId}/verify`, input);
     },

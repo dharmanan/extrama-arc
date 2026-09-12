@@ -1,67 +1,27 @@
 'use strict';
 
-// Durable Gateway transfer state machine.
-//
-// The product contract is a UNIFIED balance: the caller chooses an amount and
-// a destination network, and nothing else. Which deposited source balances pay
-// for the transfer is protocol execution detail resolved here, on the server,
-// by gatewayService's deterministic fee-aware source candidate search. A browser never names a source
-// domain, a token address or a contract address.
-//
-// Preparation produces one signed burn intent per source allocation. An
-// explicitly enabled server may then submit exactly those intents once, as one
-// transfer, and reconcile the forwarding-service transfer by id. Broadcast is
-// disabled by default and never controlled by the browser.
+// Durable Gateway funding state machine. Preparation produces a valid Circle
+// EOA signature over an Arc-only burn intent; an explicitly enabled server may
+// then submit that exact intent once and reconcile the forwarding-service
+// transfer by id. Broadcast is disabled by default and never controlled by the
+// browser.
 
 const crypto = require('crypto');
 const { ethers } = require('ethers');
 const db = require('../db');
 const config = require('../config');
 const gatewayService = require('./gatewayService');
-const gatewayNetworks = require('./gatewayNetworks');
 const circleUserWalletService = require('./circleUserWalletService');
 const { EXECUTION_MODES, isHumanExecutionMode } = require('./executionIdentityService');
 
 const FUNDING_TTL_MS = 30 * 60 * 1000;
 
-function canonicalJson(value) {
-  if (value === null) return 'null';
-  if (typeof value === 'string') return JSON.stringify(value);
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('gateway_payload_invalid');
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'bigint') return JSON.stringify(value.toString());
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (typeof value === 'object') {
-    return `{${Object.keys(value).sort().map((key) => (
-      `${JSON.stringify(key)}:${canonicalJson(value[key])}`
-    )).join(',')}}`;
-  }
-  throw new Error('gateway_payload_invalid');
-}
-
 function hashPayload(value) {
-  // String input is deliberately hashed byte-for-byte for the historical
-  // single-source rows whose hash was made from JSON.stringify text. New rows
-  // use the stable object serializer below, independent of JSONB key order.
-  const serialized = typeof value === 'string' ? value : canonicalJson(value);
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
   return crypto.createHash('sha256').update(serialized).digest('hex');
 }
 
-// A stable, UUID-shaped idempotency key derived from durable row state. The
-// same row and the same allocation index always produce the same key, so a
-// retried challenge creation can never become a second Circle challenge, and
-// the key never depends on wall-clock time or randomness.
-function derivedIdempotencyKey(seed) {
-  const hex = hashPayload(seed).slice(0, 32);
-  return [
-    hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20, 32),
-  ].join('-');
-}
-
-// Both human execution modes can hold a Gateway transfer action. Circle mode
+// Both human execution modes can hold a Gateway funding action. Circle mode
 // additionally requires the session's Circle wallet id, since that is the
 // wallet a Circle hosted challenge signs with; external mode signs locally
 // with the connected wallet and never carries a Circle wallet id at all.
@@ -76,18 +36,12 @@ function assertHumanGatewaySession(auth) {
   }
 }
 
-function assertInput({ requestId, destinationDomain, valueRaw }) {
+function assertInput({ requestId, sourceDomain, valueRaw }) {
   if (typeof requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(requestId)) {
     throw new Error('gateway_request_id_invalid');
   }
-  if (!Number.isInteger(destinationDomain) || destinationDomain < 0) {
-    throw new Error('gateway_destination_domain_invalid');
-  }
-  // The only destination identity a client may supply is a domain number, and
-  // it must name a network this product actually supports. Everything else
-  // about the destination is read from canonical server config.
-  if (!gatewayNetworks.destinationForDomain(destinationDomain)) {
-    throw new Error('gateway_destination_domain_unsupported');
+  if (!Number.isInteger(sourceDomain) || sourceDomain < 0) {
+    throw new Error('gateway_source_domain_invalid');
   }
   if (typeof valueRaw !== 'string' || !/^[1-9]\d*$/.test(valueRaw)) {
     throw new Error('gateway_value_invalid');
@@ -98,104 +52,19 @@ function isExpired(row) {
   return new Date(row.expires_at).getTime() <= Date.now();
 }
 
-// --- Row shape compatibility ---------------------------------------------
-//
-// Rows created by the Arc-only, single-source implementation stored one burn
-// intent in `burn_intent_json`, one typed data object in `typed_data_json`,
-// one signature in `signature`, one source in `source_domain`, and no
-// destination at all because the destination was always Arc. Those rows must
-// stay readable, reconcilable and provable forever, so every reader below goes
-// through these adapters instead of touching the columns directly.
-
-function destinationDomainOf(row) {
-  return row.destination_domain === null || row.destination_domain === undefined
-    ? gatewayService.ARC_GATEWAY_DOMAIN
-    : Number(row.destination_domain);
-}
-
-function sourcePlanOf(row) {
-  if (Array.isArray(row.source_plan_json) && row.source_plan_json.length) {
-    return row.source_plan_json.map((entry) => ({
-      sourceDomain: Number(entry.sourceDomain),
-      valueRaw: String(entry.valueRaw),
-    }));
-  }
-  if (row.source_domain === null || row.source_domain === undefined) return [];
-  return [{ sourceDomain: Number(row.source_domain), valueRaw: String(row.value_raw) }];
-}
-
-function burnIntentsOf(row) {
-  if (Array.isArray(row.burn_intents_json) && row.burn_intents_json.length) {
-    return row.burn_intents_json;
-  }
-  return row.burn_intent_json ? [row.burn_intent_json] : [];
-}
-
-function typedDataListOf(row) {
-  if (Array.isArray(row.typed_data_list_json) && row.typed_data_list_json.length) {
-    return row.typed_data_list_json;
-  }
-  return row.typed_data_json ? [row.typed_data_json] : [];
-}
-
-function signaturesOf(row) {
-  const intentCount = burnIntentsOf(row).length;
-  if (Array.isArray(row.signatures_json)) {
-    const list = row.signatures_json.slice(0, Math.max(intentCount, row.signatures_json.length));
-    while (list.length < intentCount) list.push(null);
-    return list;
-  }
-  const list = new Array(intentCount).fill(null);
-  if (typeof row.signature === 'string' && intentCount) list[0] = row.signature;
-  return list;
-}
-
-function challengeIdsOf(row) {
-  const intentCount = burnIntentsOf(row).length;
-  if (Array.isArray(row.circle_sign_challenges_json)) {
-    const list = row.circle_sign_challenges_json.slice();
-    while (list.length < intentCount) list.push(null);
-    return list;
-  }
-  const list = new Array(intentCount).fill(null);
-  if (row.circle_sign_challenge_id && intentCount) list[0] = row.circle_sign_challenge_id;
-  return list;
-}
-
-/** The first allocation still waiting for a signature, or -1 when complete. */
-function nextUnsignedIndex(row) {
-  const signatures = signaturesOf(row);
-  if (!signatures.length) return -1;
-  const index = signatures.findIndex((value) => typeof value !== 'string');
-  return index;
-}
-
 function publicAction(row, options = {}) {
-  const destinationDomain = destinationDomainOf(row);
-  const destination = gatewayNetworks.networkForDomain(destinationDomain);
-  const typedDataList = typedDataListOf(row);
-  const signatureIndex = nextUnsignedIndex(row);
-  const challengeIds = challengeIdsOf(row);
   return {
     actionId: row.id,
     requestId: row.request_id,
     executionMode: row.execution_mode,
-    destinationDomain,
-    destinationLabel: destination ? destination.label : null,
+    sourceDomain: Number(row.source_domain),
     valueRaw: row.value_raw,
-    // The resolved source plan is reported for transparency and durable proof,
-    // never as an input. A client cannot influence it.
-    sourcePlan: sourcePlanOf(row),
-    intentCount: typedDataList.length,
     payloadHash: row.payload_hash || null,
-    // Which allocation still needs a signature, and the Circle challenge that
-    // signs it. -1 means every intent is signed.
-    signatureIndex,
-    challengeId: signatureIndex >= 0 ? challengeIds[signatureIndex] || null : null,
-    // Not secret: these are the exact messages a wallet needs to sign. An
-    // external wallet session signs them directly with signTypedData; Circle
-    // sessions sign each through its own hosted challenge.
-    typedDataList,
+    challengeId: row.circle_sign_challenge_id || null,
+    // Not secret: it is the exact message a wallet needs to sign. An external
+    // wallet session signs this directly with signTypedData; Circle sessions
+    // ignore it and sign through the hosted challenge instead.
+    typedData: row.typed_data_json || null,
     state: row.state,
     pending: options.pending === true,
     readyToBroadcast: row.state === 'READY_TO_BROADCAST',
@@ -204,7 +73,6 @@ function publicAction(row, options = {}) {
       : row.gateway_transfer_id ? 'SUBMITTED' : 'NOT_SUBMITTED',
     transferId: row.gateway_transfer_id || null,
     transactionHash: row.gateway_transaction_hash || null,
-    lastError: row.last_error || null,
     expiresAt: new Date(row.expires_at).toISOString(),
   };
 }
@@ -260,243 +128,69 @@ function createGatewayFundingService({
     const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
     await database.query(
       `INSERT INTO gateway_funding_actions
-        (id, user_id, execution_mode, circle_wallet_id, wallet_address, request_id,
-         destination_domain, value_raw, circle_sign_request_id, state, expires_at)
+        (id, user_id, execution_mode, circle_wallet_id, wallet_address, request_id, source_domain,
+         value_raw, circle_sign_request_id, state, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PREPARING', $10)
        ON CONFLICT (user_id, request_id) DO NOTHING`,
       [
         actionId, auth.userId, auth.executionMode,
         isCircle ? auth.circleWalletId : null, ethers.getAddress(auth.walletAddress),
-        input.requestId, input.destinationDomain, input.valueRaw,
+        input.requestId, input.sourceDomain, input.valueRaw,
         isCircle ? crypto.randomUUID() : null, expiresAt,
       ],
     );
     return findByRequest(auth, input.requestId);
   }
 
-  /**
-   * Resolves the source plan, prices it, and builds one burn intent per
-   * allocation.
-   *
-   * The plan is derived from the wallet's own latest Gateway balances and is
-   * persisted in full, together with a payload hash that binds every source
-   * allocation AND the destination, before any signature is requested. A
-   * signature can therefore only ever apply to a plan that is already durable.
-   */
-  function feeScore(estimate) {
-    const total = estimate?.fees?.total;
-    if (typeof total === 'string' && /^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(total)) {
-      try { return ethers.parseUnits(total, 6); } catch { /* use maxFee sum */ }
-    }
-    return estimate.intents.reduce((sum, intent) => sum + BigInt(intent.maxFeeRaw), 0n);
-  }
-
-  function deterministicSalt({ requestId, sourceDomain, destinationDomain, valueRaw, index }) {
-    return `0x${hashPayload({ requestId, sourceDomain, destinationDomain, valueRaw, index })}`;
-  }
-
-  async function prepareIntents(auth, row) {
-    const destinationDomain = destinationDomainOf(row);
+  async function prepareIntent(auth, row) {
     const balance = await gateway.readUnifiedUsdcBalance(auth.walletAddress);
-    const sources = (Array.isArray(balance.balances) ? balance.balances : [])
-      .filter((item) => (
-      item && item.transferable === true &&
-        gatewayService.TRANSFER_SOURCE_USDC_BY_DOMAIN.has(item.domain) &&
-        typeof item.balanceRaw === 'string' && /^\d+$/.test(item.balanceRaw) &&
-        BigInt(item.balanceRaw) > 0n
-      ))
-      .map((item) => ({ ...item, balanceRaw: String(item.balanceRaw) }));
-    const requested = BigInt(row.value_raw);
-    const grossAvailable = sources.reduce((sum, item) => sum + BigInt(item.balanceRaw), 0n);
-    if (grossAvailable < requested) throw new Error('gateway_insufficient_usdc');
-
-    const enumerate = gateway.enumerateSourceAllocationPlans
-      || gatewayService.enumerateSourceAllocationPlans;
-    const estimates = [];
-
-    async function pricePlan(plan) {
-      const specs = plan.allocations.map((allocation, index) => gateway.buildGatewayTransferSpec({
-        walletAddress: auth.walletAddress,
-        sourceDomain: allocation.sourceDomain,
-        destinationDomain,
-        valueRaw: allocation.valueRaw,
-        salt: deterministicSalt({
-          requestId: row.request_id,
-          sourceDomain: allocation.sourceDomain,
-          destinationDomain,
-          valueRaw: allocation.valueRaw,
-          index,
-        }),
-      }));
-      const estimate = await gateway.estimateGatewayTransfer(specs);
-      if (!estimate || !Array.isArray(estimate.intents) || estimate.intents.length !== specs.length) {
-        throw new Error('gateway_response_invalid');
-      }
-      return { plan, specs, estimate };
+    const matches = balance.balances.filter((item) => item.domain === Number(row.source_domain));
+    if (matches.length !== 1 || !matches[0].transferable) {
+      throw new Error('gateway_source_balance_unavailable');
+    }
+    if (BigInt(matches[0].balanceRaw) < BigInt(row.value_raw)) {
+      throw new Error('gateway_insufficient_usdc');
     }
 
-    // Price every one-source option first. This both selects the cheapest
-    // source when several can cover the request and supplies a conservative
-    // per-domain fee reserve for multi-source candidates.
-    for (const source of sources) {
-      const oneSourcePlan = {
-        totalValueRaw: row.value_raw,
-        allocations: [{ sourceDomain: source.domain, valueRaw: row.value_raw }],
-      };
-      const priced = await pricePlan(oneSourcePlan);
-      const feeRaw = BigInt(priced.estimate.intents[0].maxFeeRaw);
-      estimates.push({ ...priced, source, feeRaw });
-    }
-
-    const validOneSource = estimates
-      .filter((candidate) => BigInt(candidate.source.balanceRaw) >= requested + candidate.feeRaw)
-      .sort((left, right) => (
-        left.feeRaw < right.feeRaw ? -1 : left.feeRaw > right.feeRaw ? 1
-          : left.source.domain - right.source.domain
-      ));
-    let selected = validOneSource[0] || null;
-
-    if (!selected) {
-      const feeByDomain = new Map(estimates.map((candidate) => [candidate.source.domain, candidate.feeRaw]));
-      const adjustedBalances = sources.map((source) => ({
-        ...source,
-        balanceRaw: (() => {
-          const adjusted = BigInt(source.balanceRaw) - (feeByDomain.get(source.domain) || 0n);
-          return adjusted > 0n ? adjusted.toString() : '0';
-        })(),
-      })).filter((source) => source.balanceRaw !== '0');
-      const sourceByDomain = new Map(sources.map((source) => [source.domain, BigInt(source.balanceRaw)]));
-      const maxCandidateSources = Math.min(
-        gatewayService.MAX_BURN_INTENTS,
-        adjustedBalances.length,
-      );
-
-      // The canonical transfer-source set has five domains, so this staged
-      // search can make at most 5 + 10 + 10 + 5 + 1 = 31 estimate calls. A
-      // smaller fee-safe source count always wins, so larger subsets are never
-      // priced after a valid level has been found.
-      for (let sourceCount = 2; sourceCount <= maxCandidateSources && !selected; sourceCount += 1) {
-        const candidates = enumerate({
-          balances: adjustedBalances,
-          valueRaw: row.value_raw,
-          maxSources: gatewayService.MAX_BURN_INTENTS,
-          sourceCount,
-        });
-        const plans = Array.isArray(candidates) ? candidates : [];
-        const pricedCandidates = [];
-        for (const plan of plans) {
-          const priced = await pricePlan(plan);
-          const safe = priced.estimate.intents.every((intent, index) => {
-            const allocation = plan.allocations[index];
-            const available = sourceByDomain.get(allocation.sourceDomain);
-            return available !== undefined && available >= BigInt(allocation.valueRaw) + BigInt(intent.maxFeeRaw);
-          });
-          if (safe) pricedCandidates.push(priced);
-        }
-        pricedCandidates.sort((left, right) => {
-          const leftFee = feeScore(left.estimate);
-          const rightFee = feeScore(right.estimate);
-          if (leftFee !== rightFee) return leftFee < rightFee ? -1 : 1;
-          return JSON.stringify(left.plan.allocations).localeCompare(JSON.stringify(right.plan.allocations));
-        });
-        selected = pricedCandidates[0] || null;
-      }
-    }
-
-    if (!selected) throw new Error('gateway_insufficient_after_fees');
-
-    const plan = selected.plan;
-    const specs = selected.specs;
-    const estimate = selected.estimate;
-
-    const built = specs.map((spec, index) => gateway.buildGatewayBurnIntent({
+    const spec = gateway.buildArcFundingTransferSpec({
       walletAddress: auth.walletAddress,
-      sourceDomain: spec.sourceDomain,
-      destinationDomain,
-      valueRaw: spec.value,
-      maxFeeRaw: estimate.intents[index].maxFeeRaw,
-      maxBlockHeight: estimate.intents[index].maxBlockHeight,
-      salt: spec.salt,
-    }));
-
-    const burnIntents = built.map((entry) => entry.burnIntent);
-    const typedDataList = built.map((entry) => entry.typedData);
-    // The hash covers the complete plan and the destination, not one intent,
-    // so a swapped, dropped or reordered allocation cannot pass verification.
-    const payloadHash = hashPayload({
-      destinationDomain,
+      sourceDomain: Number(row.source_domain),
       valueRaw: row.value_raw,
-      allocations: plan.allocations,
-      burnIntents,
     });
-
+    const estimate = await gateway.estimateArcFunding(spec);
+    const built = gateway.buildArcFundingBurnIntent({
+      walletAddress: auth.walletAddress,
+      sourceDomain: Number(row.source_domain),
+      valueRaw: row.value_raw,
+      maxFeeRaw: estimate.maxFeeRaw,
+      maxBlockHeight: estimate.maxBlockHeight,
+      salt: spec.salt,
+    });
+    const payloadHash = hashPayload(built.burnIntent);
     // Circle signs through a hosted challenge, so preparation pauses at
     // SIGN_CHALLENGE_CREATING for that mode. An external wallet signs the
-    // already-returned typed data directly with no server-side challenge, so
+    // already-returned typedData directly with no server-side challenge, so
     // it goes straight to SIGNATURE_PENDING.
     const nextState = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET
       ? 'SIGN_CHALLENGE_CREATING'
       : 'SIGNATURE_PENDING';
-    // Single-allocation plans keep the historical singular columns populated
-    // as well, so a row written today is still readable by the same proof
-    // queries that read the live Base action.
-    const single = burnIntents.length === 1;
     const result = await database.query(
       `UPDATE gateway_funding_actions
-          SET payload_hash = $2,
-              source_plan_json = $3,
-              burn_intents_json = $4,
-              burn_intents_json_text = $5,
-              typed_data_list_json = $6,
-              signatures_json = $7,
-              circle_sign_challenges_json = $8,
-              source_domain = $9,
-              burn_intent_json = $10,
-              burn_intent_json_text = $11,
-              typed_data_json = $12,
-              max_fee_raw = $13,
-              max_block_height = $14,
-              estimate_fees_json = $15,
-              state = $16, last_error = NULL, updated_at = NOW()
+              SET payload_hash = $2, burn_intent_json = $3, burn_intent_json_text = $4,
+              typed_data_json = $5, max_fee_raw = $6, max_block_height = $7, estimate_fees_json = $8,
+              state = $9, last_error = NULL, updated_at = NOW()
         WHERE id = $1 AND state = 'PREPARING'
         RETURNING *`,
       [
-        row.id, payloadHash,
-        JSON.stringify(plan.allocations),
-        JSON.stringify(burnIntents),
-        canonicalJson(burnIntents),
-        JSON.stringify(typedDataList),
-        JSON.stringify(new Array(burnIntents.length).fill(null)),
-        JSON.stringify(new Array(burnIntents.length).fill(null)),
-        single ? plan.allocations[0].sourceDomain : null,
-        single ? JSON.stringify(burnIntents[0]) : null,
-        single ? JSON.stringify(burnIntents[0]) : null,
-        single ? JSON.stringify(typedDataList[0]) : null,
-        estimate.intents[0].maxFeeRaw, estimate.intents[0].maxBlockHeight,
-        estimate.fees === null ? null : JSON.stringify(estimate.fees),
-        nextState,
+        row.id, payloadHash, built.burnIntent, JSON.stringify(built.burnIntent), built.typedData,
+        estimate.maxFeeRaw, estimate.maxBlockHeight, estimate.fees, nextState,
       ],
     );
     return result.rows[0] || findById(auth, row.id);
   }
 
-  /**
-   * Creates the Circle typed-data challenge for ONE allocation: the first one
-   * still unsigned. A multi-source plan is signed allocation by allocation,
-   * and a challenge already recorded for an index is never created twice.
-   */
   async function createSignatureChallenge(auth, row, userToken) {
-    if (!['SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING'].includes(row.state)) return row;
-    const index = nextUnsignedIndex(row);
-    if (index < 0) return row;
-    const challengeIds = challengeIdsOf(row);
-    if (challengeIds[index]) return row;
-
-    const typedData = typedDataListOf(row)[index];
-    if (!typedData) throw new Error('gateway_funding_payload_mismatch');
-    const plan = sourcePlanOf(row);
-    const destination = gatewayNetworks.networkForDomain(destinationDomainOf(row));
-
+    if (row.state !== 'SIGN_CHALLENGE_CREATING') return row;
     // Never retry an ambiguous Circle mutation automatically. A response loss
     // leaves this durable state visible for manual support/reconciliation, and
     // no Gateway transfer can have occurred because no signature was submitted.
@@ -505,101 +199,46 @@ function createGatewayFundingService({
       created = await circle.createTypedDataChallenge({
         userToken,
         walletId: auth.circleWalletId,
-        typedData,
-        // One idempotency key per allocation, derived from the row's durable
-        // sign request id, so a repeated attempt at the same allocation can
-        // never create a second challenge.
-        idempotencyKey: index === 0
-          ? row.circle_sign_request_id
-          : derivedIdempotencyKey(`${row.circle_sign_request_id}:${index}`),
-        memo: `Authorize ${plan.length > 1 ? `part ${index + 1} of ${plan.length} of ` : ''}`
-          + `a USDC transfer to ${destination ? destination.label : 'the selected network'}. `
-          + 'No transfer is submitted yet.',
+        typedData: row.typed_data_json,
+        idempotencyKey: row.circle_sign_request_id,
+        memo: 'Prepare USDC funding to Arc Testnet. No transfer is submitted yet.',
       });
     } catch (error) {
       await database.query(
         `UPDATE gateway_funding_actions
             SET last_error = $2, updated_at = NOW()
-          WHERE id = $1 AND state IN ('SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING')`,
+          WHERE id = $1 AND state = 'SIGN_CHALLENGE_CREATING'`,
         [row.id, error?.message?.startsWith('circle_') ? error.message : 'circle_service_unavailable'],
       );
       throw error;
     }
-
-    const nextChallengeIds = challengeIdsOf(row).slice();
-    nextChallengeIds[index] = created.challengeId;
     const result = await database.query(
       `UPDATE gateway_funding_actions
-          SET circle_sign_challenges_json = $2,
-              circle_sign_challenge_id = COALESCE(circle_sign_challenge_id, $3),
-              state = 'SIGNATURE_PENDING',
+          SET circle_sign_challenge_id = $2, state = 'SIGNATURE_PENDING',
               last_error = NULL, updated_at = NOW()
-        WHERE id = $1 AND state IN ('SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING')
+        WHERE id = $1 AND state = 'SIGN_CHALLENGE_CREATING'
         RETURNING *`,
-      [row.id, JSON.stringify(nextChallengeIds), index === 0 ? created.challengeId : null],
+      [row.id, created.challengeId],
     );
     return result.rows[0] || findById(auth, row.id);
   }
 
-  /**
-   * Re-derives every safety property of a prepared row before it may be
-   * submitted: the intents must match the persisted plan one for one, carry
-   * the row's own destination, be payable to the session wallet only, hash to
-   * the recorded payload hash, and be fully signed.
-   */
   function assertPreparedPayload(auth, row) {
-    const intents = burnIntentsOf(row);
-    const plan = sourcePlanOf(row);
-    const destinationDomain = destinationDomainOf(row);
-    const signatures = signaturesOf(row);
-    const expectedDepositor = ethers
-      .zeroPadValue(ethers.getAddress(auth.walletAddress), 32)
-      .toLowerCase();
-
-    if (!intents.length || intents.length !== plan.length) {
+    const intent = row.burn_intent_json;
+    const spec = intent?.spec;
+    if (
+      !intent || !spec ||
+      Number(spec.sourceDomain) !== Number(row.source_domain) ||
+      String(spec.value) !== String(row.value_raw) ||
+      Number(spec.destinationDomain) !== (gateway.ARC_GATEWAY_DOMAIN ?? gatewayService.ARC_GATEWAY_DOMAIN) ||
+      typeof spec.sourceDepositor !== 'string' ||
+      spec.sourceDepositor.toLowerCase() !== ethers.zeroPadValue(ethers.getAddress(auth.walletAddress), 32).toLowerCase() ||
+      typeof row.payload_hash !== 'string' ||
+      hashPayload(row.burn_intent_json_text || intent) !== row.payload_hash
+    ) {
       throw new Error('gateway_funding_payload_mismatch');
     }
-    let total = 0n;
-    intents.forEach((intent, index) => {
-      const spec = intent?.spec;
-      const allocation = plan[index];
-      if (
-        !spec ||
-        Number(spec.sourceDomain) !== allocation.sourceDomain ||
-        String(spec.value) !== String(allocation.valueRaw) ||
-        Number(spec.destinationDomain) !== destinationDomain ||
-        typeof spec.sourceDepositor !== 'string' ||
-        spec.sourceDepositor.toLowerCase() !== expectedDepositor ||
-        typeof spec.destinationRecipient !== 'string' ||
-        spec.destinationRecipient.toLowerCase() !== expectedDepositor ||
-        typeof spec.sourceSigner !== 'string' ||
-        spec.sourceSigner.toLowerCase() !== expectedDepositor
-      ) {
-        throw new Error('gateway_funding_payload_mismatch');
-      }
-      total += BigInt(allocation.valueRaw);
-    });
-    if (total !== BigInt(row.value_raw)) {
-      throw new Error('gateway_funding_payload_mismatch');
-    }
-
-    const recomputed = hashPayload({
-      destinationDomain,
-      valueRaw: row.value_raw,
-      allocations: plan,
-      burnIntents: intents,
-    });
-    // A row written by the single-source implementation hashed only its one
-    // burn intent. Accept either binding so historical proof still verifies,
-    // and require the plan-wide binding for anything multi-source.
-    const legacy = intents.length === 1 &&
-      hashPayload(row.burn_intent_json_text || intents[0]) === row.payload_hash;
-    if (typeof row.payload_hash !== 'string' || (recomputed !== row.payload_hash && !legacy)) {
-      throw new Error('gateway_funding_payload_mismatch');
-    }
-    if (signatures.some((value) => typeof value !== 'string')) {
-      throw new Error('gateway_signature_required');
-    }
+    if (typeof row.signature !== 'string') throw new Error('gateway_signature_required');
   }
 
   async function updateState(row, state, extras = {}) {
@@ -637,7 +276,7 @@ function createGatewayFundingService({
     }
     let remote;
     try {
-      remote = await gateway.readGatewayTransferStatus(row.gateway_transfer_id);
+      remote = await gateway.readArcFundingTransferStatus(row.gateway_transfer_id);
     } catch (error) {
       if (error?.message === 'gateway_transfer_not_found') {
         return updateState(row, 'RECONCILIATION_REQUIRED', { lastError: 'gateway_transfer_not_found' });
@@ -683,14 +322,9 @@ function createGatewayFundingService({
     row = reserved.rows[0];
 
     try {
-      // Exactly the persisted intents and exactly the persisted signatures.
-      const intents = burnIntentsOf(row);
-      const signatures = signaturesOf(row);
-      const submitted = await gateway.submitGatewayTransfer({
-        requests: intents.map((burnIntent, index) => ({
-          burnIntent,
-          signature: signatures[index],
-        })),
+      const submitted = await gateway.submitArcFunding({
+        burnIntent: row.burn_intent_json,
+        signature: row.signature,
         requestId: row.request_id,
       });
       row = await updateState(row, 'SUBMITTED', { transferId: submitted.transferId });
@@ -716,30 +350,26 @@ function createGatewayFundingService({
     });
   }
 
-  async function start({ auth, userToken = null, requestId, destinationDomain, valueRaw }) {
+  async function start({ auth, userToken = null, requestId, sourceDomain, valueRaw }) {
     assertHumanGatewaySession(auth);
-    assertInput({ requestId, destinationDomain, valueRaw });
+    assertInput({ requestId, sourceDomain, valueRaw });
     const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
     if (isCircle && (typeof userToken !== 'string' || userToken.length < 16)) {
       throw new Error('circle_request_invalid');
     }
 
-    let row = await createOrGet(auth, { requestId, destinationDomain, valueRaw });
-    // A replayed request id must describe the same financial intent, or it is
-    // a different operation wearing the same name.
-    if (destinationDomainOf(row) !== destinationDomain || row.value_raw !== valueRaw) {
+    let row = await createOrGet(auth, { requestId, sourceDomain, valueRaw });
+    if (Number(row.source_domain) !== sourceDomain || row.value_raw !== valueRaw) {
       throw new Error('gateway_request_id_conflict');
     }
     row = await markExpired(row);
     if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
-    if (row.state === 'PREPARING') row = await prepareIntents(auth, row);
+    if (row.state === 'PREPARING') row = await prepareIntent(auth, row);
     if (isCircle) {
       if (row.state === 'SIGN_CHALLENGE_CREATING' && row.last_error) {
         throw new Error('gateway_signature_challenge_uncertain');
       }
-      if (['SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING'].includes(row.state)) {
-        row = await createSignatureChallenge(auth, row, userToken);
-      }
+      if (row.state === 'SIGN_CHALLENGE_CREATING') row = await createSignatureChallenge(auth, row, userToken);
     }
     return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
@@ -750,127 +380,67 @@ function createGatewayFundingService({
     return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
   }
 
-  /**
-   * Persists one verified signature for one allocation.
-   *
-   * The canonical tail for both modes: recover the EIP-712 signer locally from
-   * the server-pinned typed data, require it to equal the authenticated
-   * session wallet, and only then store it. Neither branch ever trusts a
-   * browser-provided intent, source or destination, and a signature that
-   * recovers to anyone else is refused before it can be submitted.
-   */
-  async function storeSignature(auth, row, index, signature) {
+  // One canonical tail for both modes: recover the EIP-712 signer locally,
+  // require it to equal the authenticated session wallet, and only then
+  // persist the signature and move to READY_TO_BROADCAST. Neither branch ever
+  // trusts a browser-provided intent, source, or destination — both sign
+  // exactly the server-pinned typedData already stored on the row.
+  async function finalizeSignature(auth, row, signature) {
     if (typeof signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(signature)) {
       throw new Error('gateway_signature_required');
     }
-    const typedData = typedDataListOf(row)[index];
-    if (!typedData) throw new Error('gateway_funding_payload_mismatch');
-    const signer = gateway.recoverBurnIntentSigner(typedData, signature);
+    const signer = gateway.recoverBurnIntentSigner(row.typed_data_json, signature);
     if (ethers.getAddress(signer).toLowerCase() !== ethers.getAddress(auth.walletAddress).toLowerCase()) {
       throw new Error('gateway_signature_wallet_mismatch');
     }
-
-    const signatures = signaturesOf(row).slice();
-    signatures[index] = signature;
-    const complete = signatures.every((value) => typeof value === 'string');
     const result = await database.query(
       `UPDATE gateway_funding_actions
-          SET signatures_json = $2,
-              signature = COALESCE(signature, $3),
-              state = $4, last_error = NULL, updated_at = NOW()
+          SET signature = $2, state = 'READY_TO_BROADCAST', last_error = NULL, updated_at = NOW()
         WHERE id = $1 AND state = 'SIGNATURE_PENDING'
         RETURNING *`,
-      [
-        row.id, JSON.stringify(signatures),
-        index === 0 ? signature : null,
-        complete ? 'READY_TO_BROADCAST' : 'SIGNATURE_PENDING',
-      ],
+      [row.id, signature],
     );
     return result.rows[0] || findById(auth, row.id);
   }
 
-  async function verifySignature({
-    auth, actionId, userToken = null, signature = null, signatures = null,
-  }) {
+  async function verifySignature({ auth, actionId, userToken = null, signature = null }) {
     assertHumanGatewaySession(auth);
     let row = await markExpired(await findById(auth, actionId));
     if (row.state === 'EXPIRED') throw new Error('gateway_funding_expired');
     if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
-    if (row.state !== 'SIGNATURE_PENDING') {
+
+    if (auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET) {
+      if (typeof userToken !== 'string' || userToken.length < 16) {
+        throw new Error('circle_request_invalid');
+      }
+      if (row.state !== 'SIGNATURE_PENDING' || !row.circle_sign_challenge_id) {
+        throw new Error('gateway_signature_challenge_unavailable');
+      }
+
+      const challenge = await circle.getTypedDataChallenge({
+        userToken,
+        challengeId: row.circle_sign_challenge_id,
+      });
+      if (!challenge || challenge.status === 'PENDING' || challenge.status === 'IN_PROGRESS') {
+        return publicAction(row, { pending: true });
+      }
+      if (challenge.status !== 'COMPLETE') {
+        await database.query(
+          `UPDATE gateway_funding_actions
+              SET state = 'SIGNATURE_FAILED', last_error = 'gateway_signature_challenge_failed', updated_at = NOW()
+            WHERE id = $1`,
+          [row.id],
+        );
+        throw new Error('gateway_signature_challenge_failed');
+      }
+    } else if (row.state !== 'SIGNATURE_PENDING') {
+      // External wallets sign locally with no hosted challenge: the only
+      // valid state to accept a signature in is SIGNATURE_PENDING.
       throw new Error('gateway_signature_challenge_unavailable');
     }
 
-    const isCircle = auth.executionMode === EXECUTION_MODES.CIRCLE_USER_WALLET;
-    if (isCircle && (typeof userToken !== 'string' || userToken.length < 16)) {
-      throw new Error('circle_request_invalid');
-    }
-
-    // An external wallet may hand back only the still-unsigned tail, since it
-    // signs locally with no per-allocation hosted interaction. Circle mode
-    // advances one challenge at a time. The batch is intentionally compact:
-    // its first item always belongs to the server's current nextUnsignedIndex.
-    const batch = !isCircle && Array.isArray(signatures) ? signatures : null;
-    if (batch) {
-      if (!batch.length || batch.some((value) => (
-        typeof value !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(value)
-      ))) {
-        throw new Error('gateway_signature_required');
-      }
-      const remaining = signaturesOf(row).filter((value) => typeof value !== 'string').length;
-      if (batch.length > remaining) throw new Error('gateway_signature_batch_mismatch');
-    }
-    let batchCursor = 0;
-    let guard = 0;
-    for (;;) {
-      guard += 1;
-      if (guard > gatewayService.MAX_BURN_INTENTS + 1) break;
-      const index = nextUnsignedIndex(row);
-      if (index < 0) break;
-
-      if (isCircle) {
-        const challengeId = challengeIdsOf(row)[index];
-        if (!challengeId) throw new Error('gateway_signature_challenge_unavailable');
-        const challenge = await circle.getTypedDataChallenge({ userToken, challengeId });
-        if (!challenge || challenge.status === 'PENDING' || challenge.status === 'IN_PROGRESS') {
-          return publicAction(row, { pending: true });
-        }
-        if (challenge.status !== 'COMPLETE') {
-          await database.query(
-            `UPDATE gateway_funding_actions
-                SET state = 'SIGNATURE_FAILED', last_error = 'gateway_signature_challenge_failed', updated_at = NOW()
-              WHERE id = $1`,
-            [row.id],
-          );
-          throw new Error('gateway_signature_challenge_failed');
-        }
-      }
-
-      const value = batch ? batch[batchCursor] : signature;
-      if (typeof value !== 'string') {
-        // A batch that runs out simply leaves the rest of the plan unsigned.
-        // Every signature already accepted stays durable, and the response
-        // says which allocation is still outstanding.
-        if (batch) break;
-        throw new Error('gateway_signature_required');
-      }
-      row = await storeSignature(auth, row, index, value);
-      if (batch) batchCursor += 1;
-
-      if (row.state === 'READY_TO_BROADCAST') return publicAction(row);
-      if (!batch && !isCircle) {
-        // One signature per call for a single-signature external submission:
-        // report the next allocation instead of looping on the same value.
-        return publicAction(row, { pending: true });
-      }
-      if (isCircle) {
-        // Issue the next allocation's challenge and hand it back so the
-        // browser can run it. No further signature exists yet.
-        row = await createSignatureChallenge(auth, row, userToken);
-        return publicAction(row, { pending: true });
-      }
-    }
-
-    return publicAction(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    row = await finalizeSignature(auth, row, signature);
+    return publicAction(row);
   }
 
   return { start, get, verifySignature, submit, status };
@@ -880,8 +450,6 @@ const gatewayFundingService = createGatewayFundingService();
 
 module.exports = {
   FUNDING_TTL_MS,
-  canonicalJson,
-  hashPayload,
   createGatewayFundingService,
   ...gatewayFundingService,
 };

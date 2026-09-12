@@ -3,10 +3,6 @@
 Status snapshot for the Gateway work. Descriptive, not a checklist substitute
 for [`EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md`](../EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md).
 
-Overall Gateway LIVE PROOF: **OPEN / NOT LIVE PROVEN.** The limited historical
-Circle Base Sepolia source/deposit evidence below does not prove the generalized
-Gateway transfer flow.
-
 All findings below were taken from current official Circle documentation and
 from a live read-only call to the Gateway testnet API on 2026-09-09. Nothing
 here was implemented from memory.
@@ -88,101 +84,62 @@ this document says "Circle only", that scope is superseded, not deleted.
   `CIRCLE_USER_WALLET` and `EXTERNAL_WALLET` sessions, depositor always
   derived from the session. It never reads a wallet address from `req.body`
   or `req.query`.
-- Wallet page keeps the Gateway section visible for both execution modes and
-  explicitly distinguishes loading, known zero, positive transferable balance,
-  no transferable source, and read failure. A known zero renders `0 USDC`; a
-  read failure renders unavailable plus retry. The read is separate from the
-  Arc chain state read, so a Gateway outage cannot surface as a wallet error,
-  an Arc balance failure or a broken session.
-- `gatewayNetworks.js` (new) — THE canonical Gateway EVM network table: chain
-  ids, domains, USDC addresses, Circle blockchain identifiers and labels, in
-  one place. Imports nothing but ethers, so it stays loadable with no
-  environment at all. The Circle blockchain identifiers are asserted against
-  the installed SDK's own enum strings rather than guessed.
-- `gatewaySourceChainService.js` (new, supersedes the Base-only
-  `baseSepoliaService.js`) — one generic source chain module with four
-  configurations. Per chain provider, USDC balance/allowance reads, and exact
-  `approve`/`deposit` calldata builders, plus a receipt assertion that also
-  binds the chain id so a receipt from one funding chain can never satisfy a
-  deposit recorded against another. Deliberately never shares the Arc provider.
-- `gatewayDepositService.js` — the durable source deposit state machine
+- Wallet page shows the Gateway figure as a compact column for both execution
+  modes, and only when the unified balance is above zero. The read is
+  separate from the Arc chain state read, so a Gateway outage cannot surface as
+  a wallet error, an Arc balance failure or a broken session; it just hides the
+  figure.
+- `baseSepoliaService.js` (new) — a dedicated Base Sepolia provider, USDC
+  balance/allowance reads, and exact `approve`/`deposit` calldata builders.
+  Deliberately never shares the Arc provider.
+- `gatewayDepositService.js` (new) — the durable source deposit state machine
   (`USDC.approve(GatewayWallet, amount)` then `GatewayWallet.deposit(token,
-  amount)`) backing the `gateway_deposit_actions` table, for both execution
-  modes and all four funding chains. One state machine, four configurations:
-  no logic branches on which chain is being funded from. Completion always
-  requires a fresh `readUnifiedUsdcBalance` baseline plus delta check on that
-  chain's own domain, never the source chain receipt alone, since finality into
-  the unified balance is not instant.
-- `circleUserWalletService.listEoaForBlockchain` / `prepareEoaForBlockchain` —
-  lists or prepares a Circle user controlled EOA on any of the four funding
-  chains for an already onboarded Arc user, and fails closed unless its address
-  exactly matches the session's canonical Arc EOA. Ambiguous or multiple wallet
-  matches also fail closed, as does an unsupported blockchain name. Preparation
-  creates a wallet and nothing else: it never approves, deposits or transfers.
-  The Arc Circle wallet id in the session is never replaced; a source chain
-  wallet id is execution metadata only.
+  amount)`) backing a new `gateway_deposit_actions` table, for both execution
+  modes. Completion always requires a fresh `readUnifiedUsdcBalance` baseline
+  plus delta check, never the source chain receipt alone, since Base Sepolia
+  finality into the unified balance is not instant.
+- `circleUserWalletService.listBaseSepoliaEoa` / `prepareBaseSepoliaEoa` (new)
+  — lists or prepares a Circle user controlled Base Sepolia EOA for an already
+  onboarded Arc user, and fails closed unless its address exactly matches the
+  session's canonical Arc EOA. Ambiguous or multiple wallet matches also fail
+  closed. The Arc Circle wallet id in the session is never replaced; the Base
+  wallet id is source chain execution metadata only.
 - `circleExecutionEngine.js` — additively generalized (`walletId` and
-  `expectedChainId` optional parameters, defaulting to today's Arc behavior) so
-  the same idempotent Circle challenge issuance/resolution logic used by entry
-  and the post entry lifecycle actions also drives the Circle source deposit
-  phases, signing with that chain's wallet id rather than the session's Arc
-  wallet id.
-- `gatewayService.buildGatewayBurnIntent()` — builds one burn intent and its
-  EIP-712 typed data. The destination is selectable, but only as a DOMAIN
-  NUMBER: the destination token and the minter contract are always read from
-  the canonical network table, and depositor, signer and recipient are always
-  the session wallet. A browser can choose which supported network to be paid
-  on and the amount; it can never redirect a signed intent to another token,
-  contract or recipient.
-- `gatewayService.BURN_INTENT_SET_EIP712_TYPES` — Circle's BurnIntentSet type
-  definition, recorded and verified against the exact typehash string in
-  Circle's own `evm-gateway-contracts` source. EXTREMA does not sign a set: the
-  only multi-source shape confirmed end to end for this forwarding path is one
-  array of individually signed intents, so that is what is signed and
-  submitted. The definition is kept so the decision is auditable rather than a
-  guess.
+  `expectedChainId` now optional parameters, defaulting to today's Arc
+  behavior) so the same idempotent Circle challenge issuance/resolution logic
+  used by entry and the post entry lifecycle actions also drives the Circle
+  Base Sepolia deposit phases, signing with the Base wallet id rather than the
+  session's Arc wallet id.
+- `gatewayService.buildArcFundingBurnIntent()` — builds the burn intent and its
+  EIP-712 typed data. Every destination field is pinned by the server rather
+  than accepted from the caller: destination domain is always Arc, destination
+  token is always canonical Arc USDC, and depositor, signer and recipient are
+  always the session wallet. A browser cannot redirect a signed intent to
+  another chain, token or recipient.
 - `gatewayService.recoverBurnIntentSigner()` — recovers the signer locally so a
   malformed or swapped signature is never submitted to Circle.
 - `gatewayFundingService` and `/api/wallet/gateway-funding/*` — one durable
-  transfer state machine, generalized to both `CIRCLE_USER_WALLET` and
+  preparation state machine, now generalized to both `CIRCLE_USER_WALLET` and
   `EXTERNAL_WALLET` sessions rather than duplicated per mode. It derives the
-  wallet from the authenticated session and takes a DESTINATION domain and an
-  amount. It does not take a source domain at all: a deterministic fee-aware
-  candidate search resolves which deposited balances pay for the transfer over
-  the wallet's own latest Gateway balances. Every candidate reserves its
-  returned `maxFee`; a source must cover allocation plus fee before signing, and
-  the exact selected plan is estimated again. An amount larger than any single
-  chain's balance is spent as a deterministic multi-source plan rather than
-  rejected. Automatic planning is bounded to the five canonical EXTREMA
-  transfer-source domains (`26, 6, 2, 3, 0`): one-source candidates are priced
-  first, then exactly two, three, four and five sources only when the preceding
-  level has no fee-safe plan, for a maximum of 31 candidate estimates. The plan
-  is persisted in full with a canonical payload hash that survives JSONB key
-  reordering, and only then signed: a `SIGN_TYPEDDATA` Circle challenge per allocation (Circle mode), or
-  the exact typed data returned directly for the connected wallet to sign
-  locally with no challenge at all (external mode).
-- Each signed result is verified locally against the session wallet (Circle's
+  wallet from the authenticated session, spends against exactly one
+  transferable source domain (never an aggregated cross-domain value),
+  obtains `maxFee` and `maxBlockHeight` from
+  `POST /v1/estimate?enableForwarder=true`, then either creates a
+  `SIGN_TYPEDDATA` Circle challenge (Circle mode) or returns the exact typed
+  data directly for the connected wallet to sign locally with no challenge at
+  all (external mode) for that exact, pinned burn intent.
+- The signed result is verified locally against the session wallet (Circle's
   hosted challenge signature or the external wallet's local signature, through
-  the same `recoverBurnIntentSigner` check). The action reaches
-  `READY_TO_BROADCAST` only once every allocation is signed. The wallet UI
-  shows one unified balance, a DESTINATION selector over the five supported
-  networks, a canonical six-decimal amount input, clear status/error display,
-  and an in-tab recovery record that restores the destination and amount and
-  resumes the same action/challenge after refresh. For external wallets, a
-  resumed multi-source action signs only the compact unsigned tail; the server's
-  durable `nextUnsignedIndex` consumes that batch sequentially, so no empty
-  placeholder or browser-selected absolute index can cross the API.
-- Source allocation is never a user decision and never accepted from a client.
-  The old wallet UI exposed a source-domain selector; that is superseded, and
-  `verify-gateway-transfer-plan.js` asserts a client-supplied source is
-  ignored entirely.
+  the same `recoverBurnIntentSigner` check) and retained as
+  `READY_TO_BROADCAST`. The wallet UI has a source-domain selector, canonical
+  six-decimal amount input, clear status/error display, and an in-tab recovery
+  record that resumes the same action/challenge after refresh.
 - The durable state machine implements the complete forwarding path after
   `READY_TO_BROADCAST`: `SUBMITTING`, `SUBMITTED`, `COMPLETED`, `FAILED`, and
-  `RECONCILIATION_REQUIRED`. It submits the exact persisted, signed intents to
-  Circle's forwarding endpoint once, under the server's durable request
-  identity, as one array of `{ burnIntent, signature }` entries (one entry per
-  source allocation, which is Circle's documented multi-source shape for this
-  path), and reads `GET /v1/transfer/{transferId}` for recovery and polling.
+  `RECONCILIATION_REQUIRED`. It submits the exact `{ burnIntent, signature }`
+  body to Circle's forwarding endpoint once, under the server's durable
+  request identity, and
+  reads `GET /v1/transfer/{transferId}` for recovery and polling.
 - `EXTREMA_ENABLE_GATEWAY_BROADCAST` is a server-side gate and defaults to
   `false`. The wallet UI does not expose a broadcast control, and refreshes or
   repeated frontend requests cannot bypass the persisted compare-and-set
@@ -197,19 +154,12 @@ with every address field bytes32 padded, and that every unsafe
 input fails closed.
 
 `verify-gateway-funding.js` runs the real durable preparation service against
-in-memory DB/Circle/forwarding adapters. It proves the PREPARING row is valid
-before source planning, same-request replay returns the same action and
-challenge, fee headroom is checked before signing, the Circle completion first reports
+in-memory DB/Circle/forwarding adapters. It proves same-request replay returns
+the same action and challenge, the selected source balance is checked before
+estimate (without aggregating domains), the Circle completion first reports
 pending, the resulting signature must recover the session wallet, a successful
 mocked submission is one-shot and reaches `COMPLETED`, and an ambiguous submit
 stays `RECONCILIATION_REQUIRED` without retrying.
-
-`verify-gateway-transfer-plan.js` additionally proves external partial-signature
-recovery, the compact signature batch boundary, the canonical five-domain
-planner cap, staged estimate search and unsupported-domain exclusion from
-`transferableTotalRaw`. `verify-gateway-service.js` proves the source-wallet
-identity check fails closed on a server-side address mismatch before a wallet
-can be reported ready.
 
 ## Live broadcast remains disabled by default
 
@@ -244,35 +194,12 @@ in live proof, which is why the balance display and deposit action still fail
 closed and stay silent rather than advertising a capability that has not been
 exercised against real Base Sepolia and Gateway state.
 
-## The canonical EXTREMA network set
-
-`backend/src/services/gatewayNetworks.js` is the single canonical Gateway
-network configuration for the whole backend: chain ids, Gateway domains, USDC
-addresses, Circle blockchain identifiers and user-facing labels all live there
-and nowhere else. The frontend consumes it through the wallet API (labels and
-domains only, never an address).
-
-| Network | Chain id | Domain | Funding source | Transfer destination |
-| --- | --- | --- | --- | --- |
-| Arc Testnet | 5042002 | 26 | no | yes |
-| Base Sepolia | 84532 | 6 | yes | yes |
-| OP Sepolia | 11155420 | 2 | yes | yes |
-| Arbitrum Sepolia | 421614 | 3 | yes | yes |
-| Ethereum Sepolia | 11155111 | 0 | yes | yes |
-
-Four product funding cards, five destinations. Arc is not a product funding
-card, but an Arc-held unified balance remains a valid transfer source and
-same-chain withdrawal is valid Gateway behavior. A source domain that equals
-the destination domain is accepted rather than rejected.
-
 ## Supported source domains
 
 A burn intent must name the USDC contract on the source chain, and that address
-differs per chain. The five networks above come from the canonical table; the
-remaining rows are low-level Gateway metadata only, not automatic EXTREMA
-transfer sources, and do not contribute to `transferableTotalRaw`. Addresses
-are taken from Circle's published USDC contract addresses page as the single
-source of truth:
+differs per chain. Every EVM testnet domain Gateway currently supports is
+covered, with addresses taken from Circle's published USDC contract addresses
+page as the single source of truth:
 
 | Domain | Chain | Testnet USDC |
 | --- | --- | --- |
@@ -287,7 +214,6 @@ source of truth:
 | 14 | World Chain Sepolia | `0x66145f38cBAC35Ca6F1Dfb4914dF98F1614aeA88` |
 | 16 | Sei Testnet | `0x4fCF1784B31630811181f670Aea7A7bEF803eaED` |
 | 19 | HyperEVM Testnet | `0x2B3370eE501B4a559b57D449569354196457D8Ab` |
-| 26 | Arc Testnet | `0x3600000000000000000000000000000000000000` |
 
 Two networks in that list are easy to confuse. Gateway's domain 13 is **Sonic
 Testnet**, which both the supported blockchains page and live `/v1/info` report
@@ -302,19 +228,18 @@ chain passes silently. Network identity has to be matched against the chain and
 network names Gateway itself reports for that domain, which is why domain 13 is
 additionally pinned by an explicit test.
 
-Solana (domain 5) is excluded because it is not EVM and does not use this
-EIP-712 signing path. Arc (domain 26) is a valid EVM transfer source in the
-canonical map, although it is not shown as a product funding card. Any other
-domain is rejected with
+Two Gateway domains are excluded on purpose. Solana (domain 5) is not EVM and
+does not use this EIP-712 signing path. Arc itself (domain 26) is rejected as a
+source, since burning an Arc balance to mint back onto Arc pays a fee and
+delivers nothing. Any other domain is rejected with
 `gateway_source_domain_unsupported` rather than guessed, and adding one requires
 its USDC address from official Circle documentation. Do not infer one.
 
 Because `readUnifiedUsdcBalance` reports balances on every domain Gateway knows
-about, including low-level domains outside the current EXTREMA planning set,
-each balance carries a `transferable` flag and the response carries
-`transferableTotalRaw` alongside `totalRaw`. Only the five canonical transfer
-sources are transferable in this release; a future execution path must spend
-against that total, never the raw unified total.
+about, including the two excluded ones, each balance carries a `transferable`
+flag and the response carries `transferableTotalRaw` alongside `totalRaw`. A
+future execution path must spend against the transferable total, never the raw
+unified total.
 
 ## Broadcast authorization gate
 

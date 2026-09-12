@@ -103,11 +103,11 @@ export default function ArchivePage() {
       setError("");
       const dates = Array.from(new Set(next.rounds.map((round) => utcDateKey(round.marketPeriodStartAt)))).sort((a, b) => b.localeCompare(a));
       const requested = new URLSearchParams(window.location.search).get("date");
-      // No explicit date means "latest". This lets a fresh archive response
-      // advance past a stale tab cache instead of preserving yesterday's date.
-      setSelectedDateKey(
-        requested && dates.includes(requested) ? requested : (dates[0] ?? ""),
-      );
+      // Keep the date the reader is already looking at when it still exists.
+      setSelectedDateKey((current) => {
+        if (current && dates.includes(current)) return current;
+        return requested && dates.includes(requested) ? requested : (dates[0] ?? "");
+      });
     }
 
     const cached = readCachedArchive(ARCHIVE_DAYS);

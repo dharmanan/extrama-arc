@@ -217,46 +217,16 @@ Circle Gateway is its own roadmap item and is not part of the Circle wallet or w
 
 Gateway now supports both human execution modes, `CIRCLE_USER_WALLET` and `EXTERNAL_WALLET`, on one canonical set of state machines. The earlier Circle only scope is superseded; it is kept below only as historical proof record for what was already validated before the dual mode generalization.
 
-ARCHITECTURE CORRECTION (2026-09-12): the product model is now a UNIFIED balance.
-
-- OLD: the user selected a Gateway SOURCE domain, and the destination was always Arc.
-- NEW: the user selects a DESTINATION, and the backend resolves a deterministic source allocation plan across the deposited balances. Source selection was never a product decision; it is protocol execution detail and has been removed from the UI entirely.
-
-Four funding source networks (add USDC to Gateway):
-
-- Base Sepolia (domain 6, chain 84532)
-- OP Sepolia (domain 2, chain 11155420)
-- Arbitrum Sepolia (domain 3, chain 421614)
-- Ethereum Sepolia (domain 0, chain 11155111)
-
-Five transfer destination networks (send the unified balance):
-
-- Arc Testnet (domain 26, chain 5042002)
-- Base Sepolia (domain 6, chain 84532)
-- OP Sepolia (domain 2, chain 11155420)
-- Arbitrum Sepolia (domain 3, chain 421614)
-- Ethereum Sepolia (domain 0, chain 11155111)
-
-Everything newly generalized in this correction is **IMPLEMENTED / DETERMINISTICALLY VALIDATED, NOT LIVE PROVEN**. Only the Base Sepolia facts recorded further down are live proven, and they remain so.
-
 IMPLEMENTED:
 
-- One canonical server-side Gateway network configuration (`gatewayNetworks.js`): chain ids, Gateway domains, USDC addresses, Circle blockchain identifiers and user-facing labels live in exactly one table. The frontend consumes labels and domains through the wallet API and never holds a token or contract address.
-- Circle blockchain identifiers taken from the installed `@circle-fin/user-controlled-wallets@10.8.0` enum strings and asserted against the package at verification time, never guessed
-- Generic source chain service (`gatewaySourceChainService.js`, superseding the Base-only `baseSepoliaService.js`): one implementation, four configurations, with per chain provider, balance/allowance reads, exact `approve`/`deposit` calldata, and a receipt assertion that binds the chain id so a receipt from one funding chain can never satisfy a deposit on another
-- Automatic server-side fee-aware source allocation: deterministic candidate search, per-source `maxFee` headroom, exact selected-plan estimate, replay-identical canonical salts, skips empty and unspendable domains, never signs without allocation-plus-fee coverage, and fails closed at Circle's 16-intent cap
-- Multi-source transfers: an amount larger than any single chain's balance is spent as one transfer drawing on several source domains, rather than being rejected
-- Destination generalization: five canonical destinations, with the destination token and minter always read from server config and never accepted from a browser; an unsupported destination fails closed
-- Same-chain withdrawal permitted: `sourceDomain === destinationDomain` is valid Gateway behavior and is no longer rejected. Arc is now also a spendable source domain, so an Arc-held unified balance is not stranded.
-- Circle companion source-wallet preparation action when needed, generalized to all four funding chains, same-address verified against the session's own Arc address, fail closed on mismatch, ambiguity or an unsupported blockchain; preparation creates a wallet and performs no approval, deposit or transfer
-- External wallet source deposits on all four funding chains, with a required switch to that exact chain, the active chain and account re-read from the connector after the switch, and the receipt awaited on the source chain rather than Arc
+- Base Sepolia source configuration (Gateway domain 6, official USDC and GatewayWallet addresses, source config driven so ETH Sepolia / Arbitrum Sepolia / OP Sepolia can be enabled later without a state machine redesign)
 - Circle Gateway testnet service integration
 - Gateway balance read, shared by both execution modes, depositor always the authenticated session wallet
 - Circle user controlled same address Base Sepolia wallet preparation, verified against the session's own Arc address, fail closed on mismatch or ambiguity
 - Circle Base Sepolia Gateway deposit path (`USDC.approve` then `GatewayWallet.deposit`, hosted Circle challenges)
 - External Base Sepolia Gateway deposit path (server pinned transaction requests, receipt verified server side, plain ERC-20 `transfer` never used)
 - External wallet EIP-712 Gateway burn intent signing (server returns the exact typed data, the connected wallet signs locally, the backend recovers and compares the signer before trusting it)
-- Durable `gateway_funding_actions` database state, generalized additively: an `execution_mode` column, plus `destination_domain`, `source_plan_json`, `burn_intents_json`, `typed_data_list_json`, `signatures_json` and `circle_sign_challenges_json` for the destination-selected, multi-source model. `source_domain` is now nullable, every historical row is backfilled as `destination_domain = 26` (Arc, which those rows always targeted), and its original `source_domain` is left exactly as written. Historical rows still read, verify and reconcile: proved by `GATEWAY_FUNDING_LEGACY_ROW_COMPATIBLE=PASS`, which reconstructs a pre-correction row and submits it.
+- Durable `gateway_funding_actions` database state, generalized with an `execution_mode` column; historical Circle rows remain valid
 - Durable `gateway_deposit_actions` database state (new), baseline plus delta Gateway balance reconciliation for completion, never the source chain receipt alone
 - Burn intent and signature preparation
 - Recovery state for both the funding (burn intent) and deposit (approve/deposit) flows
@@ -266,33 +236,24 @@ IMPLEMENTED:
 - Seven-day human application-session default, separate from every financial approval lifetime
 - Circle official refresh-token rotation through encrypted, server-only credentials bound to the authenticated Circle wallet; refresh failure remains fail-closed to explicit Circle reauthentication
 - Server side broadcast safety gate
-- Payload binding covers the COMPLETE plan and the destination, not one intent: a swapped, dropped, reordered or retargeted allocation, an altered amount, an altered recipient or an altered destination all fail closed before submission. Canonical serialization keeps the same hash across JSONB key reordering.
-- Fee-aware preparation reserves each returned `maxFee` against its source balance, rejects insufficient headroom before signature, chooses the lowest-fee valid one-source candidate when possible, and exact-estimates the deterministic multi-source fallback.
-- Automatic source planning is bounded to canonical `TRANSFER_SOURCE_NETWORKS` domains `26, 6, 2, 3, 0`: it prices one-source candidates first, then advances source-count levels only when the prior level has no fee-safe plan, with a maximum of 31 candidate estimates and no unsupported-domain spendability in `transferableTotalRaw`.
-- Multi-source signing model: one EIP-712 `BurnIntent` signature per source allocation, submitted as one array of `{ burnIntent, signature }` entries to `/v1/transfer?enableForwarder=true`. This is Circle's documented multi-source shape for this forwarding path. Circle's `BurnIntentSet` type definition is recorded and verified against the exact typehash string in Circle's own `evm-gateway-contracts` source, but is deliberately NOT signed: a set signature would require a set-shaped request body, and that body shape is not confirmed for this path, so signing one would mean inventing it.
-- External partial-signature recovery is tail-only: the browser signs only the server-reported unsigned suffix, the API accepts no empty placeholders, and the durable server cursor persists each batch item at the next unsigned allocation in order.
-- Source-wallet identity is checked server-side against the authenticated Arc EOA before a Circle companion wallet can be reported ready; mismatch, malformed address, unsupported domain and browser-supplied identity fields fail closed.
-- Deterministic verification: `GATEWAY_DB_PREPARING_ROW_VALID=PASS`, `GATEWAY_FEE_SAFE_PLANNER=PASS`, `GATEWAY_FEE_AWARE_SOURCE_SELECTION=PASS`, `GATEWAY_SOURCE_PLANNER_BOUNDED=PASS`, `GATEWAY_CANONICAL_PAYLOAD_HASH=PASS`, `GATEWAY_JSONB_ROUNDTRIP_HASH=PASS`, `GATEWAY_EXTERNAL_PARTIAL_SIGNATURE_RECOVERY=PASS`, `GATEWAY_SOURCE_WALLET_SERVER_IDENTITY=PASS`, `GATEWAY_FUNDING_EXTERNAL_WALLET=PASS`, `GATEWAY_FUNDING_LEGACY_ROW_COMPATIBLE=PASS`, `GATEWAY_CANONICAL_NETWORK_CONFIG=PASS`, `GATEWAY_CIRCLE_BLOCKCHAIN_IDENTIFIERS=PASS`, `GATEWAY_FOUR_SOURCE_CHAINS=PASS`, `GATEWAY_SOURCE_CHAIN_RECONCILIATION=PASS`, `GATEWAY_DESTINATION_GENERALIZATION=PASS`, `GATEWAY_SAME_CHAIN_WITHDRAWAL=PASS`, `GATEWAY_BURN_INTENT_SET_TYPESTRING=PASS`, `GATEWAY_AUTO_SOURCE_PLANNER=PASS`, `GATEWAY_MULTI_SOURCE_INTENT=PASS`, `GATEWAY_FRONTEND_NEVER_CHOOSES_SOURCE=PASS`, `GATEWAY_MULTI_CHAIN_DEPOSIT=PASS`, `CIRCLE_SOURCE_WALLET_ALL_CHAINS=PASS`, `CIRCLE_BASE_WALLET=PASS`, `GATEWAY_DEPOSIT_EXTERNAL=PASS`, `GATEWAY_DEPOSIT_CIRCLE=PASS`, `GATEWAY_CIRCLE_MULTICHAIN_SECURITY=PASS`, zero live network calls in every case
+- Deterministic verification: `GATEWAY_FUNDING_EXTERNAL_WALLET=PASS`, `CIRCLE_BASE_WALLET=PASS`, `GATEWAY_DEPOSIT_EXTERNAL=PASS`, `GATEWAY_DEPOSIT_CIRCLE=PASS`, zero live network calls in every case
 
 CURRENT PRODUCTION SAFETY: `EXTREMA_ENABLE_GATEWAY_BROADCAST=false`
 
 UI VISIBILITY STATUS: **IMPLEMENTED / VALIDATED, DUAL MODE.**
 
-- The Gateway section renders for both Circle and external wallet sessions, not Circle only.
-- The wallet page now shows TWO clearly separated jobs: `GATEWAY` (one unified balance, then Send USDC with a destination selector and an amount) and `ADD USDC TO GATEWAY` (four compact funding source cards).
-- There is NO source selector in the transfer surface. The only selector is the destination, whose options are exactly Arc Testnet, Base Sepolia, OP Sepolia, Arbitrum Sepolia and Ethereum Sepolia, rendered from the server's own canonical list.
-- The unified balance is stated once, as one number, and the send amount is checked against the unified spendable total rather than any single source balance.
-- Source wallet USDC and the Gateway unified balance are rendered as separate quantities and are never substituted for one another.
-- Each source card carries its own read-only state: loading, wallet not prepared (Circle only), ready with a real balance, read error, deposit in progress, waiting for finality, and completed. A failed chain read shows an unavailable state and no number; a zero is only ever shown when the chain genuinely returned zero, and one unreachable RPC endpoint degrades exactly one card.
-- Gateway source funding now uses one compact `FROM / AVAILABLE / AMOUNT` row driven by the server-listed Base/OP/Arbitrum/Ethereum sources. Circle and external wallets share the same layout; only Circle can surface `Prepare wallet`. A durable/in-flight deposit locks `FROM` to its recorded source domain, so a second deposit is never started on another chain.
-- The old four expanding source cards are removed. Funding controls stay in a stable row (2x2 at medium widths, one column on phone); finality remains the compact status rail below the row. Borders, type and spacing only, in the existing editorial style; no bright colors and no dashboard-style filled tiles.
-- Existing recovery remains visible. The transfer recovery record stores the destination and the amount (never a source domain) plus the allocation still being signed, and a reload restores the destination and amount and resumes the SAME action under the SAME request id. The deposit recovery record is per mode and carries its own source chain.
-- Primary Gateway copy is in the i18n tables for both EN and TR, with no inline locale ternaries for it, and does not expose Gateway domain numbers, chain ids, burn intents, EIP-712, attestations or minting.
-- A completed source deposit collapses that card to a compact success row. “Add more USDC” only reveals the empty form; it does not create an action or initiate a Circle flow.
+- The Gateway section now renders for both Circle and external wallet sessions, not Circle only.
+- Gateway remains visible for loading, known zero, positive balance, no transferable source, and read failure states.
+- A known zero shows `0 USDC`.
+- A read failure shows an unavailable state with retry.
+- Existing recovery remains visible, extended with a distinct deposit recovery record per mode.
+- A Base Sepolia source sub-section shows source balance, source readiness, and the approve/deposit action; Circle sessions additionally see a same address Base wallet preparation action when needed.
+- Primary Gateway copy uses the configured source network name and normal two-decimal USDC presentation; it does not expose internal Gateway domain numbers or signing protocol terms.
+- A completed source deposit collapses to a compact Base Sepolia balance and success row. “Add more USDC” only reveals the empty form; it does not create an action or initiate a Circle flow.
 - `RECONCILING` renders the compact status rail: Deposit submitted → Waiting for Gateway finality → Gateway balance available. Its polling is read-only against the same durable action, preserves recovery on transient read failure, and blocks another deposit. The pulse is **IMPLEMENTED / VALIDATED** deterministically; production visual proof is deferred to the mandatory external-wallet Gateway flow.
-- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_UNIFIED_BALANCE_UI=PASS`, `GATEWAY_UNIFIED_BALANCE_RENDER_ONCE=PASS`, `GATEWAY_TRANSFER_PREPARED_SUCCESS_SEMANTICS=PASS`, `GATEWAY_ADD_MORE_SINGLE_CLICK=PASS`, `GATEWAY_DESTINATION_SELECTOR=PASS`, `GATEWAY_SOURCE_SELECTOR_UI=PASS`, `GATEWAY_SOURCE_ROW_LAYOUT=PASS`, `GATEWAY_EXTERNAL_CHAIN_SWITCH=PASS`, `CIRCLE_SOURCE_WALLET_UI=PASS`, `GATEWAY_WALLET_UI_CLEANUP=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `GATEWAY_NETWORKS_LIVE_NETWORK_CALLS=0`, `GATEWAY_TRANSFER_PLAN_LIVE_NETWORK_CALLS=0`, `GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
+- Deterministic validation evidence: `GATEWAY_WALLET_UI=PASS`, `GATEWAY_WALLET_UI_CLEANUP=PASS`, `GATEWAY_LIVE_NETWORK_CALLS=0`, `GATEWAY_DEPOSIT_LIVE_NETWORK_CALLS=0`, `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
 
-LIVE PROOF STATUS: **OPEN / NOT LIVE PROVEN.** The limited Circle Base Sepolia source approval, deposit, Gateway credit/finality, and session-lifetime facts recorded below remain historical production evidence; no generalized Gateway transfer flow is live-proven.
+LIVE PROOF STATUS: **OPEN / PARTIALLY LIVE PROVEN.** Circle mode has live source-chain approval, deposit, and Gateway credit/finality proof. Every Gateway → Arc transfer remains unproven, and no external-wallet full Gateway flow is live-proven.
 
 Live proven in production, Circle mode, for `0x3faa1A48E6c3772d6c2032EafE5C7D84BD6fd876`:
 
@@ -306,24 +267,10 @@ Live proven in production, Circle mode, for `0x3faa1A48E6c3772d6c2032EafE5C7D84B
 
 This proves the Circle source deposit and Gateway credit/finality only. It does not prove a Gateway → Arc transfer, an external-wallet full Gateway flow, or the finality animation in production.
 
-Still NOT LIVE PROVEN after the unified balance correction (all newly generalized work is deterministically validated only):
-
-- Gateway to Arc transfer
-- Gateway to Base Sepolia transfer
-- Gateway to OP Sepolia transfer
-- Gateway to Arbitrum Sepolia transfer
-- Gateway to Ethereum Sepolia transfer
-- OP Sepolia, Arbitrum Sepolia and Ethereum Sepolia source deposits
-- External-wallet full Gateway flow
-- Multi-source aggregated Gateway transfer
-- Same-chain Gateway withdrawal
-- The live finality pulse animation
-
 Still required:
 
 - [x] Read only production prerequisites for the Circle approval stage (funded Base Sepolia source, prepared companion EOA)
 - [ ] Circle Gateway to Arc: obtain explicit approval before one controlled real burn intent transfer and destination reconciliation
-- [ ] Multi-source aggregated transfer: one controlled real transfer drawing on more than one source domain
 - [ ] External Base Sepolia to Gateway to Arc: one controlled real deposit, then one controlled real burn intent transfer
 - [ ] Explicit Koray approval before enabling broadcast
 - [ ] Transaction, transfer ID and destination reconciliation proof
@@ -1993,7 +1940,7 @@ The global EXTREMA visual system is now active across the normal product routes.
 
 ## Current roadmap
 
-Updated 2026-09-12.
+Updated 2026-09-11.
 
 > **Document rule.** Any material production, live proof, or submission status change must update this checklist in the same commit. A task is never considered closed only because it was discussed in chat.
 >
@@ -2071,15 +2018,6 @@ Finished work, listed so it is not reopened. Items whose production proof is sti
   - Recovery: unchanged call path — `confirmGatewayBaseDeposit` still resumes the SAME action via `gateway-actions.ts`'s existing recovery-first logic (`verifyGatewayDepositApproval`/`verifyGatewayDeposit` against the stored `actionId`); the page itself never mints a new request id or clears recovery before calling it.
   - Proof: `WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS` (new, in `verify-gateway-deposit.js`) statically proves the recovery branch is resolved before any input parsing, the input-parsing error is unreachable when recovery exists, both recovery-load effects seed the display amount, the input stays disabled, the idle/busy button labels are correct, recovery is never cleared before the call, and an expired report never clears recovery or retries. Verified by temporarily reverting the fix and confirming the test fails with the same "must be resolved... before the editable input is ever parsed" defect production hit, then restoring it.
 - **Updated live boundary:** source-chain deposit and Gateway credit proof are recorded above. This recovery/finality UI change remains **IMPLEMENTED / VALIDATED** until its visual state is observed in production; Gateway → Arc transfer remains unproven.
-- [x] Architecture correction: Gateway is a unified balance, so the UI no longer asks the user to choose a source
-  - Found by reviewing the shipped transfer UI: it asked the user to select a Gateway SOURCE domain and pinned Arc as the only destination. That inverts the product model. Circle Gateway is one unified USDC balance; which deposited source ledger is consumed is protocol execution detail, and a user who has 1.00 on Base and 0.75 on OP could not send 1.50 anywhere at all, because no single source covered it.
-  - Correction: the transfer contract is now `destinationDomain` + `valueRaw`. The source selector is gone from the UI and `sourceDomain` is no longer accepted when starting a transfer. The fee-aware Gateway planner resolves the plan server-side, reserves every returned `maxFee`, and may draw on several source domains for one transfer. The destination is selectable across five canonical networks, with the destination token and minter always read from server config. Same-chain withdrawal is permitted, and Arc became a spendable source domain as well as a destination.
-  - Product UI: `GATEWAY` now shows one unified balance plus Send USDC (destination selector, amount, Prepare transfer), and `ADD USDC TO GATEWAY` shows four compact funding source cards (Base, OP, Arbitrum and Ethereum Sepolia) with independent per-card state, four across on desktop, two by two at medium widths, one column on a phone. A source wallet balance and the Gateway unified balance are never interchanged. No domain number, chain id or protocol term reaches the user.
-  - Canonical config: one server-side table (`gatewayNetworks.js`) owns every chain id, Gateway domain, USDC address, Circle blockchain identifier and label. `baseSepoliaService.js` was replaced by the generic `gatewaySourceChainService.js`: one state machine, four configurations. Circle blockchain identifiers come from the installed SDK's own enum strings, asserted at verification time.
-  - Multi-source signing: one EIP-712 `BurnIntent` signature per allocation, submitted as one array of `{ burnIntent, signature }` entries, which is Circle's documented multi-source shape for this forwarding path. Circle's `BurnIntentSet` typehash is recorded and verified against Circle's own contract source but deliberately not signed, because a set signature needs a set-shaped request body that is not confirmed for this path.
-  - Backward compatibility: every schema change is additive. `gateway_funding_actions` gains `destination_domain`, `source_plan_json` and the per-allocation intent/signature/challenge columns; `source_domain` becomes nullable and historical rows keep theirs exactly, backfilled as `destination_domain = 26`. `GATEWAY_FUNDING_LEGACY_ROW_COMPATIBLE=PASS` reconstructs a pre-correction row and proves it still reads, verifies and submits. The live Base Sepolia deposit proof above is untouched and remains live proven.
-  - Proof: `GATEWAY_CANONICAL_NETWORK_CONFIG=PASS`, `GATEWAY_CIRCLE_BLOCKCHAIN_IDENTIFIERS=PASS`, `GATEWAY_FOUR_SOURCE_CHAINS=PASS`, `GATEWAY_DESTINATION_GENERALIZATION=PASS`, `GATEWAY_SAME_CHAIN_WITHDRAWAL=PASS`, `GATEWAY_BURN_INTENT_SET_TYPESTRING=PASS`, `GATEWAY_AUTO_SOURCE_PLANNER=PASS`, `GATEWAY_MULTI_SOURCE_INTENT=PASS`, `GATEWAY_FRONTEND_NEVER_CHOOSES_SOURCE=PASS`, `GATEWAY_MULTI_CHAIN_DEPOSIT=PASS`, `GATEWAY_UNIFIED_BALANCE_UI=PASS`, `GATEWAY_DESTINATION_SELECTOR=PASS`, `GATEWAY_SOURCE_SELECTOR_UI=PASS`, `GATEWAY_SOURCE_ROW_LAYOUT=PASS`, `GATEWAY_EXTERNAL_CHAIN_SWITCH=PASS`, `CIRCLE_SOURCE_WALLET_ALL_CHAINS=PASS`, `CIRCLE_SOURCE_WALLET_UI=PASS`, `GATEWAY_FUNDING_LEGACY_ROW_COMPATIBLE=PASS`, all with zero live network calls and `LIVE_GATEWAY_BROADCAST=NOT_EXECUTED`.
-  - **Still NOT LIVE PROVEN**: every Gateway transfer (to Arc, Base, OP, Arbitrum or Ethereum), the OP/Arbitrum/Ethereum source deposits, the external-wallet full Gateway flow, multi-source aggregation, same-chain withdrawal and the live finality pulse. No Circle mutation, source approve, Gateway deposit or Gateway transfer was executed to produce any of the proof above, and `EXTREMA_ENABLE_GATEWAY_BROADCAST` stays `false`.
 
 ### Remaining open work
 

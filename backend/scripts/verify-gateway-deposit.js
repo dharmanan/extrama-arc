@@ -186,10 +186,7 @@ function createFakeDatabase() {
 // Fake source chain (stands in for baseSepoliaService)
 // ---------------------------------------------------------------------------
 
-function createFakeSourceChain(config = {}) {
-  const CHAIN_ID = config.chainId ?? 84532;
-  const USDC = config.usdc ?? '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-  const CIRCLE_BLOCKCHAIN = config.circleBlockchain ?? 'BASE-SEPOLIA';
+function createFakeSourceChain() {
   const state = { balanceRaw: '5000000', allowanceRaw: '0' };
   const calls = {
     readChainState: 0,
@@ -238,9 +235,8 @@ function createFakeSourceChain(config = {}) {
 
   return {
     chainId: CHAIN_ID,
-    circleBlockchain: CIRCLE_BLOCKCHAIN,
+    circleBlockchain: 'BASE-SEPOLIA',
     usdcAddress: USDC,
-    gatewayWallet: GATEWAY_WALLET,
     state,
     calls,
     mineApproval,
@@ -282,121 +278,6 @@ function createFakeSourceChain(config = {}) {
 
 async function rejectsCode(fn, code) {
   await assert.rejects(fn, (error) => error?.message === code);
-}
-
-// ---------------------------------------------------------------------------
-// One state machine, four configurations. Every funding chain drives the
-// identical approve then deposit lifecycle with its own chain id, USDC and
-// Circle blockchain identifier, and finality still requires a real Gateway
-// balance delta on that chain's own domain.
-// ---------------------------------------------------------------------------
-
-const MULTI_CHAIN_SOURCES = [
-  { domain: 6, chainId: 84532, usdc: '0x036CbD53842c5426634e7929541eC2318f3dCF7e', circleBlockchain: 'BASE-SEPOLIA' },
-  { domain: 2, chainId: 11155420, usdc: '0x5fd84259d66Cd46123540766Be93DFE6D43130D7', circleBlockchain: 'OP-SEPOLIA' },
-  { domain: 3, chainId: 421614, usdc: '0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d', circleBlockchain: 'ARB-SEPOLIA' },
-  { domain: 0, chainId: 11155111, usdc: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238', circleBlockchain: 'ETH-SEPOLIA' },
-];
-
-async function verifyMultiChainDeposit() {
-  // The canonical config is the authority on which chains exist at all.
-  const gatewayNetworks = require('../src/services/gatewayNetworks');
-  assert.deepEqual(
-    gatewayNetworks.DEPOSIT_SOURCE_NETWORKS.map((network) => network.domain).sort((a, b) => a - b),
-    MULTI_CHAIN_SOURCES.map((entry) => entry.domain).sort((a, b) => a - b),
-    'the funding sources proved here must be exactly the configured ones',
-  );
-  for (const entry of MULTI_CHAIN_SOURCES) {
-    const network = gatewayNetworks.depositSourceForDomain(entry.domain);
-    assert.ok(network, `domain ${entry.domain} must be a configured funding source`);
-    assert.equal(network.chainId, entry.chainId);
-    assert.equal(ethers.getAddress(network.usdc), ethers.getAddress(entry.usdc));
-    assert.equal(network.circleBlockchain, entry.circleBlockchain);
-  }
-
-  for (const entry of MULTI_CHAIN_SOURCES) {
-    const wallet = ethers.Wallet.createRandom();
-    const auth = {
-      userId: `multi-user-${entry.domain}`,
-      executionMode: 'EXTERNAL_WALLET',
-      walletAddress: wallet.address,
-    };
-    const source = createFakeSourceChain(entry);
-    const balances = { domainRaw: '0' };
-    const gateway = {
-      async readUnifiedUsdcBalance() {
-        return { balances: [{ domain: entry.domain, balanceRaw: balances.domainRaw, transferable: true }] };
-      },
-    };
-    const service = createGatewayDepositService({
-      database: createFakeDatabase(),
-      gateway,
-      sourceChains: new Map([[entry.domain, source]]),
-    });
-    const requestId = `aaaaaaaa-0000-4000-8000-00000000000${entry.domain}`;
-
-    const started = await service.start({
-      auth, requestId, sourceDomain: entry.domain, amountRaw: AMOUNT,
-    });
-    assert.equal(started.sourceDomain, entry.domain);
-    assert.equal(started.sourceChainId, entry.chainId, 'each source carries its own chain id');
-    assert.equal(started.state, 'APPROVAL_REQUIRED');
-    // The approve targets that chain's own USDC, with GatewayWallet as spender.
-    assert.equal(started.transactionRequest.chainId, entry.chainId);
-    assert.equal(
-      ethers.getAddress(started.transactionRequest.to), ethers.getAddress(entry.usdc),
-    );
-    assert.equal(
-      started.transactionRequest.data,
-      USDC_INTERFACE.encodeFunctionData('approve', [GATEWAY_WALLET, AMOUNT]),
-    );
-
-    const approvalHash = `0x${'a1'.repeat(32)}`;
-    source.mineApproval(approvalHash, wallet.address, AMOUNT);
-    source.state.allowanceRaw = AMOUNT;
-    const approved = await service.verifyApproval({
-      auth, actionId: started.actionId, txHash: approvalHash,
-    });
-    assert.equal(approved.state, 'DEPOSIT_REQUIRED');
-    // The deposit goes to GatewayWallet and names that chain's own USDC. A
-    // plain ERC-20 transfer would move funds without crediting Gateway.
-    assert.equal(approved.transactionRequest.chainId, entry.chainId);
-    assert.equal(
-      ethers.getAddress(approved.transactionRequest.to), ethers.getAddress(GATEWAY_WALLET),
-    );
-    assert.equal(
-      approved.transactionRequest.data,
-      GATEWAY_INTERFACE.encodeFunctionData('deposit', [entry.usdc, AMOUNT]),
-    );
-
-    const depositHash = `0x${'b2'.repeat(32)}`;
-    source.mineDeposit(depositHash, wallet.address, AMOUNT);
-    const deposited = await service.verifyDeposit({
-      auth, actionId: started.actionId, txHash: depositHash,
-    });
-    // Finality still requires a real Gateway balance delta on this domain: a
-    // source receipt alone never completes a deposit.
-    assert.equal(deposited.state, 'RECONCILING');
-    const stillPending = await service.status({ auth, actionId: started.actionId });
-    assert.equal(stillPending.state, 'RECONCILING', 'no Gateway delta yet, so still reconciling');
-    balances.domainRaw = AMOUNT;
-    const completed = await service.status({ auth, actionId: started.actionId });
-    assert.equal(completed.state, 'COMPLETED');
-
-    // Arc is a destination, never a funding source, and this same state
-    // machine refuses it.
-    await rejectsCode(
-      () => service.start({
-        auth,
-        requestId: `bbbbbbbb-0000-4000-8000-00000000000${entry.domain}`,
-        sourceDomain: 26,
-        amountRaw: AMOUNT,
-      }),
-      'gateway_deposit_source_unsupported',
-    );
-  }
-
-  console.log('GATEWAY_MULTI_CHAIN_DEPOSIT=PASS');
 }
 
 // ---------------------------------------------------------------------------
@@ -639,7 +520,7 @@ async function verifyCircleBranch() {
   // exactly from the engine defaulting this to ARC-TESTNET, and a fake that
   // accepts any blockchain would never have caught it.
   const circle = {
-    async listEoaForBlockchain(userToken, blockchain) {
+    async listBaseSepoliaEoa() {
       return baseWalletResolved
         ? { id: baseCircleWalletId, address: walletAddress, blockchain: 'BASE-SEPOLIA', accountType: 'EOA' }
         : null;
@@ -685,7 +566,7 @@ async function verifyCircleBranch() {
   // Base wallet not ready yet: fail closed before any Circle challenge.
   await rejectsCode(
     () => service.start({ auth, userToken: 'circle-user-token-long-enough', requestId, sourceDomain: DOMAIN, amountRaw: AMOUNT }),
-    'gateway_deposit_source_wallet_required',
+    'gateway_deposit_base_wallet_required',
   );
 
   baseWalletResolved = true;
@@ -762,7 +643,7 @@ async function verifyCircleBranch() {
   // still fails closed, never proceeding with the browser's own say-so.
   const mismatchCircle = {
     ...circle,
-    async listEoaForBlockchain(userToken, blockchain) {
+    async listBaseSepoliaEoa() {
       return { id: 'other-wallet', address: '0x4000000000000000000000000000000000000004', blockchain: 'BASE-SEPOLIA', accountType: 'EOA' };
     },
   };
@@ -774,7 +655,7 @@ async function verifyCircleBranch() {
       auth, userToken: 'circle-user-token-long-enough',
       requestId: '44444444-4444-4444-8444-444444444444', sourceDomain: DOMAIN, amountRaw: AMOUNT,
     }),
-    'gateway_deposit_source_wallet_mismatch',
+    'gateway_deposit_base_wallet_mismatch',
   );
 
   console.log('GATEWAY_DEPOSIT_CIRCLE=PASS');
@@ -882,7 +763,7 @@ async function verifyProductionApprovalReconciliation() {
   let createChallengeCalls = 0;
   const transactionLookupCalls = [];
   const circle = {
-    async listEoaForBlockchain(userToken, blockchain) {
+    async listBaseSepoliaEoa() {
       return { id: baseCircleWalletId, address: walletAddress, blockchain: 'BASE-SEPOLIA', accountType: 'EOA' };
     },
     async createContractExecutionChallenge({ contractAddress }) {
@@ -961,7 +842,7 @@ async function verifyWrongBlockchainStillFailsClosed() {
   const database = createFakeDatabase();
   const TX_ID = 'tx-wrong-chain-1';
   const circle = {
-    async listEoaForBlockchain(userToken, blockchain) {
+    async listBaseSepoliaEoa() {
       return { id: baseCircleWalletId, address: walletAddress, blockchain: 'BASE-SEPOLIA', accountType: 'EOA' };
     },
     async createContractExecutionChallenge() { throw new Error('must_not_create_a_challenge_in_this_case'); },
@@ -1018,194 +899,23 @@ function verifyWalletPageDepositRecoveryWiring() {
   const styles = fs.readFileSync(path.join(__dirname, '../../app/globals.css'), 'utf8');
   const copy = fs.readFileSync(path.join(__dirname, '../../app/i18n.tsx'), 'utf8');
 
-  // -------------------------------------------------------------------
-  // A. The unified balance and the send controls
-  // -------------------------------------------------------------------
-  const fundingMarkupStart = walletPage.indexOf(
-    '<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>',
-  );
-  const depositMarkupStart = walletPage.indexOf(
-    '<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayDepositAriaLabel}>',
-  );
-  const depositMarkupEnd = walletPage.indexOf('<div className="ex-wallet-actions">', depositMarkupStart);
-  assert.ok(fundingMarkupStart > -1 && depositMarkupStart > fundingMarkupStart && depositMarkupEnd > depositMarkupStart);
-  const fundingMarkup = walletPage.slice(fundingMarkupStart, depositMarkupStart);
-  const depositMarkup = walletPage.slice(depositMarkupStart, depositMarkupEnd);
-
-  // The unified balance is stated once, as one number, in the send section.
-  const unifiedMatches = [...walletPage.matchAll(/ex-gateway-unified/g)];
-  assert.equal(unifiedMatches.length, 1, 'the unified balance is rendered exactly once');
-  assert.match(fundingMarkup, /className="ex-gateway-unified"/);
-  assert.match(
-    fundingMarkup,
-    /formatGatewayUsdcDisplay\(gateway\.transferableTotalUsdc, locale\)/,
-    'the unified balance must be the spendable Gateway total',
-  );
-  assert.match(fundingMarkup, /t\.wallet\.gatewayUnifiedBalance/);
-
-  // Preparation success is an authoritative backend invariant. Failed or
-  // expired/reconciling statuses must stay on the human error path and can
-  // never borrow the success copy merely because a response exists.
-  assert.match(
-    fundingMarkup,
-    /gatewayFundingStatus\?\.readyToBroadcast === true\s*\?\s*t\.wallet\.gatewayTransferPrepared/,
-  );
-  assert.doesNotMatch(
-    fundingMarkup,
-    /gatewayFundingStatus && gatewayFundingStatus\.state !== "SIGNATURE_PENDING"[\s\S]{0,180}gatewayTransferPrepared/,
-  );
-  for (const state of [
-    'READY_TO_BROADCAST', 'FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED',
-    'SIGNATURE_FAILED', 'SUBMITTING', 'SUBMITTED', 'COMPLETED',
-  ]) {
-    const response = { state, readyToBroadcast: state === 'READY_TO_BROADCAST' };
-    const primaryLabel = response.readyToBroadcast ? 'Transfer prepared' : 'error path';
-    assert.equal(primaryLabel === 'Transfer prepared', response.readyToBroadcast,
-      `${state} must follow authoritative readiness semantics`);
-  }
-
-  // There is exactly ONE select in the send section and it is the
-  // DESTINATION. A source selector must not exist anywhere.
-  const selects = [...fundingMarkup.matchAll(/<select/g)];
-  assert.equal(selects.length, 1, 'the send section has one selector only');
-  assert.match(fundingMarkup, /<span>\{t\.wallet\.gatewayDestination\}<\/span>/);
-  assert.match(fundingMarkup, /onChange=\{\(event\) => \{/);
-  assert.match(fundingMarkup, /setGatewayDestinationDomain\(event\.target\.value\);/);
-  assert.match(fundingMarkup, /event\.currentTarget\.blur\(\);/);
-  assert.match(
-    fundingMarkup,
-    /\{gatewayDestinations\.map\(\(item\) => \(\s*<option key=\{item\.domain\} value=\{item\.domain\}>\s*\{item\.label\}\s*<\/option>/,
-    'destination options render the server-supplied label and nothing else',
-  );
-  // No source selection of any kind survives in the transfer surface.
-  for (const forbidden of [
-    'gatewaySourceDomain',
-    'setGatewaySourceDomain',
-    'selectedGatewaySource',
-    'gatewaySourceNetworkLabel',
-  ]) {
-    assert.ok(
-      !walletPage.includes(forbidden),
-      `${forbidden} must be gone: the user never chooses a Gateway source`,
-    );
-  }
-  // The old "Source" transfer label is gone entirely (the per-card
-  // gatewaySource* strings are the funding cards, a different concern).
-  assert.ok(
-    !/t\.wallet\.gatewaySource\b/.test(walletPage),
-    'the transfer Source label must be gone: the user never chooses a Gateway source',
-  );
-  // The transfer request itself carries a destination and an amount only.
-  assert.match(
-    walletPage,
-    /confirmGatewayBurnSignature\(\s*\{ destinationDomain, valueRaw \},/,
-    'a transfer is requested by destination and amount, never by source',
-  );
-  assert.ok(
-    !/startGatewayFunding\([\s\S]{0,200}sourceDomain/.test(walletPage),
-    'the page must never send a sourceDomain when starting a transfer',
-  );
-
-  // Destination options come from the server list, never a page constant.
-  assert.match(walletPage, /const gatewayDestinations: GatewayNetwork\[\] = gateway\?\.destinations \|\| \[\];/);
-
-  // No Gateway domain number, chain id or protocol vocabulary reaches the
-  // user-facing Gateway surfaces.
-  const presentation = fundingMarkup + depositMarkup;
-  assert.ok(
-    !/Domain \$\{|domain \$\{|\{item\.domain\}<|\{source\.domain\}</.test(presentation),
-    'a Gateway domain number must never be rendered as text',
-  );
-  assert.ok(
-    !/\{source\.chainId\}|\{item\.chainId\}/.test(presentation),
-    'a chain id must never be rendered as text',
-  );
-  // Protocol vocabulary must not reach the user. Checked against the rendered
-  // TEXT, so internal identifiers such as openSourceDomain are not mistaken
-  // for user-visible copy.
-  const renderedText = [
-    ...presentation.matchAll(/>([^<>{}]+)</g),
-  ].map((match) => match[1]).join(' ');
-  assert.ok(
-    !/burn intent|EIP-?712|attestation|source domain|Gateway domain|CCTP/i.test(renderedText),
-    'raw protocol terminology must not appear in the normal Gateway UI',
-  );
-  for (const state of [
-    'READY_TO_BROADCAST', 'FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED',
-    'SIGNATURE_FAILED', 'SUBMITTING', 'SUBMITTED', 'COMPLETED',
-  ]) {
-    assert.ok(!renderedText.includes(state), `${state} must not leak into primary UI copy`);
-  }
-  // And no protocol term is smuggled in through a copy key either.
-  assert.ok(
-    !/t\.wallet\.\w*(BurnIntent|Eip712|Attestation|Domain)\w*/.test(presentation),
-    'no Gateway copy key may name a protocol internal',
-  );
-
-  // -------------------------------------------------------------------
-  // B. One compact funding-source selector
-  // -------------------------------------------------------------------
-  assert.match(depositMarkup, /t\.wallet\.gatewayAddTitle/);
-  assert.match(depositMarkup, /t\.wallet\.gatewayAddBody/);
-  assert.match(depositMarkup, /className="ex-gateway-deposit-controls"/);
-  assert.match(depositMarkup, /<span>\{t\.wallet\.gatewayFrom\}<\/span>/);
-  assert.match(depositMarkup, /<span>\{t\.wallet\.gatewayAvailable\}<\/span>/);
-  assert.match(depositMarkup, /value=\{String\(selectedSource\.domain\)\}/);
-  assert.match(depositMarkup, /\{sourceState\.sources\.map\(\(source\) => \(\s*<option key=\{source\.domain\} value=\{source\.domain\}>\{source\.label\}<\/option>/);
-  assert.match(depositMarkup, /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(selectedSource\.balanceRaw\), locale\)/);
-  assert.ok(!depositMarkup.includes('transferableTotalUsdc') && !depositMarkup.includes('gateway.totalUsdc'));
-  assert.match(depositMarkup, /selectedSource\.state === "error"/);
-  assert.match(depositMarkup, /selectedSource\.balanceRaw !== null/);
-  assert.match(depositMarkup, /t\.wallet\.gatewayWalletNotPrepared/);
-  assert.match(depositMarkup, /handlePrepareSourceWallet\(selectedSource\.domain\)/);
-  assert.match(depositMarkup, /t\.wallet\.gatewaySourceWalletMismatch/);
-  assert.match(depositMarkup, /handleGatewaySourceDeposit\(selectedSource\.domain\)/);
-  assert.match(depositMarkup, /disabled=\{depositBusy \|\| depositAwaitingFinality \|\| Boolean\(depositRecovery\)\}/);
-
-  const railStart = depositMarkup.indexOf('className="ex-gateway-finality"');
-  const railEnd = depositMarkup.indexOf('</div>', railStart);
-  assert.ok(railStart > -1 && railEnd > railStart);
-  const railMarkup = depositMarkup.slice(railStart, railEnd);
-  assert.match(railMarkup, /gatewayDepositSubmitted/);
-  assert.match(railMarkup, /gatewayWaitingFinality/);
-  assert.match(railMarkup, /gatewayBalanceAvailable/);
-  assert.match(railMarkup, /data-state="active"/);
-  assert.match(railMarkup, /ex-gateway-finality__pulse/);
-  assert.match(railMarkup, /data-state="pending"/);
-  assert.ok(!/attestation|mint|countdown|progress|%/i.test(railMarkup));
-  assert.match(styles, /animation:ex-gateway-finality-breathe/);
-  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,180}animation:none/);
-
-  assert.match(styles, /\.ex-gateway-deposit-controls\{/);
-  assert.match(styles, /grid-template-columns:minmax\(180px,1\.2fr\)/);
-  assert.ok(!depositMarkup.includes('className="ex-gateway-sources"'));
-  assert.ok(!depositMarkup.includes('className="ex-gateway-source"'));
-  assert.match(depositMarkup, /depositCompleted && \(/);
-  assert.match(depositMarkup, /gatewayDepositAddedToGateway/);
-  assert.match(depositMarkup, /gatewayAddMoreUsdc/);
-
-  // -------------------------------------------------------------------
-  // D. Deposit recovery remains authoritative (the production fix)
-  // -------------------------------------------------------------------
-  const handlerStart = walletPage.indexOf('async function handleGatewaySourceDeposit');
-  assert.ok(handlerStart > -1, 'handleGatewaySourceDeposit must exist');
-  const handlerEnd = walletPage.indexOf('\n  // A backend status is authoritative', handlerStart);
+  const handlerStart = walletPage.indexOf('async function handleGatewayBaseDeposit');
+  assert.ok(handlerStart > -1, 'handleGatewayBaseDeposit must exist');
+  const handlerEnd = walletPage.indexOf('\n  async function ensureArcTestnet', handlerStart);
   assert.ok(handlerEnd > handlerStart);
   const handler = walletPage.slice(handlerStart, handlerEnd);
 
   // The recovery branch is checked, and resolved, BEFORE any input parsing.
   const recoveryBranchIndex = handler.indexOf('if (depositRecovery) {');
-  const cardCheckIndex = handler.indexOf('if (depositRecovery.sourceDomain !== cardDomain) {');
-  const configuredCheckIndex = handler.indexOf('if (!isConfiguredSourceDomain(depositRecovery.sourceDomain)) {');
+  const sourceDomainCheckIndex = handler.indexOf('if (depositRecovery.sourceDomain !== BASE_SEPOLIA_SOURCE.domain) {');
   const useRecoveryAmountIndex = handler.indexOf('amountRaw = depositRecovery.amountRaw;');
   const elseBranchIndex = handler.indexOf('} else {', recoveryBranchIndex);
   const parseInputIndex = handler.indexOf('parseGatewayUsdcRaw(depositAmount)');
   assert.ok(
-    recoveryBranchIndex > -1 && cardCheckIndex > recoveryBranchIndex &&
-    configuredCheckIndex > cardCheckIndex &&
-    useRecoveryAmountIndex > configuredCheckIndex && elseBranchIndex > useRecoveryAmountIndex &&
+    recoveryBranchIndex > -1 && sourceDomainCheckIndex > recoveryBranchIndex &&
+    useRecoveryAmountIndex > sourceDomainCheckIndex && elseBranchIndex > useRecoveryAmountIndex &&
     parseInputIndex > elseBranchIndex,
-    'a live recovery must be resolved (with its own chain checks) before the editable input is ever parsed',
+    'a live recovery must be resolved (with its own source domain check) before the editable input is ever parsed',
   );
 
   // The "enter a valid amount" input-parsing error exists ONLY inside the
@@ -1219,19 +929,20 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(elseBranchSlice, /parseGatewayUsdcRaw\(depositAmount\)/);
   assert.match(elseBranchSlice, /t\.wallet\.gatewayAmountInvalid/);
 
-  // sourceDomain/amountRaw actually used to call confirmGatewaySourceDeposit
+  // sourceDomain/amountRaw actually used to call confirmGatewayBaseDeposit
   // are the local variables resolved above, not a hardcoded constant or a
-  // fresh parse, so the same call site serves both paths correctly.
-  assert.match(handler, /confirmGatewaySourceDeposit\(\s*\{ sourceDomain, amountRaw \},/);
+  // fresh parse, so the same call site serves both the recovery and fresh
+  // paths correctly.
+  assert.match(handler, /confirmGatewayBaseDeposit\(\s*\{ sourceDomain, amountRaw \},/);
 
   // No new requestId is ever minted in the page itself, and recovery is
   // never cleared before the call: the ONLY setDepositRecovery(null) is
   // after a call that reported COMPLETED.
   assert.ok(!handler.includes('crypto.randomUUID()'), 'the page must never mint its own requestId for a Gateway deposit');
-  const confirmCallIndex = handler.indexOf('await confirmGatewaySourceDeposit(');
+  const confirmCallIndex = handler.indexOf('await confirmGatewayBaseDeposit(');
   const clearRecoveryIndex = handler.indexOf('setDepositRecovery(null);');
   assert.ok(confirmCallIndex > -1 && clearRecoveryIndex > confirmCallIndex,
-    'recovery must never be cleared before confirmGatewaySourceDeposit is called');
+    'recovery must never be cleared before confirmGatewayBaseDeposit is called');
   const completedGuardIndex = handler.lastIndexOf('if (result.state === "COMPLETED") {', clearRecoveryIndex);
   assert.ok(completedGuardIndex > confirmCallIndex && completedGuardIndex < clearRecoveryIndex,
     'recovery may only be cleared after the SAME call reports COMPLETED');
@@ -1243,7 +954,7 @@ function verifyWalletPageDepositRecoveryWiring() {
   const catchSlice = handler.slice(catchStart, catchEnd);
   assert.match(catchSlice, /gateway_deposit_expired/);
   assert.ok(
-    !catchSlice.includes('setDepositRecovery(null)') && !catchSlice.includes('confirmGatewaySourceDeposit') &&
+    !catchSlice.includes('setDepositRecovery(null)') && !catchSlice.includes('confirmGatewayBaseDeposit') &&
     !catchSlice.includes('crypto.randomUUID()'),
     'an expired report must never clear recovery, retry, or mint a replacement request id',
   );
@@ -1253,31 +964,6 @@ function verifyWalletPageDepositRecoveryWiring() {
   // shown empty while a real recovery amount exists.
   const seedMatches = [...walletPage.matchAll(/setDepositAmount\(formatGatewayUsdcRaw\(recovery\.amountRaw\)\);/g)];
   assert.equal(seedMatches.length, 2, 'both the Circle and external recovery load effects must seed the display amount');
-  const amountValueIndex = depositMarkup.indexOf('value={depositAmount}');
-  const amountInputEnd = depositMarkup.indexOf('/>', amountValueIndex);
-  assert.ok(amountValueIndex > -1 && amountInputEnd > amountValueIndex, 'the funding amount input must exist');
-  const amountInputMarkup = depositMarkup.slice(amountValueIndex, amountInputEnd);
-  assert.ok(
-    amountInputMarkup.includes('Boolean(depositRecovery)'),
-    'the amount field stays disabled while a durable recovery exists',
-  );
-
-  // Idle with a live recovery says "continue", never "recovering"; an actual
-  // busy resume may still say "recovering".
-  const onClickIndex = depositMarkup.indexOf('onClick={() => void handleGatewaySourceDeposit(selectedSource.domain)}');
-  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewaySourceDeposit for the selected source');
-  const buttonStart = depositMarkup.indexOf('{depositBusy', onClickIndex);
-  const buttonEnd = depositMarkup.indexOf('</button>', buttonStart);
-  assert.ok(buttonStart > -1 && buttonEnd > buttonStart);
-  const buttonSlice = depositMarkup.slice(buttonStart, buttonEnd);
-  const busyEndMarker = 't.wallet.gatewayReading)';
-  const busyEndIndex = buttonSlice.indexOf(busyEndMarker);
-  assert.ok(busyEndIndex > -1, 'expected the busy ternary to end with the gatewayReading fallback');
-  const busySlice = buttonSlice.slice(0, busyEndIndex + busyEndMarker.length);
-  const idleSlice = buttonSlice.slice(busyEndIndex + busyEndMarker.length);
-  assert.match(idleSlice, /\? t\.wallet\.gatewayResumeDeposit/, 'idle + recovery must show the explicit "continue" label');
-  assert.ok(!idleSlice.includes('gatewayRecoveringOperation'), 'idle state must never show "Recovering previous operation..."');
-  assert.match(busySlice, /depositRecovery \? t\.wallet\.gatewayRecoveringOperation/, 'an actual busy resume may still show "Recovering previous operation..."');
 
   const submittedRecoveryStart = walletPage.indexOf('function isSubmittedGatewayDepositRecovery');
   const submittedRecoveryEnd = walletPage.indexOf('\n\nconst WALLET_MARKET_ASSETS', submittedRecoveryStart);
@@ -1289,133 +975,79 @@ function verifyWalletPageDepositRecoveryWiring() {
   );
   assert.match(submittedRecovery, /return recovery\.phase === "RECONCILING"/);
 
-  // -------------------------------------------------------------------
-  // E. Transfer recovery restores destination and amount, same action
-  // -------------------------------------------------------------------
-  assert.match(walletPage, /setGatewayDestinationDomain\(String\(recovery\.destinationDomain\)\);/);
-  assert.match(walletPage, /setGatewayAmount\(formatGatewayUsdcRaw\(recovery\.valueRaw\)\);/);
-  const transferHandlerStart = walletPage.indexOf('async function handleGatewayTransfer()');
-  const transferHandlerEnd = walletPage.indexOf('\n  if (step === "ready"', transferHandlerStart);
-  assert.ok(transferHandlerStart > -1 && transferHandlerEnd > transferHandlerStart);
-  const transferHandler = walletPage.slice(transferHandlerStart, transferHandlerEnd);
-  assert.ok(
-    !transferHandler.includes('crypto.randomUUID()'),
-    'the page must never mint a transfer request id: gateway-actions reuses the recovered one',
-  );
+  // Primary wallet language stays consumer-facing. Internal Gateway domains,
+  // protocol names, and chain IDs remain in execution data, never in the
+  // normal transfer/source presentation.
+  const fundingMarkupStart = walletPage.indexOf('<section className="ex-wallet-gateway" aria-label={t.wallet.gatewayFundingAriaLabel}>');
+  const fundingMarkupEnd = walletPage.indexOf('<section\n                  className={`ex-wallet-gateway', fundingMarkupStart);
+  assert.ok(fundingMarkupStart > -1 && fundingMarkupEnd > fundingMarkupStart);
+  const fundingMarkup = walletPage.slice(fundingMarkupStart, fundingMarkupEnd);
+  assert.match(walletPage, /const GATEWAY_SOURCE_CONFIGS = \[/);
+  assert.match(walletPage, /label: "Base Sepolia"/);
+  const sourceSelectorStart = fundingMarkup.indexOf('<select');
+  const sourceSelectorEnd = fundingMarkup.indexOf('</select>', sourceSelectorStart);
+  assert.ok(sourceSelectorStart > -1 && sourceSelectorEnd > sourceSelectorStart);
+  const sourceSelectorMarkup = fundingMarkup.slice(sourceSelectorStart, sourceSelectorEnd);
   assert.match(
-    transferHandler,
-    /gatewayFundingRecovery\?\.destinationDomain\s*\n?\s*\?\? selectedDestination!\.domain/,
-    'a live recovery is authoritative for the destination',
+    sourceSelectorMarkup,
+    /<option key=\{item\.domain\} value=\{item\.domain\}>\s*\{gatewaySourceNetworkLabel\(item\.domain\)\}\s*<\/option>/,
+    'the source option must render only its configured network name',
   );
-  // The local amount check is against the UNIFIED spendable total, never one
-  // source's balance.
-  assert.match(transferHandler, /BigInt\(valueRaw\) > BigInt\(gatewaySpendableRaw\)/);
-
-  // gateway-actions resumes the SAME durable actions for both concerns.
-  const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
-  assert.match(gatewayActions, /readCircleGatewayDepositRecovery\(\)/);
-  assert.match(gatewayActions, /readExternalGatewayDepositRecovery\(\)/);
-  assert.match(gatewayActions, /readExternalGatewayFundingRecovery\(\)/);
-  assert.match(gatewayActions, /verifyGatewayDepositApproval/);
-  assert.match(gatewayActions, /if \(current\.state === "RECONCILING"\) \{/);
-  assert.match(gatewayActions, /result\.state === "RECONCILING"/);
-  assert.match(
-    gatewayActions,
-    /const requestId = recovery\?\.requestId \|\| crypto\.randomUUID\(\);/,
-    'a recovered transfer must resume under the same request id',
-  );
-
-  const depositService = fs.readFileSync(path.join(__dirname, '../src/services/gatewayDepositService.js'), 'utf8');
-  assert.match(depositService, /function hasBoundDepositTransaction\(row\)/);
-  assert.match(depositService, /row\.state === 'RECONCILING' && hasBoundDepositTransaction\(row\)/);
-  assert.match(depositService, /deposit_tx_hash !~ '\^0x\[0-9a-fA-F\]\{64\}\$'/);
-  assert.match(depositService, /if \(row\.state === 'RECONCILING'\) row = await reconcile\(row\)/);
-
-  // -------------------------------------------------------------------
-  // F. Product copy, EN and TR, no inline locale ternaries for it
-  // -------------------------------------------------------------------
-  const copyPairs = [
-    ['gatewayUnifiedBalance', 'Unified balance', 'Birleşik bakiye'],
-    ['gatewayPrepareTitle', 'Send USDC', 'USDC gönder'],
-    ['gatewayDestination', 'To', 'Hedef ağ'],
-    ['gatewayAmount', 'Amount', 'Tutar'],
-    ['gatewayPrepareSignature', 'Prepare transfer', 'Transferi hazırla'],
-    ['gatewayAddTitle', 'Add USDC to Gateway', "Gateway'e USDC ekle"],
-    ['gatewayAddUsdc', 'Add USDC', 'USDC ekle'],
-    ['gatewayAddToGateway', 'Add to Gateway', "Gateway'e ekle"],
-    ['gatewayPrepareWallet', 'Prepare wallet', 'Cüzdanı hazırla'],
-    ['gatewayWalletNotPrepared', 'Wallet not prepared', 'Cüzdan hazır değil'],
-  ];
-  for (const [key, en, tr] of copyPairs) {
-    assert.ok(
-      copy.includes(`${key}: "${en}"`),
-      `English copy for ${key} must read exactly "${en}"`,
-    );
-    assert.ok(
-      copy.includes(`${key}: "${tr}"`),
-      `Turkish copy for ${key} must read exactly "${tr}"`,
-    );
-  }
-  assert.match(copy, /gatewayPrepareBody: "Send your Gateway balance to any supported network\. You'll review and approve before anything moves\."/);
-  assert.match(copy, /gatewayPrepareBody: "Gateway bakiyeni desteklenen ağlardan birine gönder\. Herhangi bir işlem gerçekleşmeden önce inceleyip onaylayacaksın\."/);
-  assert.match(copy, /gatewayAddBody: "Fund your unified balance from any supported wallet\."/);
-  assert.match(copy, /gatewayAddBody: "Birleşik Gateway bakiyeni desteklenen cüzdanlardan fonla\."/);
-  assert.match(copy, /gatewaySourceAvailable: "\{amount\} USDC available"/);
-  assert.match(copy, /gatewaySourceAvailable: "\{amount\} USDC kullanılabilir"/);
-  assert.match(copy, /gatewayDepositAddedToGateway: "\{amount\} USDC added to Gateway"/);
-  assert.match(copy, /gatewayDepositAddedToGateway: "Gateway'e \{amount\} USDC eklendi"/);
-  assert.match(copy, /gatewayAddMoreUsdc: "Add more USDC"/);
-  assert.match(copy, /gatewayAddMoreUsdc: "Daha fazla USDC ekle"/);
-  assert.match(copy, /gatewayFinalityAdvice: "Gateway balance may take up to 20 minutes to update\. Do not submit again\."/);
-  assert.match(copy, /gatewayFinalityAdvice: "Gateway bakiyesinin güncellenmesi 20 dakikaya kadar sürebilir\. İşlemi tekrar göndermeyin\."/);
+  assert.ok(!sourceSelectorMarkup.includes('formatGatewayUsdcDisplay(item.balance, locale)'), 'the source option must not render a Gateway unified balance');
+  assert.ok(!sourceSelectorMarkup.includes('2.00 USDC'), 'the source option must not contain a displayed Gateway balance');
+  assert.ok(!sourceSelectorMarkup.includes('Domain ${item.domain}'), 'a Gateway domain number must not enter the primary source label');
+  assert.match(copy, /gatewayPrepareTitle: "Move USDC to Arc"/);
+  assert.match(copy, /gatewayPrepareTitle: "USDC'yi Arc'a taşı"/);
+  assert.match(copy, /gatewayPrepareBody: "Use your Gateway balance on Arc\. You'll review and approve before anything moves\."/);
+  assert.match(copy, /gatewayPrepareBody: "Gateway bakiyeni Arc üzerinde kullan\. Herhangi bir transfer gerçekleşmeden önce işlemi inceleyip onaylayacaksın\."/);
+  assert.match(copy, /gatewayPrepareSignature: "Prepare transfer to Arc"/);
+  assert.match(copy, /gatewayPrepareSignature: "Arc'a transferi hazırla"/);
+  assert.match(copy, /gatewayTransferPrepared: "Transfer prepared\. Nothing has moved\."/);
+  assert.match(copy, /gatewayTransferPrepared: "Transfer hazır\. Henüz hiçbir şey taşınmadı\."/);
   assert.ok(!/gatewayPrepareBody:[^\n]*EIP-712/.test(copy), 'primary Gateway copy must not expose EIP-712');
-  // Primary product copy is in the i18n tables, not inline locale ternaries.
-  for (const literal of [
-    'Send USDC', 'Unified balance', 'Add USDC to Gateway', 'Prepare transfer',
-    'Wallet not prepared', 'Prepare wallet',
-  ]) {
-    assert.ok(
-      !walletPage.includes(`"${literal}"`),
-      `"${literal}" must come from the i18n table, never a literal in the page`,
+  assert.ok(!fundingMarkup.includes('gatewayFundingStatus.state}'), 'the primary transfer surface must not display a raw Gateway state');
+  assert.match(
+    fundingMarkup,
+    /gatewayFundingStatus\?\.readyToBroadcast === true\s*\?\s*t\.wallet\.gatewayTransferPrepared/,
+    'Transfer prepared must require the authoritative ready-to-broadcast flag',
+  );
+  const canShowGatewayTransferPrepared = (status) => status?.readyToBroadcast === true;
+  assert.equal(
+    canShowGatewayTransferPrepared({ state: 'READY_TO_BROADCAST', readyToBroadcast: true }),
+    true,
+    'a ready-to-broadcast transfer may show Transfer prepared',
+  );
+  for (const state of ['FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED']) {
+    assert.equal(
+      canShowGatewayTransferPrepared({ state, readyToBroadcast: false }),
+      false,
+      `${state} must never show Transfer prepared`,
     );
   }
 
-  // -------------------------------------------------------------------
-  // G. Unaffected surfaces
-  // -------------------------------------------------------------------
-  assert.ok(!walletPage.includes('submitGatewayFunding'), 'the wallet UI must never expose a broadcast control');
   const summaryStart = walletPage.indexOf('className="ex-wallet-summary"');
   const summaryEnd = walletPage.indexOf('<section className="ex-wallet-gateway"', summaryStart);
   assert.ok(summaryStart > -1 && summaryEnd > summaryStart);
   const summaryMarkup = walletPage.slice(summaryStart, summaryEnd);
-  assert.match(summaryMarkup, /data-columns="2"/);
-  assert.match(summaryMarkup, /chainState\.usdc\.balanceFormatted/);
   assert.match(
     summaryMarkup,
     /executionMode === "EXTERNAL_WALLET"\s*\?\s*\(chain \? chain\.name : t\.wallet\.notConnected\)\s*:\s*chainState\.chain\.name/,
     'Circle must show Arc Testnet while an external wallet shows its connected network name',
   );
-  const primaryNetwork = ({ executionMode, chain, chainState }) => executionMode === 'EXTERNAL_WALLET'
-    ? (chain ? chain.name : 'notConnected')
-    : chainState.chain.name;
-  assert.equal(primaryNetwork({
-    executionMode: 'CIRCLE_USER_WALLET',
-    chain: { name: 'Base Sepolia' },
-    chainState: { chain: { name: 'Arc Testnet' } },
-  }), 'Arc Testnet');
-  assert.equal(primaryNetwork({
-    executionMode: 'EXTERNAL_WALLET',
-    chain: { name: 'Base Sepolia' },
-    chainState: { chain: { name: 'Arc Testnet' } },
-  }), 'Base Sepolia');
-  assert.equal(primaryNetwork({
-    executionMode: 'EXTERNAL_WALLET',
-    chain: null,
-    chainState: { chain: { name: 'Arc Testnet' } },
-  }), 'notConnected');
   assert.ok(!/\b(?:chainState\.chain|chain)\.id\b/.test(summaryMarkup), 'the primary network label must not expose a numeric chain ID');
-  assert.ok(!summaryMarkup.includes('gateway.totalUsdc'), 'the summary must not duplicate the unified Gateway balance');
-  assert.match(fundingMarkup, /formatGatewayUsdcDisplay\(gateway\.transferableTotalUsdc, locale\)/, 'the Gateway section retains the unified balance');
+  assert.match(summaryMarkup, /formatGatewayUsdcDisplay\(gateway\.totalUsdc, locale\)/, 'the summary must retain the Gateway unified balance');
+  const baseBalanceStart = walletPage.indexOf('{t.wallet.gatewayBaseUsdcBalance}');
+  const baseBalanceEnd = walletPage.indexOf('</strong>', baseBalanceStart);
+  assert.ok(baseBalanceStart > -1 && baseBalanceEnd > baseBalanceStart);
+  const baseBalanceMarkup = walletPage.slice(baseBalanceStart, baseBalanceEnd);
+  assert.match(baseBalanceMarkup, /baseUsdcRaw !== null/);
+  assert.match(baseBalanceMarkup, /formatGatewayUsdcDisplay\(formatGatewayUsdcRaw\(baseUsdcRaw\), locale\)/, 'the Base wallet balance must remain separate from Gateway unified balance');
+  assert.match(walletPage, /placeholder="0\.00"/);
+
+  // Finality is a read-only status mode: it prevents a duplicate resume or a
+  // new amount until the same durable action reaches a terminal state.
+  assert.match(walletPage, /gatewayDepositAmount[\s\S]{0,400}?disabled=\{depositBusy \|\| depositAwaitingFinality \|\| Boolean\(depositRecovery\)\}/);
+  assert.match(walletPage, /onClick=\{handleGatewayBaseDeposit\}[\s\S]{0,100}?disabled=\{depositBusy \|\| depositAwaitingFinality\}/);
 
   const finalityEffectStart = walletPage.indexOf('async function readStatus()');
   const finalityEffectEnd = walletPage.indexOf('\n  useEffect(() => {', finalityEffectStart);
@@ -1429,65 +1061,106 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(finalityEffect, /current\.state === "FAILED" \|\| current\.state === "RECONCILIATION_REQUIRED"/);
   assert.match(finalityEffect, /isSubmittedGatewayDepositRecovery\(recovery\)/);
   assert.ok(
-    !finalityEffect.includes('confirmGatewaySourceDeposit') && !finalityEffect.includes('executeHostedChallenge'),
+    !finalityEffect.includes('confirmGatewayBaseDeposit') && !finalityEffect.includes('executeHostedChallenge'),
     'finality polling must stay status-only and never initiate a challenge or deposit',
   );
+  const finalityMarkupStart = walletPage.indexOf('{depositFinalityVisible && (');
+  const finalityMarkupEnd = walletPage.indexOf('{baseWalletStatus === "ready"', finalityMarkupStart);
+  assert.ok(finalityMarkupStart > -1 && finalityMarkupEnd > finalityMarkupStart);
+  const finalityMarkup = walletPage.slice(finalityMarkupStart, finalityMarkupEnd);
+  assert.match(finalityMarkup, /gatewayDepositSubmitted/);
+  assert.match(finalityMarkup, /gatewayWaitingFinality/);
+  assert.match(finalityMarkup, /gatewayBalanceAvailable/);
+  assert.match(finalityMarkup, /data-state="active"/);
+  assert.match(finalityMarkup, /ex-gateway-finality__pulse/);
+  assert.match(finalityMarkup, /data-state="pending"/);
+  assert.ok(!finalityMarkup.includes('depositCompleted') && !finalityMarkup.includes('gatewayFinalityConfirmed'), 'the waiting rail must only render while reconciling');
+  assert.ok(!/attestation|mint|countdown|progress|%/i.test(finalityMarkup), 'the finality rail must not invent technical or percentage progress');
+  assert.match(styles, /animation:ex-gateway-finality-breathe/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,180}animation:none/);
+  assert.match(copy, /gatewayFinalityAdvice: "Gateway balance may take up to 20 minutes to update\. Do not submit again\."/);
+  assert.match(copy, /gatewayFinalityAdvice: "Gateway bakiyesinin güncellenmesi 20 dakikaya kadar sürebilir\. İşlemi tekrar göndermeyin\."/);
+  const finalityStateStart = walletPage.indexOf('const depositAwaitingFinality =');
+  const finalityStateEnd = walletPage.indexOf('\n\n  async function ensureArcTestnet', finalityStateStart);
+  assert.ok(finalityStateStart > -1 && finalityStateEnd > finalityStateStart);
+  const finalityState = walletPage.slice(finalityStateStart, finalityStateEnd);
+  assert.match(finalityState, /depositStatus\s*\?\s*depositStatus\.state === "RECONCILING"\s*:\s*isSubmittedGatewayDepositRecovery\(depositRecovery\)/);
+  assert.match(finalityState, /const depositFinalityVisible = depositAwaitingFinality/);
 
-  const addMoreStart = walletPage.indexOf('function handleAddMoreGatewayUsdc(sourceDomain: number)');
+  const completedMarkupStart = walletPage.indexOf('{baseWalletStatus === "ready" && depositCompleted ? (');
+  const completedMarkupEnd = walletPage.indexOf(') : baseWalletStatus === "ready" && !depositAwaitingFinality ? (', completedMarkupStart);
+  assert.ok(completedMarkupStart > -1 && completedMarkupEnd > completedMarkupStart);
+  const completedMarkup = walletPage.slice(completedMarkupStart, completedMarkupEnd);
+  assert.match(completedMarkup, /ex-gateway-deposit-complete/);
+  assert.match(completedMarkup, /data-state="completed"/);
+  assert.match(completedMarkup, /gatewayDepositAddedToGateway/);
+  assert.match(completedMarkup, /gatewayAddMoreUsdc/);
+  assert.ok(
+    !completedMarkup.includes('gatewayWaitingFinality') &&
+    !completedMarkup.includes('gatewayDepositAmount') &&
+    !completedMarkup.includes('handleGatewayBaseDeposit'),
+    'COMPLETED must collapse rather than keep the waiting rail or deposit form',
+  );
+  assert.match(copy, /gatewayBaseAvailable: "\{amount\} USDC available"/);
+  assert.match(copy, /gatewayBaseAvailable: "\{amount\} USDC kullanılabilir"/);
+  assert.match(copy, /gatewayDepositAddedToGateway: "\{amount\} USDC added to Gateway"/);
+  assert.match(copy, /gatewayDepositAddedToGateway: "Gateway'e \{amount\} USDC eklendi"/);
+  assert.match(copy, /gatewayAddMoreUsdc: "Add more USDC"/);
+  assert.match(copy, /gatewayAddMoreUsdc: "Daha fazla USDC ekle"/);
+  assert.match(walletPage, /!depositCompleted && depositNotice/);
+  assert.ok(!walletPage.includes('gatewayDepositComplete'), 'the compact completed state must not render duplicate refresh copy');
+
+  const addMoreStart = walletPage.indexOf('function handleAddMoreGatewayUsdc()');
   const addMoreEnd = walletPage.indexOf('\n\n  async function ensureArcTestnet', addMoreStart);
   assert.ok(addMoreStart > -1 && addMoreEnd > addMoreStart);
   const addMoreHandler = walletPage.slice(addMoreStart, addMoreEnd);
   assert.match(addMoreHandler, /setDepositStatus\(null\)/);
   assert.match(addMoreHandler, /setDepositAmount\(""\)/);
-  assert.match(addMoreHandler, /setOpenSourceDomain\(sourceDomain\)/);
-  assert.match(depositMarkup, /onClick=\{\(\) => handleAddMoreGatewayUsdc\(selectedSource\.domain\)\}/);
   assert.ok(
-    !/confirmGatewaySourceDeposit|executeHostedChallenge|crypto\.randomUUID|backendApi\./.test(addMoreHandler),
+    !/confirmGatewayBaseDeposit|executeHostedChallenge|crypto\.randomUUID|backendApi\./.test(addMoreHandler),
     'Add more USDC must only reveal the empty form and never create a financial action',
   );
 
-  // -------------------------------------------------------------------
-  // H. External wallet chain switching, per source chain
-  // -------------------------------------------------------------------
-  const sendStart = walletPage.indexOf('async function sendSourceChainTransaction');
-  const sendEnd = walletPage.indexOf('\n  async function handleGatewaySourceDeposit', sendStart);
-  assert.ok(sendStart > -1 && sendEnd > sendStart);
-  const sendSource = walletPage.slice(sendStart, sendEnd);
-  // The request's own chain id is the authority, and the wallet is re-read
-  // after the switch rather than trusted.
-  assert.match(sendSource, /gatewaySourceChains\.find\(\(candidate\) => candidate\.id === request\.chainId\)/);
-  assert.match(sendSource, /switchChainAsync\(\{ chainId: request\.chainId \}\)/);
-  const switchIndex = sendSource.indexOf('switchChainAsync({ chainId: request.chainId })');
-  const recheckIndex = sendSource.indexOf('await connectedConnector.getChainId()');
-  const sendIndex = sendSource.indexOf('sendTransactionAsync(');
-  assert.ok(
-    switchIndex > -1 && recheckIndex > switchIndex && sendIndex > recheckIndex,
-    'the active chain must be re-read from the connector after switching and before signing',
-  );
-  assert.match(sendSource, /if \(activeChainId !== request\.chainId\) \{/);
-  // The session address binding is re-checked after a switch.
-  const accountsIndex = sendSource.indexOf('await connectedConnector.getAccounts()');
-  assert.ok(accountsIndex > recheckIndex && accountsIndex < sendIndex,
-    'the wallet/session address binding must be re-checked after a chain switch');
-  // A receipt is awaited on the SOURCE chain, not Arc.
-  assert.match(sendSource, /sourcePublicClients\[request\.chainId\]/);
-  assert.match(sendSource, /sourceClient\.waitForTransactionReceipt\(\{ hash \}\)/);
-  assert.ok(
-    !sendSource.includes('arcTestnet'),
-    'a source transaction must never be signed or confirmed against Arc',
-  );
+  // Button copy: idle with a live recovery says "continue", never
+  // "recovering" (which falsely implies something is already in progress);
+  // an actual busy resume may still say "recovering". This is the JSX
+  // render, a different part of the file than the handler above.
+  const onClickIndex = walletPage.indexOf('onClick={handleGatewayBaseDeposit}');
+  assert.ok(onClickIndex > -1, 'the deposit button must call handleGatewayBaseDeposit');
+  const buttonStart = walletPage.indexOf('{depositBusy', onClickIndex);
+  const buttonEnd = walletPage.indexOf('</button>', buttonStart);
+  assert.ok(buttonStart > -1 && buttonEnd > buttonStart);
+  const buttonSlice = walletPage.slice(buttonStart, buttonEnd);
+  // The busy ternary's final fallback (no specific phase yet) closes with
+  // this exact marker; everything after it is the idle (non-busy) ternary.
+  const busyEndMarker = 't.wallet.gatewayReading)';
+  const busyEndIndex = buttonSlice.indexOf(busyEndMarker);
+  assert.ok(busyEndIndex > -1, 'expected the busy ternary to end with the gatewayReading fallback');
+  const busySlice = buttonSlice.slice(0, busyEndIndex + busyEndMarker.length);
+  const idleSlice = buttonSlice.slice(busyEndIndex + busyEndMarker.length);
+  assert.match(idleSlice, /\? t\.wallet\.gatewayResumeDeposit/, 'idle + recovery must show the explicit "continue" label');
+  assert.ok(!idleSlice.includes('gatewayRecoveringOperation'), 'idle state must never show "Recovering previous operation..."');
+  assert.match(busySlice, /depositRecovery \? t\.wallet\.gatewayRecoveringOperation/, 'an actual busy resume may still show "Recovering previous operation..."');
 
-  console.log('GATEWAY_UNIFIED_BALANCE_UI=PASS');
-  console.log('GATEWAY_UNIFIED_BALANCE_RENDER_ONCE=PASS');
-  console.log('GATEWAY_PRIMARY_NETWORK_DISPLAY=PASS');
-  console.log('GATEWAY_TRANSFER_PREPARED_SUCCESS_SEMANTICS=PASS');
-  console.log('GATEWAY_DESTINATION_SELECTOR=PASS');
-  console.log('GATEWAY_SOURCE_SELECTOR_UI=PASS');
-  console.log('GATEWAY_SOURCE_ROW_LAYOUT=PASS');
-  console.log('GATEWAY_EXTERNAL_CHAIN_SWITCH=PASS');
+  // gateway-actions.ts's existing recovery-first logic (unmodified by this
+  // fix) is still what actually resumes the SAME durable action.
+  const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
+  assert.match(gatewayActions, /readCircleGatewayDepositRecovery\(\)/);
+  assert.match(gatewayActions, /readExternalGatewayDepositRecovery\(\)/);
+  assert.match(gatewayActions, /verifyGatewayDepositApproval/);
+  assert.match(gatewayActions, /if \(current\.state === "RECONCILING"\) \{/);
+  assert.match(gatewayActions, /result\.state === "RECONCILING"/);
+
+  const depositService = fs.readFileSync(path.join(__dirname, '../src/services/gatewayDepositService.js'), 'utf8');
+  assert.match(depositService, /function hasBoundDepositTransaction\(row\)/);
+  assert.match(depositService, /row\.state === 'RECONCILING' && hasBoundDepositTransaction\(row\)/);
+  assert.match(depositService, /deposit_tx_hash !~ '\^0x\[0-9a-fA-F\]\{64\}\$'/);
+  assert.match(depositService, /if \(row\.state === 'RECONCILING'\) row = await reconcile\(row\)/);
+
+  console.log('GATEWAY_DEPOSIT_REVIEW_FIXES=PASS');
   console.log('GATEWAY_WALLET_UI_CLEANUP=PASS');
   console.log('GATEWAY_WALLET_UI_REGRESSIONS=PASS');
-  console.log('GATEWAY_ADD_MORE_SINGLE_CLICK=PASS');
+  console.log('GATEWAY_SOURCE_SELECTOR_PRESENTATION=PASS');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_LIVE_NETWORK_CALLS=0');
   console.log('WALLET_PAGE_DEPOSIT_RECOVERY_UI=PASS');
 }
@@ -1526,7 +1199,6 @@ function verifyPoolRefreshWiring() {
 
 (async () => {
   await verifyExternalBranch();
-  await verifyMultiChainDeposit();
   await verifyReconcilingFinalitySurvivesTtl();
   await verifyCircleBranch();
   await verifyEngineBlockchainDefaulting();

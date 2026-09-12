@@ -168,8 +168,7 @@ CREATE TABLE IF NOT EXISTS gateway_funding_actions (
   circle_wallet_id UUID,
   wallet_address VARCHAR(42) NOT NULL,
   request_id UUID NOT NULL,
-  -- NULL while PREPARING: the server has not resolved a source allocation yet.
-  source_domain INTEGER,
+  source_domain INTEGER NOT NULL,
   value_raw TEXT NOT NULL,
   payload_hash CHAR(64),
   burn_intent_json JSONB,
@@ -254,54 +253,6 @@ BEGIN
 EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
-
--- Unified balance generalization. The original table encoded the product model
--- of the time: one user-selected source_domain, and a destination that was
--- always Arc and therefore never stored. The final model inverts that: the
--- user selects a DESTINATION, and the server derives a deterministic source
--- allocation plan that may span several source domains.
---
--- Every change here is additive. No historical row is rewritten beyond the one
--- backfill below, which records the destination those rows always had, and
--- their source_domain stays exactly as written so existing proof still reads.
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS destination_domain INTEGER;
--- The deterministic plan: [{ sourceDomain, valueRaw }, ...]. NULL on a
--- historical row, where the plan is implicitly its single source_domain.
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS source_plan_json JSONB;
--- One burn intent, typed data object and signature per allocation. The
--- singular columns above remain populated for single-allocation plans.
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS burn_intents_json JSONB;
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS burn_intents_json_text TEXT;
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS typed_data_list_json JSONB;
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS signatures_json JSONB;
-ALTER TABLE gateway_funding_actions
-  ADD COLUMN IF NOT EXISTS circle_sign_challenges_json JSONB;
-
--- A multi-source plan has no single source domain to record.
-ALTER TABLE gateway_funding_actions
-  ALTER COLUMN source_domain DROP NOT NULL;
-
--- Arc Testnet is Gateway domain 26. Every row that predates destination
--- selection was an Arc-only transfer by construction.
-UPDATE gateway_funding_actions
-  SET destination_domain = 26
-  WHERE destination_domain IS NULL;
-
--- PREPARING is the one deliberate exception: its source allocation is resolved
--- only after the row is durable. Every later state must carry either the
--- historical singular source or the new complete source plan.
-ALTER TABLE gateway_funding_actions
-  DROP CONSTRAINT IF EXISTS gateway_funding_actions_plan_check;
-ALTER TABLE gateway_funding_actions
-  ADD CONSTRAINT gateway_funding_actions_plan_check CHECK (
-    state = 'PREPARING' OR source_domain IS NOT NULL OR source_plan_json IS NOT NULL
-  );
 
 -- Durable source-side deposit into GatewayWallet on a source chain (currently
 -- only Base Sepolia, domain 6), for both human execution modes. This is
