@@ -64,7 +64,7 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
         <Link href="/" className="ex-brand">EXTREMA</Link>
 
         <nav className="ex-nav" aria-label="Primary navigation">
-          <Link href="/pools">{t.pools}</Link><Link href="/marketplace">{t.marketplace}</Link><Link href="/leaderboard">{t.leaderboard}</Link><Link href="/archive">{t.archive}</Link><Link href="/how-it-works">{t.howItWorks}</Link><Link href="/tickets">{t.myTickets}</Link>
+          <Link href="/pools">{t.pools}</Link><Link href="/marketplace">{t.marketplace}</Link><Link href="/leaderboard">{t.leaderboard}</Link><Link href="/archive">{t.archive}</Link><Link href="/how-it-works">{t.howItWorks}</Link><Link href="/wallet">{t.walletNav}</Link><Link href="/tickets">{t.myTickets}</Link>
         </nav>
 
         <div className="ex-header__aside">
@@ -123,7 +123,7 @@ export function ProductHeader({ variant = "solid" }: { variant?: "solid" | "over
       </div>
       <div id="mobile-product-menu" className="ex-mobile-menu" data-open={menuOpen} hidden={!menuOpen}>
         <nav aria-label="Mobile navigation">
-          <Link href="/pools" onClick={() => setMenuOpen(false)}>{t.pools}</Link><Link href="/marketplace" onClick={() => setMenuOpen(false)}>{t.marketplace}</Link><Link href="/leaderboard" onClick={() => setMenuOpen(false)}>{t.leaderboard}</Link><Link href="/archive" onClick={() => setMenuOpen(false)}>{t.archive}</Link><Link href="/how-it-works" onClick={() => setMenuOpen(false)}>{t.howItWorks}</Link><Link href="/tickets" onClick={() => setMenuOpen(false)}>{t.myTickets}</Link>
+          <Link href="/pools" onClick={() => setMenuOpen(false)}>{t.pools}</Link><Link href="/marketplace" onClick={() => setMenuOpen(false)}>{t.marketplace}</Link><Link href="/leaderboard" onClick={() => setMenuOpen(false)}>{t.leaderboard}</Link><Link href="/archive" onClick={() => setMenuOpen(false)}>{t.archive}</Link><Link href="/how-it-works" onClick={() => setMenuOpen(false)}>{t.howItWorks}</Link><Link href="/wallet" onClick={() => setMenuOpen(false)}>{t.walletNav}</Link><Link href="/tickets" onClick={() => setMenuOpen(false)}>{t.myTickets}</Link>
         </nav>
         <div className="ex-mobile-menu__utility"><div className="ex-lang" aria-label="Language"><button data-active={locale === "en"} type="button" onClick={() => setLocale("en")}>EN</button><button data-active={locale === "tr"} type="button" onClick={() => setLocale("tr")}>TR</button></div>{connected && address ? <Link href="/wallet" className="ex-wallet" onClick={() => setMenuOpen(false)}><span className="ex-wallet__dot" aria-hidden="true" /><span className="ex-num">{shortAddress(address)}</span>{onchainUsdc !== null && <span className="ex-num ex-wallet__balance">· {formatHeaderUsdc(onchainUsdc, locale)} USDC</span>}</Link> : wagmiConnected && wagmiAddress ? <Link href="/wallet" className="ex-wallet" onClick={() => setMenuOpen(false)}><span>Continue · {shortAddress(wagmiAddress)}</span></Link> : <Link href="/wallet" className="ex-wallet" onClick={() => setMenuOpen(false)}><span>{locale === "tr" ? "Devam et" : "Continue"}</span></Link>}</div>
       </div>

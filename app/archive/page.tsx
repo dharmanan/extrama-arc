@@ -79,11 +79,20 @@ function directionLabel(value: ArchiveRound["direction"], locale: "en" | "tr") {
   return value === "HIGH" ? "High" : "Low";
 }
 
+type ArchiveFreshness = "initial" | "revalidating_cached" | "fresh" | "cached_refresh_failed";
+
+function archiveDatePrefix(freshness: ArchiveFreshness, locale: "en" | "tr") {
+  if (freshness === "revalidating_cached") return locale === "tr" ? "Güncelleniyor · " : "Updating · ";
+  if (freshness === "cached_refresh_failed") return locale === "tr" ? "Önbellek · " : "Cached · ";
+  return locale === "tr" ? "En güncel · " : "Latest · ";
+}
+
 export default function ArchivePage() {
   const { locale } = useLocale();
   const [archive, setArchive] = useState<ArchiveResponse | null>(null);
   const [error, setError] = useState("");
   const [selectedDateKey, setSelectedDateKey] = useState("");
+  const [freshness, setFreshness] = useState<ArchiveFreshness>("initial");
   const hasArchive = useRef(false);
   // When the archive on screen was read. Clicking a result link hands that
   // known round to the Result page as a snapshot before navigating; nothing
@@ -111,7 +120,10 @@ export default function ArchivePage() {
     }
 
     const cached = readCachedArchive(ARCHIVE_DAYS);
-    if (cached) applyArchive(cached.archive, cached.cachedAt);
+    if (cached) {
+      applyArchive(cached.archive, cached.cachedAt);
+      setFreshness("revalidating_cached");
+    }
 
     // Cancelled on unmount (for example when a result is opened): a slow
     // revalidation must not hold a browser connection and stall navigation.
@@ -121,9 +133,14 @@ export default function ArchivePage() {
         if (cancelled) return;
         writeCachedArchive(ARCHIVE_DAYS, result);
         applyArchive(result, Date.now());
+        setFreshness("fresh");
       })
       .catch((cause: unknown) => {
-        if (cancelled || hasArchive.current) return;
+        if (cancelled) return;
+        if (hasArchive.current) {
+          setFreshness("cached_refresh_failed");
+          return;
+        }
         setError(cause instanceof Error ? cause.message : "Unable to load archive.");
       });
 
@@ -223,7 +240,7 @@ export default function ArchivePage() {
                 <select value={selectedDateKey} onChange={(event) => selectDate(event.target.value)}>
                   {availableDates.map((dateKey, index) => (
                     <option value={dateKey} key={dateKey}>
-                      {index === 0 ? (locale === "tr" ? "En güncel · " : "Latest · ") : ""}
+                      {index === 0 ? archiveDatePrefix(freshness, locale) : ""}
                       {formatUtcDateKey(dateKey, locale)}
                     </option>
                   ))}
