@@ -665,6 +665,13 @@ export type GatewayTypedData = {
   message: Record<string, unknown>;
 };
 
+export type GatewayCostReview = {
+  estimatedFeeRaw: string;
+  estimatedTotalDebitRaw: string;
+  maximumAuthorizedFeeRaw: string;
+  maximumTotalDebitRaw: string;
+};
+
 export type GatewayFundingResponse = {
   actionId: string;
   requestId: string;
@@ -686,6 +693,9 @@ export type GatewayFundingResponse = {
   // EXTERNAL_WALLET session signs them locally; a CIRCLE_USER_WALLET session
   // signs each through its own hosted challenge.
   typedDataList: GatewayTypedData[];
+  // Server-derived exact six-decimal raw-unit review. Legacy rows may return
+  // null; active new preparation must never cross into signing without it.
+  costReview: GatewayCostReview | null;
   state: "PREPARING" | "SIGN_CHALLENGE_CREATING" | "SIGNATURE_PENDING" | "READY_TO_BROADCAST" | "SUBMITTING" | "SUBMITTED" | "COMPLETED" | "FAILED" | "RECONCILIATION_REQUIRED" | "SIGNATURE_FAILED" | "EXPIRED";
   recovery: "NEW" | "EXISTING" | "CONFLICT" | null;
   terminal: boolean;

@@ -2561,6 +2561,53 @@ img{max-width:100%}
   .ex-gateway-finality__rail{grid-template-columns:minmax(0,1fr)}
 }
 
+.ex-gateway-cost-review{
+  display:grid;
+  gap:10px;
+  padding:14px;
+  border-left:2px solid var(--ink);
+  background:color-mix(in srgb,var(--surface) 78%,var(--ink) 3%);
+}
+
+.ex-gateway-cost-review__rows{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:8px 22px;
+  margin:0;
+}
+
+.ex-gateway-cost-review__rows > div{
+  display:flex;
+  justify-content:space-between;
+  gap:14px;
+  min-width:0;
+  border-bottom:1px solid var(--line);
+  padding-bottom:6px;
+}
+
+.ex-gateway-cost-review__rows dt{
+  color:var(--muted);
+  font-size:.72rem;
+}
+
+.ex-gateway-cost-review__rows dd{
+  margin:0;
+  color:var(--ink);
+  font-size:.82rem;
+  text-align:right;
+}
+
+.ex-gateway-cost-review__rows .ex-gateway-cost-review__maximum{
+  border-bottom-color:var(--line-strong);
+}
+
+.ex-gateway-cost-review__explanation{
+  margin:0;
+  color:var(--muted);
+  font-size:.78rem;
+  line-height:1.45;
+}
+
 @media(max-width:560px){
   .ex-gateway-deposit-form{grid-template-columns:minmax(0,1fr)}
 }
@@ -2569,6 +2616,14 @@ img{max-width:100%}
   .ex-wallet-summary,
   .ex-wallet-summary[data-columns="3"]{
     grid-template-columns:minmax(0,1fr);
+  }
+
+  .ex-gateway-cost-review__rows{
+    grid-template-columns:minmax(0,1fr);
+  }
+
+  .ex-gateway-cost-review__rows dd{
+    overflow-wrap:anywhere;
   }
 
   .ex-wallet-summary__item + .ex-wallet-summary__item{

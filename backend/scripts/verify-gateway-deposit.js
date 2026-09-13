@@ -1618,7 +1618,8 @@ function createCircleGatewayActionsBehavior({ initialRecovery = null, startGatew
   };
   const circleActions = {
     module: {
-      confirmCircleGatewayFunding: async () => { throw new Error('Gateway transfer is not part of this harness'); },
+      prepareCircleGatewayFundingReview: async () => { throw new Error('Gateway transfer is not part of this harness'); },
+      confirmPreparedCircleGatewayFunding: async () => { throw new Error('Gateway transfer is not part of this harness'); },
       ensureCircleFinancialAuth: async () => ({
         userToken: 'circle-client-user-token', encryptionKey: 'circle-client-encryption-key',
       }),
@@ -2616,7 +2617,7 @@ function verifyWalletPageDepositRecoveryWiringLegacy() {
   // The transfer request itself carries a destination and an amount only.
   assert.match(
     walletPage,
-    /confirmGatewayBurnSignature\(\s*\{ destinationDomain, valueRaw \},/,
+    /(?:prepareGatewayBurnReview|confirmPreparedGatewayBurnSignature)\(\s*\{ destinationDomain, valueRaw \},/,
     'a transfer is requested by destination and amount, never by source',
   );
   assert.ok(
@@ -3117,7 +3118,8 @@ function verifyWalletPageDepositRecoveryWiring() {
   assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);
   assert.match(walletPage, /prepared\.submissionEnabled !== true/);
   assert.ok(!/submitGatewayTransfer|\/v1\/transfer|gatewayMint|burnIntent/i.test(walletPage));
-  assert.match(walletPage, /confirmGatewayBurnSignature\(\s*\{ destinationDomain, valueRaw \},/);
+  assert.match(walletPage, /prepareGatewayBurnReview\(\s*\{ destinationDomain, valueRaw \},/);
+  assert.match(walletPage, /confirmPreparedGatewayBurnSignature\(\s*\{ destinationDomain, valueRaw \},/);
   assert.ok(!/startGatewayFunding\([\s\S]{0,200}sourceDomain/.test(walletPage));
   for (const state of ['FAILED', 'EXPIRED', 'RECONCILIATION_REQUIRED']) {
     assert.notEqual(state === 'READY_TO_BROADCAST', true, `${state} cannot claim transfer preparation`);

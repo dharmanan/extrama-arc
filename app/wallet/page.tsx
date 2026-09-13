@@ -46,7 +46,11 @@ import {
   type ExternalGatewayDepositRecovery,
   type CircleSourceWalletRecovery,
 } from "../lib/circle-auth";
-import { confirmGatewaySourceDeposit, confirmGatewayBurnSignature } from "../lib/gateway-actions";
+import {
+  confirmGatewaySourceDeposit,
+  confirmPreparedGatewayBurnSignature,
+  prepareGatewayBurnReview,
+} from "../lib/gateway-actions";
 import { ensureCircleFinancialAuth, executeHostedChallenge } from "../lib/circle-actions";
 import {
   GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION,
@@ -146,6 +150,17 @@ function formatGatewayUsdcRaw(valueRaw: string) {
   const whole = padded.slice(0, -6).replace(/^0+(?=\d)/, "") || "0";
   const fraction = padded.slice(-6).replace(/0+$/, "");
   return fraction ? `${whole}.${fraction}` : whole;
+}
+
+// Cost review values are server-derived raw units. Format them for reading
+// without converting through Number, so six-decimal USDC arithmetic remains
+// exact in the browser as well.
+function formatGatewayReviewRaw(valueRaw: string, locale: "en" | "tr") {
+  if (!/^\d+$/.test(valueRaw)) return "—";
+  const padded = valueRaw.padStart(7, "0");
+  const whole = padded.slice(0, -6).replace(/^0+(?=\d)/, "") || "0";
+  const fraction = padded.slice(-6);
+  return `${whole}${locale === "tr" ? "," : "."}${fraction}`;
 }
 
 function incrementDecimalString(value: string) {
@@ -1590,16 +1605,18 @@ export default function WalletPage() {
       gatewayFundingStatus &&
       !["PREPARING", "SIGN_CHALLENGE_CREATING", "SIGNATURE_PENDING"].includes(gatewayFundingStatus.state)
     ) return;
-    if (!selectedDestination && !gatewayFundingRecovery) return;
+    const existingAction = Boolean(gatewayFundingRecovery || gatewayFundingStatus);
+    if (!selectedDestination && !existingAction) return;
     // A live recovery is the authoritative intent, exactly as for a deposit:
     // the inputs are disabled while it exists, so both the amount and the
-    // destination come from the record rather than the editable fields.
-    const valueRaw = gatewayFundingRecovery?.valueRaw || parseGatewayUsdcRaw(gatewayAmount);
+    // destination come from the durable action rather than editable fields.
+    const valueRaw = gatewayFundingRecovery?.valueRaw || gatewayFundingStatus?.valueRaw || parseGatewayUsdcRaw(gatewayAmount);
     if (!valueRaw) {
       setGatewayFundingError(t.wallet.gatewayAmountInvalid);
       return;
     }
     const destinationDomain = gatewayFundingRecovery?.destinationDomain
+      ?? gatewayFundingStatus?.destinationDomain
       ?? selectedDestination!.domain;
     // A restored destination must still be one the server offers, or the
     // stored intent is not something this session can safely continue.
@@ -1615,7 +1632,7 @@ export default function WalletPage() {
     // decides which sources are drawn. A local per source check would
     // reintroduce exactly the single source assumption the unified balance
     // model removes. The server is the authority either way.
-    if (!gatewayFundingRecovery && BigInt(valueRaw) > BigInt(gatewaySpendableRaw)) {
+    if (!existingAction && BigInt(valueRaw) > BigInt(gatewaySpendableRaw)) {
       setGatewayFundingError(
         locale === "tr"
           ? "Tutar kullanılabilir Gateway bakiyeni aşıyor."
@@ -1630,20 +1647,25 @@ export default function WalletPage() {
     setGatewayFundingNotice("");
     setGatewayFundingTransactionUrl(null);
     try {
-      const result = await confirmGatewayBurnSignature(
-        { destinationDomain, valueRaw },
-        { executionMode, signTypedData: (typedData) => signTypedDataAsync(typedData) },
-        // A multi-source plan asks for one approval per source draw. Report
-        // progress honestly rather than showing one indeterminate spinner.
-        (signed, total) => setGatewaySignStep({ step: signed + 1, total }),
-      );
+      const result = existingAction
+        ? await confirmPreparedGatewayBurnSignature(
+          { destinationDomain, valueRaw },
+          { executionMode, signTypedData: (typedData) => signTypedDataAsync(typedData) },
+          // A multi-source plan asks for one approval per source draw. Report
+          // progress honestly rather than showing one indeterminate spinner.
+          (signed, total) => setGatewaySignStep({ step: signed + 1, total }),
+        )
+        : await prepareGatewayBurnReview(
+          { destinationDomain, valueRaw },
+          { executionMode },
+        );
       if (result.state === "COMPLETED") {
         finishCompletedGatewayFunding(result);
         return;
       }
       // The action helper stores recovery as soon as the durable action is
-      // created. Mirror that record into React state so a freshly prepared
-      // READY action is locked to its same destination and amount immediately.
+      // created. Mirror that record into React state so the review and every
+      // later signature stay locked to its same destination and amount.
       restoreGatewayFundingRecoveryFromStorage();
       setGatewayFundingStatus(result);
       if (result.recovery === "CONFLICT") {
@@ -1651,10 +1673,12 @@ export default function WalletPage() {
         setGatewayFundingNotice(t.wallet.gatewayExistingAction);
         return;
       }
-      if (!result.readyToBroadcast || result.broadcast !== "NOT_SUBMITTED") {
-        throw new Error("gateway_signature_challenge_unavailable");
+      if (result.readyToBroadcast) {
+        if (result.broadcast !== "NOT_SUBMITTED") {
+          throw new Error("gateway_signature_challenge_unavailable");
+        }
+        setGatewayFundingNotice(result.submissionEnabled ? "" : t.wallet.gatewaySubmissionDisabled);
       }
-      setGatewayFundingNotice(result.submissionEnabled ? "" : t.wallet.gatewaySubmissionDisabled);
     } catch (cause) {
       // Same rule as the source deposit path: a Circle auth restore failure
       // is not a transfer preparation failure at all, and no financial start
@@ -1671,6 +1695,8 @@ export default function WalletPage() {
         setGatewayFundingError(t.wallet.gatewayTransferAuthorizationFailed);
       } else if (cause instanceof Error && cause.message === "gateway_insufficient_after_fees") {
         setGatewayFundingError(t.wallet.gatewayInsufficientAfterFees);
+      } else if (cause instanceof Error && cause.message === "gateway_cost_review_unavailable") {
+        setGatewayFundingError(t.wallet.gatewayCostReviewUnavailable);
       } else {
         setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
       }
@@ -1870,6 +1896,45 @@ export default function WalletPage() {
                       <p>{t.wallet.gatewayNoTransferableBalance}</p>
                     )}
                   </div>
+                  {gatewayFundingStatus?.costReview && (
+                    <div className="ex-gateway-cost-review" aria-label={t.wallet.gatewayTransferReview}>
+                      <p className="ex-eyebrow">{t.wallet.gatewayTransferReview}</p>
+                      <dl className="ex-gateway-cost-review__rows">
+                        <div>
+                          <dt>{t.wallet.gatewayReviewDestination}</dt>
+                          <dd>{gatewayFundingStatus.destinationLabel || t.wallet.gatewayDestination}</dd>
+                        </div>
+                        <div>
+                          <dt>{t.wallet.gatewayReviewYouSend}</dt>
+                          <dd>{formatGatewayReviewRaw(gatewayFundingStatus.valueRaw, locale)} {gateway?.token || "USDC"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t.wallet.gatewayReviewEstimatedFee}</dt>
+                          <dd>{formatGatewayReviewRaw(gatewayFundingStatus.costReview.estimatedFeeRaw, locale)} {gateway?.token || "USDC"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t.wallet.gatewayReviewEstimatedTotal}</dt>
+                          <dd>{formatGatewayReviewRaw(gatewayFundingStatus.costReview.estimatedTotalDebitRaw, locale)} {gateway?.token || "USDC"}</dd>
+                        </div>
+                        <div>
+                          <dt>{t.wallet.gatewayReviewMaximumFee}</dt>
+                          <dd>{formatGatewayReviewRaw(gatewayFundingStatus.costReview.maximumAuthorizedFeeRaw, locale)} {gateway?.token || "USDC"}</dd>
+                        </div>
+                        <div className="ex-gateway-cost-review__maximum">
+                          <dt>{t.wallet.gatewayReviewMaximumDebit}</dt>
+                          <dd>{formatGatewayReviewRaw(gatewayFundingStatus.costReview.maximumTotalDebitRaw, locale)} {gateway?.token || "USDC"}</dd>
+                        </div>
+                      </dl>
+                      <p className="ex-gateway-cost-review__explanation">{t.wallet.gatewayReviewExplanation}</p>
+                    </div>
+                  )}
+                  {gatewayFundingStatus &&
+                    !gatewayFundingStatus.costReview &&
+                    ["PREPARING", "SIGN_CHALLENGE_CREATING", "SIGNATURE_PENDING"].includes(gatewayFundingStatus.state) && (
+                      <p className="ex-entry__msg" data-tone="error" aria-live="polite">
+                        {t.wallet.gatewayCostReviewUnavailable}
+                      </p>
+                    )}
                   {gatewayCanPrepare && (
                     <div className="ex-wallet-gateway__controls">
                       <label>
@@ -1927,7 +1992,9 @@ export default function WalletPage() {
                         {gatewayFundingBusy
                           ? (gatewaySignStep && gatewaySignStep.total > 1
                             ? withGatewayStep(t.wallet.gatewaySigningStep, gatewaySignStep.step, gatewaySignStep.total)
-                            : t.wallet.gatewayPreparingSignature)
+                            : gatewayFundingRecovery
+                              ? t.wallet.gatewayPreparingSignature
+                              : t.wallet.gatewayPreparingReview)
                           : gatewayFundingStatus?.readyToBroadcast === true
                             ? gatewayFundingStatus.submissionEnabled === true
                               ? t.wallet.gatewaySubmitTransfer
@@ -1940,9 +2007,11 @@ export default function WalletPage() {
                             ? t.wallet.gatewayReconciliationRequired
                           : gatewayFundingStatus?.state === "FAILED"
                             ? t.wallet.gatewayTransferFailed
-                          : gatewayFundingRecovery
-                            ? t.wallet.gatewayResumeSignature
-                            : t.wallet.gatewayPrepareSignature}
+                          : gatewayFundingStatus?.state === "SIGNATURE_PENDING" && gatewayFundingStatus.signatureIndex > 0
+                            ? t.wallet.gatewayContinueSigning
+                          : gatewayFundingRecovery || gatewayFundingStatus
+                            ? t.wallet.gatewayConfirmSign
+                            : t.wallet.gatewayReviewTransfer}
                       </button>
                       {gatewayFundingStatus && canDiscardGatewayFunding(gatewayFundingStatus) && (
                         <button
@@ -1951,7 +2020,7 @@ export default function WalletPage() {
                           onClick={() => void handleGatewayFundingDiscard()}
                           disabled={gatewayFundingBusy}
                         >
-                          {t.wallet.gatewayDiscardPrepared}
+                          {t.wallet.gatewayCancelTransfer}
                         </button>
                       )}
                     </div>

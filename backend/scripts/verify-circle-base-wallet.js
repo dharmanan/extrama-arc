@@ -463,7 +463,8 @@ function verifyWalletPageWiring() {
   // present. Neither calls into this Circle-only preparation flow.
   assert.match(walletPage, /if \(executionMode !== "EXTERNAL_WALLET" \|\| !sourceState\) return;/);
   assert.match(walletPage, /confirmGatewaySourceDeposit/);
-  assert.match(walletPage, /confirmGatewayBurnSignature/);
+  assert.match(walletPage, /prepareGatewayBurnReview/);
+  assert.match(walletPage, /confirmPreparedGatewayBurnSignature/);
   const externalDepositStart = walletPage.indexOf('async function handleGatewaySourceDeposit');
   const externalDepositEnd = walletPage.indexOf('\n  async function ensureArcTestnet()', externalDepositStart);
   assert.ok(externalDepositStart > -1 && externalDepositEnd > externalDepositStart);

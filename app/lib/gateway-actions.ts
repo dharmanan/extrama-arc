@@ -2,10 +2,11 @@
 
 // Gateway financial actions for the two human execution modes.
 //
-//   confirmGatewayBurnSignature   spends an ALREADY existing unified balance
-//                                 to a chosen destination network: sign the
-//                                 server pinned EIP-712 burn intents, never
-//                                 broadcast them.
+//   prepareGatewayBurnReview      creates/reads the durable review for an
+//                                 already existing unified balance.
+//   confirmPreparedGatewayBurnSignature signs the server-pinned EIP-712 burn
+//                                 intents after explicit user confirmation,
+//                                 never broadcasting them.
 //   confirmGatewaySourceDeposit   gets USDC INTO that unified balance in the
 //                                 first place: USDC.approve(GatewayWallet,
 //                                 amount) then GatewayWallet.deposit(token,
@@ -28,11 +29,12 @@ import {
   type TransactionRequest,
 } from "./backend-api";
 import {
-  confirmCircleGatewayFunding,
+  confirmPreparedCircleGatewayFunding,
   ensureCircleFinancialAuth,
   executeHostedChallenge,
   GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION,
   isGatewayFundingTerminalWithoutSubmission,
+  prepareCircleGatewayFundingReview,
 } from "./circle-actions";
 import {
   clearCircleGatewayDepositRecovery,
@@ -125,21 +127,14 @@ function retryCircleApprovalReadAfterHostedChallenge(
 // Burn intent signatures (spend an existing unified balance to a destination)
 // ---------------------------------------------------------------------------
 
-export async function confirmGatewayBurnSignature(
+export async function prepareGatewayBurnReview(
   input: { destinationDomain: number; valueRaw: string },
   context: GatewayContext,
-  onProgress?: (signed: number, total: number) => void,
 ): Promise<GatewayFundingResponse> {
   const mode = requireMode(context);
 
   if (mode === "CIRCLE_USER_WALLET") {
-    return confirmCircleGatewayFunding(
-      { requestId: crypto.randomUUID(), ...input }, onProgress,
-    );
-  }
-
-  if (!context.signTypedData) {
-    throw new Error("Connected wallet signing support is unavailable.");
+    return prepareCircleGatewayFundingReview({ requestId: crypto.randomUUID(), ...input });
   }
 
   let recovery = readExternalGatewayFundingRecovery();
@@ -150,7 +145,8 @@ export async function confirmGatewayBurnSignature(
   }
 
   // A reload resumes the SAME action under the same request id. start is
-  // idempotent by request id, so this never creates a second plan.
+  // idempotent by request id, so this never creates a second plan. This
+  // preparation boundary never asks the external wallet to sign.
   const requestId = recovery?.requestId || crypto.randomUUID();
   const started = recovery
     ? await backendApi.wallet.gatewayFunding(recovery.actionId)
@@ -175,38 +171,89 @@ export async function confirmGatewayBurnSignature(
     return started;
   }
   if (started.terminal) throw new Error("gateway_signature_challenge_uncertain");
+
+  recovery = {
+    requestId,
+    actionId: started.actionId,
+    destinationDomain: started.destinationDomain,
+    valueRaw: started.valueRaw,
+    expiresAtMs: Date.parse(started.expiresAt),
+  };
+  storeExternalGatewayFundingRecovery(recovery);
+
   if (started.readyToBroadcast) {
     // Keep the same durable action recoverable through submission and finality.
     // The Wallet clears this record only after COMPLETED or a proven clean
     // pre-submission terminal response.
     return started;
   }
+  if (!started.costReview) throw new Error("gateway_cost_review_unavailable");
   if (started.executionMode !== "EXTERNAL_WALLET" || !started.typedDataList.length) {
     throw new Error("gateway_signature_challenge_unavailable");
   }
-  recovery = {
-    requestId,
-    actionId: started.actionId,
-    destinationDomain: input.destinationDomain,
-    valueRaw: input.valueRaw,
-    expiresAtMs: Date.parse(started.expiresAt),
-  };
-  storeExternalGatewayFundingRecovery(recovery);
+  return started;
+}
+
+export async function confirmPreparedGatewayBurnSignature(
+  input: { destinationDomain: number; valueRaw: string },
+  context: GatewayContext,
+  onProgress?: (signed: number, total: number) => void,
+): Promise<GatewayFundingResponse> {
+  const mode = requireMode(context);
+
+  if (mode === "CIRCLE_USER_WALLET") {
+    return confirmPreparedCircleGatewayFunding(input, onProgress);
+  }
+
+  if (!context.signTypedData) {
+    throw new Error("Connected wallet signing support is unavailable.");
+  }
+
+  const recovery = readExternalGatewayFundingRecovery();
+  if (!recovery) throw new Error("gateway_review_required");
+  if (recovery.destinationDomain !== input.destinationDomain || recovery.valueRaw !== input.valueRaw) {
+    throw new Error("gateway_pending_action_for_different_intent");
+  }
+
+  // Confirmation is deliberately read-only before signing: it retrieves the
+  // same durable action and never starts a new funding request.
+  const current = await backendApi.wallet.gatewayFunding(recovery.actionId);
+  if (isGatewayFundingTerminalWithoutSubmission(current)) {
+    clearExternalGatewayFundingRecovery();
+    throw new Error(GATEWAY_FUNDING_TERMINAL_NO_SUBMISSION);
+  }
+  if (current.recovery === "CONFLICT") return current;
+  if (current.terminal) throw new Error("gateway_signature_challenge_uncertain");
+  if (current.readyToBroadcast) return current;
+  if (!current.costReview) throw new Error("gateway_cost_review_unavailable");
+  if (current.executionMode !== "EXTERNAL_WALLET" || !current.typedDataList.length) {
+    throw new Error("gateway_signature_challenge_unavailable");
+  }
 
   // A connected wallet signs locally, so the whole plan can be signed in one
   // pass: one prompt per source allocation, then one verify call. Signing
   // starts at the allocation the server says is still outstanding, so a
   // partly signed plan is continued rather than re-signed from the start.
   const signatures: string[] = [];
-  const firstUnsignedIndex = Math.max(0, started.signatureIndex);
-  for (let index = firstUnsignedIndex; index < started.typedDataList.length; index += 1) {
-    onProgress?.(index, started.typedDataList.length);
-    signatures.push(await context.signTypedData(started.typedDataList[index]));
+  const firstUnsignedIndex = Math.max(0, current.signatureIndex);
+  for (let index = firstUnsignedIndex; index < current.typedDataList.length; index += 1) {
+    onProgress?.(index, current.typedDataList.length);
+    signatures.push(await context.signTypedData(current.typedDataList[index]));
   }
 
-  const verified = await backendApi.wallet.verifyGatewayFunding(started.actionId, { signatures });
+  const verified = await backendApi.wallet.verifyGatewayFunding(current.actionId, { signatures });
   if (!verified.readyToBroadcast) throw new Error("gateway_signature_challenge_unavailable");
   return verified;
+}
+
+// Compatibility name for existing callers/tests. It is now the explicit
+// post-review signing step; preparation is exposed separately above.
+export async function confirmGatewayBurnSignature(
+  input: { destinationDomain: number; valueRaw: string },
+  context: GatewayContext,
+  onProgress?: (signed: number, total: number) => void,
+): Promise<GatewayFundingResponse> {
+  return confirmPreparedGatewayBurnSignature(input, context, onProgress);
 }
 
 // ---------------------------------------------------------------------------

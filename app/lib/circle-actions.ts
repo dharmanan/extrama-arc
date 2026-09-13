@@ -553,13 +553,12 @@ function releaseCircleGatewayFundingRecovery(action: GatewayFundingResponse): ne
 // in which case it asks for one signature per allocation and names which one
 // it wants next. This loop signs exactly the allocation the server asks for,
 // in the order it asks, and stores the resumable position after each step.
-export async function confirmCircleGatewayFunding(
+export async function prepareCircleGatewayFundingReview(
   input: {
     requestId: string;
     destinationDomain: number;
     valueRaw: string;
   },
-  onProgress?: (signed: number, total: number) => void,
 ) {
   const auth = await ensureCircleFinancialAuth();
 
@@ -581,9 +580,8 @@ export async function confirmCircleGatewayFunding(
     storeCircleGatewayFundingRecovery(recovery);
     current = started;
   } else {
-    // Hydration is a read-only probe of the SAME durable action. In
-    // particular, it must observe a terminal failed challenge before any
-    // attempt could execute the old Circle challenge again.
+    // Preparation after reload reads the SAME durable action. It never signs
+    // or executes the hosted challenge.
     current = await withFreshExtremaCircleSession(
       auth.userToken,
       () => backendApi.wallet.gatewayFunding(recovery!.actionId),
@@ -594,16 +592,55 @@ export async function confirmCircleGatewayFunding(
     releaseCircleGatewayFundingRecovery(current);
   }
   if (current.recovery === "CONFLICT") {
+    recovery = gatewayRecoveryFrom(input, current);
+    storeCircleGatewayFundingRecovery(recovery);
+    return current;
+  }
+  if (current.terminal) throw new Error("gateway_signature_challenge_uncertain");
+  if (!current.readyToBroadcast && !current.costReview) {
+    throw new Error("gateway_cost_review_unavailable");
+  }
+  return current;
+}
+
+export async function confirmPreparedCircleGatewayFunding(
+  input: {
+    destinationDomain: number;
+    valueRaw: string;
+  },
+  onProgress?: (signed: number, total: number) => void,
+) {
+  const auth = await ensureCircleFinancialAuth();
+
+  let recovery = readCircleGatewayFundingRecovery();
+  if (!recovery) throw new Error("gateway_review_required");
+  if (!isGatewayFundingRecoveryFor(recovery, input)) {
+    throw new Error("circle_pending_action_for_different_intent");
+  }
+
+  // Hydration is a read-only probe of the SAME durable action. In particular,
+  // it must observe a terminal failed challenge before any attempt could
+  // execute the old Circle challenge again.
+  let current = await withFreshExtremaCircleSession(
+    auth.userToken,
+    () => backendApi.wallet.gatewayFunding(recovery!.actionId),
+  );
+
+  if (isGatewayFundingTerminalWithoutSubmission(current)) {
+    releaseCircleGatewayFundingRecovery(current);
+  }
+  if (current.recovery === "CONFLICT") {
     // The server found another unresolved same-wallet action. Persist only a
     // pointer to that authoritative action so the Wallet can recover it; do
     // not create a challenge or sign anything for the fresh request.
-    recovery = gatewayRecoveryFrom(input, current);
+    recovery = gatewayRecoveryFrom({ requestId: recovery.requestId, ...input }, current);
     storeCircleGatewayFundingRecovery(recovery);
     return current;
   }
   if (current.terminal) {
     throw new Error("gateway_signature_challenge_uncertain");
   }
+  if (!current.costReview) throw new Error("gateway_cost_review_unavailable");
 
   // One pass per allocation, bounded by Circle's own 16 intent cap so a
   // misbehaving response can never spin here.
@@ -674,6 +711,19 @@ export async function confirmCircleGatewayFunding(
   }
 
   throw new Error("gateway_signature_challenge_unavailable");
+}
+
+// Compatibility name for existing integrations. New Wallet code uses the
+// explicit prepare/confirm pair so this name cannot accidentally collapse the
+// review boundary again.
+export async function confirmCircleGatewayFunding(
+  input: {
+    requestId: string;
+    destinationDomain: number;
+    valueRaw: string;
+  },
+) {
+  return prepareCircleGatewayFundingReview(input);
 }
 
 // ---------------------------------------------------------------------------

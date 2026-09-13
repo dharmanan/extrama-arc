@@ -21,12 +21,14 @@ process.env.DATABASE_URL ||= 'postgresql://verify:verify@127.0.0.1:1/verify';
 process.env.ENCRYPTION_KEY ||= '0'.repeat(64);
 process.env.JWT_SECRET ||= 'verify_only_session_secret_not_for_runtime';
 
+const gatewayService = require('../src/services/gatewayService');
 const {
   buildGatewayBurnIntent,
   buildGatewayTransferSpec,
   planSourceAllocation,
-} = require('../src/services/gatewayService');
+} = gatewayService;
 const { createGatewayFundingService, FUNDING_TTL_MS } = require('../src/services/gatewayFundingService');
+const gatewayNetworks = require('../src/services/gatewayNetworks');
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const CIRCLE_WALLET_ID = '22222222-2222-4222-8222-222222222222';
@@ -213,7 +215,7 @@ const fakeGateway = {
     assert.ok(Array.isArray(specs));
     return {
       intents: specs.map(() => ({ maxFeeRaw: '10000', maxBlockHeight: '999999999' })),
-      fees: { token: 'USDC' },
+      fees: { token: 'USDC', total: ethers.formatUnits(10000n * BigInt(specs.length), 6) },
     };
   },
   buildGatewayBurnIntent,
@@ -418,7 +420,230 @@ async function verifyPreparingPlanlessLifecycle(accepts) {
   }
 }
 
+async function verifyGatewayCostReview() {
+  function createReviewGateway(walletAddress, sourceBalances, {
+    maxFeeRaw = '10000',
+    estimatedFeeTotalRaw = '10000',
+    omitEstimatedTotal = false,
+    state,
+  } = {}) {
+    return {
+      async readUnifiedUsdcBalance(address) {
+        assert.equal(address.toLowerCase(), walletAddress.toLowerCase());
+        return { balances: sourceBalances };
+      },
+      buildGatewayTransferSpec,
+      enumerateSourceAllocationPlans: gatewayService.enumerateSourceAllocationPlans,
+      async estimateGatewayTransfer(specs) {
+        if (state) state.estimateCalls += 1;
+        const fees = specs.map(() => String(typeof maxFeeRaw === 'function' ? maxFeeRaw() : maxFeeRaw));
+        return {
+          intents: fees.map((fee) => ({ maxFeeRaw: fee, maxBlockHeight: '999999999' })),
+          ...(omitEstimatedTotal
+            ? { fees: { token: 'USDC' } }
+            : { fees: { token: 'USDC', total: ethers.formatUnits(BigInt(estimatedFeeTotalRaw), 6) } }),
+        };
+      },
+      buildGatewayBurnIntent,
+      recoverBurnIntentSigner(typedData, signature) {
+        return ethers.verifyTypedData(typedData.domain, typedData.types, typedData.message, signature);
+      },
+      ARC_GATEWAY_DOMAIN: ARC_DOMAIN,
+    };
+  }
+
+  const fixtureWallet = new ethers.Wallet(`0x${'66'.repeat(32)}`);
+  const fixtureAuth = {
+    userId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    walletAddress: fixtureWallet.address,
+    executionMode: 'EXTERNAL_WALLET',
+  };
+  const fixtureState = { estimateCalls: 0 };
+  const fixtureService = createGatewayFundingService({
+    database: fakeDb,
+    gateway: createReviewGateway(
+      fixtureWallet.address,
+      [{ domain: 6, balanceRaw: '5000000', transferable: true }],
+      { maxFeeRaw: '1257798', estimatedFeeTotalRaw: '1257798', state: fixtureState },
+    ),
+    circle: fakeCircle,
+    runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: false },
+  });
+  const fixture = await fixtureService.start({
+    auth: fixtureAuth,
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0001',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  assert.deepEqual(fixture.costReview, {
+    estimatedFeeRaw: '1257798',
+    estimatedTotalDebitRaw: '2257798',
+    maximumAuthorizedFeeRaw: '1383578',
+    maximumTotalDebitRaw: '2383578',
+  });
+  assert.equal(fixtureState.estimateCalls, 1);
+  console.log('GATEWAY_COST_REVIEW_SERVER_DERIVED=PASS');
+  console.log('GATEWAY_COST_REVIEW_ESTIMATED_FEE=PASS');
+  console.log('GATEWAY_COST_REVIEW_ESTIMATED_TOTAL=PASS');
+  console.log('GATEWAY_COST_REVIEW_MAX_AUTHORIZED_FEE=PASS');
+  console.log('GATEWAY_COST_REVIEW_MAX_TOTAL_DEBIT=PASS');
+
+  const replay = await fixtureService.start({
+    auth: fixtureAuth,
+    requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaa0001',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  assert.equal(replay.actionId, fixture.actionId);
+  assert.deepEqual(replay.costReview, fixture.costReview);
+  assert.equal(fixtureState.estimateCalls, 1, 'replay must use the same durable plan and estimate');
+  console.log('GATEWAY_COST_REVIEW_SAME_DURABLE_ACTION=PASS');
+  console.log('GATEWAY_COST_REVIEW_NO_EXTRA_ESTIMATE=PASS');
+
+  const multiWallet = new ethers.Wallet(`0x${'67'.repeat(32)}`);
+  const multiState = { estimateCalls: 0 };
+  const multiService = createGatewayFundingService({
+    database: fakeDb,
+    gateway: createReviewGateway(
+      multiWallet.address,
+      [
+        { domain: 6, balanceRaw: '700000', transferable: true },
+        { domain: 2, balanceRaw: '700000', transferable: true },
+      ],
+      { maxFeeRaw: '100000', estimatedFeeTotalRaw: '250000', state: multiState },
+    ),
+    circle: fakeCircle,
+    runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: false },
+  });
+  const multi = await multiService.start({
+    auth: {
+      userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      walletAddress: multiWallet.address,
+      executionMode: 'EXTERNAL_WALLET',
+    },
+    requestId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbb0001',
+    destinationDomain: 2,
+    valueRaw: '1000000',
+  });
+  assert.equal(multi.intentCount, 2);
+  assert.equal(multi.costReview.estimatedFeeRaw, '250000');
+  assert.equal(multi.costReview.estimatedTotalDebitRaw, '1250000');
+  assert.equal(multi.costReview.maximumAuthorizedFeeRaw, '400000');
+  assert.equal(multi.costReview.maximumTotalDebitRaw, '1400000');
+  assert.ok(multiState.estimateCalls > 1, 'multi-source preparation must quote its aggregate plan');
+  console.log('GATEWAY_COST_REVIEW_MULTI_SOURCE_AGGREGATED=PASS');
+
+  for (const [index, destination] of gatewayNetworks.DESTINATION_NETWORKS.entries()) {
+    const destinationWallet = new ethers.Wallet(
+      `0x${(0x70 + index).toString(16).padStart(2, '0').repeat(32)}`,
+    );
+    const destinationService = createGatewayFundingService({
+      database: fakeDb,
+      gateway: createReviewGateway(
+        destinationWallet.address,
+        [{ domain: 6, balanceRaw: '2000000', transferable: true }],
+      ),
+      circle: fakeCircle,
+      runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: false },
+    });
+    const action = await destinationService.start({
+      auth: {
+        userId: `cccccccc-cccc-4ccc-8ccc-${String(index + 1).padStart(12, '0')}`,
+        walletAddress: destinationWallet.address,
+        executionMode: 'EXTERNAL_WALLET',
+      },
+      requestId: `dddddddd-dddd-4ddd-8ddd-${String(index + 1).padStart(12, '0')}`,
+      destinationDomain: destination.domain,
+      valueRaw: '1000000',
+    });
+    assert.equal(action.destinationLabel, destination.label);
+    assert.ok(action.costReview);
+  }
+  console.log('GATEWAY_COST_REVIEW_ALL_DESTINATIONS=PASS');
+
+  const missingWallet = new ethers.Wallet(`0x${'68'.repeat(32)}`);
+  const missingService = createGatewayFundingService({
+    database: fakeDb,
+    gateway: createReviewGateway(
+      missingWallet.address,
+      [{ domain: 6, balanceRaw: '2000000', transferable: true }],
+      { maxFeeRaw: '10000', omitEstimatedTotal: true },
+    ),
+    circle: fakeCircle,
+    runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: false },
+  });
+  await rejectsCode(
+    () => missingService.start({
+      auth: {
+        userId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        walletAddress: missingWallet.address,
+        executionMode: 'EXTERNAL_WALLET',
+      },
+      requestId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeee0001',
+      destinationDomain: ARC_DOMAIN,
+      valueRaw: '1000000',
+    }),
+    'gateway_cost_review_unavailable',
+  );
+  const missingRow = [...rows.values()].find((row) => row.request_id === 'eeeeeeee-eeee-4eee-8eee-eeeeeeee0001');
+  assert.equal(missingRow.state, 'PREPARING');
+  assert.equal(missingRow.typed_data_list_json, null);
+  console.log('GATEWAY_COST_REVIEW_MISSING_ESTIMATE_FAILS_CLOSED=PASS');
+
+  const circleActions = fs.readFileSync(path.join(__dirname, '../../app/lib/circle-actions.ts'), 'utf8');
+  const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
+  const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
+  const prepareGatewayStart = gatewayActions.indexOf('export async function prepareGatewayBurnReview(');
+  const confirmGatewayStart = gatewayActions.indexOf('export async function confirmPreparedGatewayBurnSignature(');
+  const gatewaySourceEnd = gatewayActions.indexOf('// ---------------------------------------------------------------------------\n// Source chain deposit', confirmGatewayStart);
+  const prepareGateway = gatewayActions.slice(prepareGatewayStart, confirmGatewayStart);
+  const confirmGateway = gatewayActions.slice(confirmGatewayStart, gatewaySourceEnd);
+  const prepareCircleStart = circleActions.indexOf('export async function prepareCircleGatewayFundingReview(');
+  const confirmCircleStart = circleActions.indexOf('export async function confirmPreparedCircleGatewayFunding(');
+  const circleSourceEnd = circleActions.indexOf('// ---------------------------------------------------------------------------\n// Generic Circle financial actions', confirmCircleStart);
+  const prepareCircle = circleActions.slice(prepareCircleStart, confirmCircleStart);
+  const confirmCircle = circleActions.slice(confirmCircleStart, circleSourceEnd);
+
+  assert.ok(prepareGatewayStart > -1 && confirmGatewayStart > prepareGatewayStart);
+  assert.ok(!/signTypedData|executeHostedChallenge|verifyGatewayFunding/.test(prepareGateway));
+  assert.match(confirmGateway, /backendApi\.wallet\.gatewayFunding\(recovery\.actionId\)/);
+  assert.ok(!confirmGateway.includes('startGatewayFunding'));
+  assert.match(confirmGateway, /context\.signTypedData/);
+  assert.match(confirmGateway, /Math\.max\(0, current\.signatureIndex\)/);
+  assert.ok(!/submitGatewayFunding/.test(confirmGateway));
+  assert.ok(prepareCircleStart > -1 && confirmCircleStart > prepareCircleStart);
+  assert.ok(!prepareCircle.includes('executeHostedChallenge'));
+  assert.match(prepareCircle, /backendApi\.wallet\.startGatewayFunding/);
+  assert.match(confirmCircle, /executeHostedChallenge\(current\.challengeId\)/);
+  assert.match(confirmCircle, /backendApi\.wallet\.gatewayFunding\(recovery!\.actionId\)/);
+  assert.ok(!confirmCircle.includes('startGatewayFunding'));
+  assert.match(walletPage, /prepareGatewayBurnReview\(/);
+  assert.match(walletPage, /confirmPreparedGatewayBurnSignature\(/);
+  assert.match(walletPage, /gatewayFundingStatus\?\.costReview/);
+  assert.match(walletPage, /gatewayReviewTransfer/);
+  assert.match(walletPage, /gatewayConfirmSign/);
+  assert.match(walletPage, /gatewayContinueSigning/);
+  assert.match(walletPage, /gatewayCancelTransfer/);
+  assert.match(walletPage, /gatewayFundingStatus\.costReview\.estimatedFeeRaw/);
+  assert.match(walletPage, /gatewayFundingStatus\.costReview\.maximumTotalDebitRaw/);
+  assert.match(walletPage, /disabled=\{gatewayFundingBusy \|\| Boolean\(gatewayFundingRecovery\)\}/);
+  assert.match(walletPage, /gatewayFunding\(recoveredActionId\)/);
+  assert.equal((walletPage.match(/backendApi\.wallet\.submitGatewayFunding\(/g) || []).length, 1);
+  assert.match(walletPage, /gatewayFundingStatus\?\.readyToBroadcast === true/);
+  console.log('GATEWAY_COST_REVIEW_CIRCLE_BEFORE_SIGNATURE=PASS');
+  console.log('GATEWAY_COST_REVIEW_EXTERNAL_BEFORE_SIGNATURE=PASS');
+  console.log('GATEWAY_COST_REVIEW_NO_REPREPARE_ON_CONFIRM=PASS');
+  console.log('GATEWAY_COST_REVIEW_RELOAD_PRESERVED=PASS');
+  console.log('GATEWAY_COST_REVIEW_PARTIAL_SIGNATURE_RESUMES=PASS');
+  console.log('GATEWAY_COST_REVIEW_READY_SUBMIT_SEPARATE=PASS');
+  console.log('GATEWAY_COST_REVIEW_NO_AUTOSIGN=PASS');
+  console.log('GATEWAY_COST_REVIEW_NO_AUTOSUBMIT=PASS');
+  console.log('GATEWAY_COST_REVIEW_INPUTS_LOCKED=PASS');
+  console.log('GATEWAY_COST_REVIEW_EN_TR_COPY=PASS');
+}
+
 (async () => {
+  await verifyGatewayCostReview();
   const accepts = verifyPreparingSchemaLifecycle();
   await verifyPreparingPlanlessLifecycle(accepts);
   const service = createGatewayFundingService({

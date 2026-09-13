@@ -420,9 +420,11 @@ assert.ok(!walletPage.includes('createCircleWallet'));
 // helper, which the page only calls into.
 const gatewayActions = read('../../app/lib/gateway-actions.ts');
 assert.ok(walletPage.includes('backendApi.wallet.gatewayBalance()'));
-assert.ok(walletPage.includes('confirmGatewayBurnSignature'));
+assert.ok(walletPage.includes('prepareGatewayBurnReview'));
+assert.ok(walletPage.includes('confirmPreparedGatewayBurnSignature'));
 assert.ok(walletPage.includes('confirmGatewaySourceDeposit'));
-assert.ok(gatewayActions.includes('confirmCircleGatewayFunding'), 'Circle Gateway funding support must be preserved');
+assert.ok(gatewayActions.includes('prepareCircleGatewayFundingReview'), 'Circle Gateway funding review support must be preserved');
+assert.ok(gatewayActions.includes('confirmPreparedCircleGatewayFunding'), 'Circle Gateway funding signing support must be preserved');
 assert.ok(!/gatewayMint|burnIntent|\/v1\/transfer|encodeFunctionData/i.test(walletPage));
 assert.match(walletPage, /backendApi\.wallet\.submitGatewayFunding\(prepared\.actionId\)/);
 assert.match(walletPage, /prepared\.state !== "READY_TO_BROADCAST"/);

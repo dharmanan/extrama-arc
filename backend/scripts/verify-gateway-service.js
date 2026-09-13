@@ -582,15 +582,21 @@ function verifyGatewaySecurityBoundaries() {
   assert.match(circleAuth, /storeExternalGatewayFundingRecovery\(recovery/);
 
   // Gateway signing is a read/prepare/challenge flow in the browser. The
-  // browser executes only the returned Circle challenge and has no transfer
-  // broadcast endpoint of its own.
-  const gatewayActionStart = circleActions.indexOf('export async function confirmCircleGatewayFunding');
-  const gatewayActionEnd = circleActions.indexOf('// ---------------------------------------------------------------------------\n// Generic Circle financial actions', gatewayActionStart);
-  const gatewayAction = circleActions.slice(gatewayActionStart, gatewayActionEnd);
+  // review preparation creates/reads the durable action but executes no
+  // challenge; only the explicit confirm path may execute the returned Circle
+  // challenge, and neither path has a transfer broadcast endpoint of its own.
+  const gatewayPrepareStart = circleActions.indexOf('export async function prepareCircleGatewayFundingReview');
+  const gatewayConfirmStart = circleActions.indexOf('export async function confirmPreparedCircleGatewayFunding');
+  const gatewayActionEnd = circleActions.indexOf('// ---------------------------------------------------------------------------\n// Generic Circle financial actions', gatewayConfirmStart);
+  const gatewayPrepare = circleActions.slice(gatewayPrepareStart, gatewayConfirmStart);
+  const gatewayAction = circleActions.slice(gatewayConfirmStart, gatewayActionEnd);
+  assert.match(gatewayPrepare, /withFreshExtremaCircleSession/);
+  assert.match(gatewayPrepare, /startGatewayFunding/);
+  assert.doesNotMatch(gatewayPrepare, /executeHostedChallenge/);
   assert.match(gatewayAction, /withFreshExtremaCircleSession/);
   assert.match(gatewayAction, /executeHostedChallenge\(current\.challengeId\)/);
   assert.match(gatewayAction, /storeCircleGatewayFundingRecovery\(recovery\)/);
-  assert.doesNotMatch(gatewayAction, /submitGatewayTransfer|\/v1\/transfer/);
+  assert.doesNotMatch(gatewayAction, /startGatewayFunding|submitGatewayTransfer|\/v1\/transfer/);
 
   // Session refresh is authenticated, server-side credential-backed, and
   // refuses a rotated wallet identity. Logout revokes the durable session and
@@ -832,7 +838,8 @@ function verifyGatewaySecurityBoundaries() {
   // Source deposit and transfer surfaces, for both modes, driven by the
   // canonical server-side network config rather than page-local constants.
   assert.match(walletPage, /confirmGatewaySourceDeposit/);
-  assert.match(walletPage, /confirmGatewayBurnSignature/);
+  assert.match(walletPage, /prepareGatewayBurnReview/);
+  assert.match(walletPage, /confirmPreparedGatewayBurnSignature/);
   assert.match(walletPage, /gatewayPrepareWallet/);
   assert.match(walletPage, /gatewaySwitchNetwork/);
   // The page must not restate any chain, token or contract constant: the

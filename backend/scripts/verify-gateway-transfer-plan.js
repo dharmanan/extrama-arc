@@ -351,7 +351,7 @@ function createFakeGateway(walletAddress, state) {
       state.estimatedSpecCounts.push(specs.length);
       return {
         intents: specs.map(() => ({ maxFeeRaw: '10000', maxBlockHeight: '999999999' })),
-        fees: { token: 'USDC' },
+        fees: { token: 'USDC', total: ethers.formatUnits(10000n * BigInt(specs.length), 6) },
       };
     },
     buildGatewayBurnIntent,
@@ -389,14 +389,16 @@ function createFeeGateway(walletAddress, balances, feeByDomain, state) {
       const feeFor = typeof feeByDomain === 'function'
         ? feeByDomain
         : (spec) => feeByDomain[spec.sourceDomain] || 0;
+      const feeValues = specs.map((spec) => String(feeFor(spec, specs)));
       return {
-        intents: specs.map((spec) => ({
-          maxFeeRaw: String(feeFor(spec, specs)),
+        intents: feeValues.map((maxFeeRaw) => ({
+          maxFeeRaw,
           maxBlockHeight: '999999999',
         })),
-        // Deliberately omit fees.total: the planner must have a safe fallback
-        // to the individual maxFee reserves when the API omits a total.
-        fees: { token: 'USDC' },
+        fees: {
+          token: 'USDC',
+          total: ethers.formatUnits(feeValues.reduce((sum, fee) => sum + BigInt(fee), 0n), 6),
+        },
       };
     },
     buildGatewayBurnIntent,
@@ -1185,7 +1187,7 @@ async function verifyExternalPartialSignatureRecovery() {
   assert.equal(signaturePattern.test(`0x${'11'.repeat(65)}`), true);
 
   const gatewayActions = fs.readFileSync(path.join(__dirname, '../../app/lib/gateway-actions.ts'), 'utf8');
-  assert.match(gatewayActions, /const firstUnsignedIndex = Math\.max\(0, started\.signatureIndex\)/);
+  assert.match(gatewayActions, /const firstUnsignedIndex = Math\.max\(0, current\.signatureIndex\)/);
   assert.doesNotMatch(gatewayActions, /signatures\.push\(""\)/);
   console.log('GATEWAY_EXTERNAL_PARTIAL_SIGNATURE_RECOVERY=PASS');
 }

@@ -173,6 +173,49 @@ function burnIntentsOf(row) {
   return row.burn_intent_json ? [row.burn_intent_json] : [];
 }
 
+function parseGatewayUsdcRaw(value) {
+  if (typeof value !== 'string' || !/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(value)) {
+    return null;
+  }
+  try {
+    return ethers.parseUnits(value, 6);
+  } catch {
+    return null;
+  }
+}
+
+// Cost review is derived only from values that are already durable or are
+// about to be written durably: the forwarding provider's quoted total fee and
+// every persisted burn intent's buffered maxFee. The browser never calculates
+// or supplies any part of this review.
+function costReviewForValues({ valueRaw, estimateFees, burnIntents }) {
+  if (!/^\d+$/.test(valueRaw) || !Array.isArray(burnIntents) || !burnIntents.length) return null;
+  const estimatedFeeRaw = parseGatewayUsdcRaw(estimateFees?.total);
+  if (estimatedFeeRaw === null) return null;
+
+  let maximumAuthorizedFeeRaw = 0n;
+  for (const intent of burnIntents) {
+    if (!intent || typeof intent.maxFee !== 'string' || !/^\d+$/.test(intent.maxFee)) return null;
+    maximumAuthorizedFeeRaw += BigInt(intent.maxFee);
+  }
+
+  const value = BigInt(valueRaw);
+  return {
+    estimatedFeeRaw: estimatedFeeRaw.toString(),
+    estimatedTotalDebitRaw: (value + estimatedFeeRaw).toString(),
+    maximumAuthorizedFeeRaw: maximumAuthorizedFeeRaw.toString(),
+    maximumTotalDebitRaw: (value + maximumAuthorizedFeeRaw).toString(),
+  };
+}
+
+function costReviewOf(row) {
+  return costReviewForValues({
+    valueRaw: row.value_raw,
+    estimateFees: row.estimate_fees_json,
+    burnIntents: burnIntentsOf(row),
+  });
+}
+
 function typedDataListOf(row) {
   if (Array.isArray(row.typed_data_list_json) && row.typed_data_list_json.length) {
     return row.typed_data_list_json;
@@ -238,6 +281,10 @@ function publicAction(row, options = {}) {
     // external wallet session signs them directly with signTypedData; Circle
     // sessions sign each through its own hosted challenge.
     typedDataList,
+    // A null review is retained for historical rows that predate durable fee
+    // estimates. New active preparation refuses to expose such a row for
+    // signing, while old rows remain readable for reconciliation.
+    costReview: costReviewOf(row),
     state: row.state,
     recovery: options.recovery || null,
     terminal: TERMINAL_FUNDING_STATES.has(row.state),
@@ -587,6 +634,15 @@ function createGatewayFundingService({
 
     const burnIntents = built.map((entry) => entry.burnIntent);
     const typedDataList = built.map((entry) => entry.typedData);
+    const costReview = costReviewForValues({
+      valueRaw: row.value_raw,
+      estimateFees: estimate.fees,
+      burnIntents,
+    });
+    // A current action without a server-derived fee review cannot cross the
+    // review/signing boundary. In particular, never replace a missing quote
+    // with zero or calculate one in the browser.
+    if (!costReview) throw new Error('gateway_cost_review_unavailable');
     // The hash covers the complete plan and the destination, not one intent,
     // so a swapped, dropped or reordered allocation cannot pass verification.
     const payloadHash = hashPayload({

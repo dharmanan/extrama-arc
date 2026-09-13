@@ -2,7 +2,7 @@
 
 // Behavioral coverage for ensureCircleFinancialAuth() in
 // app/lib/circle-actions.ts, and for every Circle financial entry point that
-// depends on it (confirmCircleGatewayFunding here; Gateway source deposit in
+// depends on it (prepareCircleGatewayFundingReview here; Gateway source deposit in
 // app/lib/gateway-actions.ts is covered by the second harness below).
 //
 // Production proof: the EXTREMA application session lasts seven days, but
@@ -41,7 +41,7 @@ function transpile(relativePath, fileName) {
 
 // ---------------------------------------------------------------------------
 // Harness 1: app/lib/circle-actions.ts itself. This is where
-// ensureCircleFinancialAuth and confirmCircleGatewayFunding both live.
+// ensureCircleFinancialAuth and prepareCircleGatewayFundingReview both live.
 // ---------------------------------------------------------------------------
 
 const CIRCLE_ACTIONS_CODE = transpile('../../app/lib/circle-actions.ts', 'circle-actions.ts');
@@ -219,7 +219,7 @@ async function testCaseD_RefreshFailureFailsClosed() {
 
 // --- CASE F: Gateway funding transfer bootstraps before any start call -----
 //
-// confirmCircleGatewayFunding lives in circle-actions.ts itself, so this
+// prepareCircleGatewayFundingReview lives in circle-actions.ts itself, so this
 // harness proves it directly: with tab auth missing, the bootstrap must
 // resolve BEFORE backendApi.wallet.startGatewayFunding is ever reached, and
 // the SAME originally requested financial intent (destinationDomain,
@@ -247,6 +247,11 @@ async function testCaseF_GatewayFundingBootstrapsBeforeStart() {
           return {
             actionId: 'gw-action-1', payloadHash: 'gw-payload-1', challengeId: null,
             signatureIndex: 0, expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+            readyToBroadcast: false, terminal: false, recovery: 'NEW',
+            costReview: {
+              estimatedFeeRaw: '10000', estimatedTotalDebitRaw: '1010000',
+              maximumAuthorizedFeeRaw: '110000', maximumTotalDebitRaw: '1110000',
+            },
           };
         },
         // No challengeId yet: the loop's guard throws immediately, so this
@@ -274,21 +279,17 @@ async function testCaseF_GatewayFundingBootstrapsBeforeStart() {
     },
   });
 
-  // The hosted challenge step is never reached in this scenario (the fake
-  // verify response never returns readyToBroadcast), which is exactly what
-  // proves the bootstrap-then-start ordering without needing to also drive a
-  // full signature loop.
-  await assert.rejects(
-    () => runner.confirmCircleGatewayFunding({
+  // The hosted challenge step is never reached in this scenario: preparation
+  // proves bootstrap-then-start ordering without crossing the signature UI.
+  const prepared = await runner.prepareCircleGatewayFundingReview({
       requestId: 'gw-request-1', destinationDomain: 26, valueRaw: '1000000',
-    }),
-    /gateway_signature_challenge_unavailable/,
-  );
+  });
 
   assert.deepEqual(callOrder, ['refresh', 'start'], 'auth must be restored before the financial start call, never after');
   assert.equal(startCalls.length, 1, 'no second, duplicate start call for the same intent');
   assert.equal(startCalls[0].destinationDomain, 26);
   assert.equal(startCalls[0].valueRaw, '1000000');
+  assert.equal(prepared.actionId, 'gw-action-1');
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +326,8 @@ async function testCaseE_GatewayDepositBootstrapsBeforeStart() {
 
   const circleActions = {
     module: {
-      confirmCircleGatewayFunding: () => { throw new Error('not used by this scenario'); },
+      prepareCircleGatewayFundingReview: () => { throw new Error('not used by this scenario'); },
+      confirmPreparedCircleGatewayFunding: () => { throw new Error('not used by this scenario'); },
       executeHostedChallenge: () => { throw new Error('this scenario never reaches a hosted challenge'); },
       ensureCircleFinancialAuth: async () => {
         callOrder.push('bootstrap');
@@ -425,12 +427,12 @@ function testCaseG_EveryEntryPointUsesSharedBootstrap() {
   );
   assert.ok(!confirmCircleEntry.includes('readCircleTabAuth()'));
 
-  const confirmCircleGatewayFunding = bodyOf(
-    'export async function confirmCircleGatewayFunding(',
+  const prepareCircleGatewayFundingReview = bodyOf(
+    'export async function prepareCircleGatewayFundingReview(',
     '\n// ---------------------------------------------------------------------------\n// Generic Circle financial actions',
   );
-  assert.match(confirmCircleGatewayFunding, /const auth = await ensureCircleFinancialAuth\(\);/);
-  assert.ok(!confirmCircleGatewayFunding.includes('readCircleTabAuth()'));
+  assert.match(prepareCircleGatewayFundingReview, /const auth = await ensureCircleFinancialAuth\(\);/);
+  assert.ok(!prepareCircleGatewayFundingReview.includes('readCircleTabAuth()'));
 
   const actionAuthIndex = source.indexOf(
     'const auth = await ensureCircleFinancialAuth();',
