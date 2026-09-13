@@ -27,7 +27,12 @@ const {
   buildGatewayTransferSpec,
   planSourceAllocation,
 } = gatewayService;
-const { createGatewayFundingService, FUNDING_TTL_MS } = require('../src/services/gatewayFundingService');
+const {
+  createGatewayFundingService,
+  FUNDING_TTL_MS,
+  PENDING_FUNDING_STATES,
+  isGatewayFundingPendingState,
+} = require('../src/services/gatewayFundingService');
 const gatewayNetworks = require('../src/services/gatewayNetworks');
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -49,6 +54,7 @@ global.fetch = async () => {
 };
 
 const rows = new Map();
+let fundingInsertAttempts = 0;
 function copy(row) { return row ? JSON.parse(JSON.stringify(row)) : null; }
 function out(row) { return { rows: row ? [copy(row)] : [], rowCount: row ? 1 : 0 }; }
 // node-pg hands a JSONB column back as parsed JS, so the fake parses on write
@@ -59,6 +65,7 @@ const fakeDb = {
   async query(sql, params) {
     const text = sql.replace(/\s+/g, ' ').trim();
     if (text.startsWith('INSERT INTO gateway_funding_actions')) {
+      fundingInsertAttempts += 1;
       const [
         id, userId, executionMode, circleWalletId, walletAddress,
         requestId, destinationDomain, valueRaw, signRequestId, expiresAt,
@@ -180,6 +187,8 @@ const fakeDb = {
 let challengeStatus = 'PENDING';
 let challengeErrorCode = null;
 let challengeCreates = 0;
+const challengeReadIds = [];
+let gatewayEstimateCalls = 0;
 let submitCalls = 0;
 let statusCalls = 0;
 let remoteStatus = 'pending';
@@ -193,6 +202,7 @@ const fakeCircle = {
   },
   async getTypedDataChallenge({ challengeId }) {
     assert.match(challengeId, /^gateway-sign-challenge-\d+$/);
+    challengeReadIds.push(challengeId);
     return {
       id: challengeId,
       type: 'SIGN_TYPEDDATA',
@@ -212,6 +222,7 @@ const fakeGateway = {
   buildGatewayTransferSpec,
   planSourceAllocation,
   async estimateGatewayTransfer(specs) {
+    gatewayEstimateCalls += 1;
     assert.ok(Array.isArray(specs));
     return {
       intents: specs.map(() => ({ maxFeeRaw: '10000', maxBlockHeight: '999999999' })),
@@ -642,7 +653,156 @@ async function verifyGatewayCostReview() {
   console.log('GATEWAY_COST_REVIEW_EN_TR_COPY=PASS');
 }
 
+// Production regression shape: preparation created one Circle challenge and
+// persisted SIGNATURE_PENDING, but the status route previously exposed that
+// same row as pending=false. The runtime portion below hydrates through the
+// route's service semantics and keeps the action untouched while its challenge
+// is still pending; static checks bind the browser confirmation to the exact
+// durable state/challenge path and forbid a second financial start.
+async function verifyCircleSignPendingRegression() {
+  assert.deepEqual(
+    [...PENDING_FUNDING_STATES],
+    ['SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING', 'SUBMITTING', 'SUBMITTED', 'RECONCILIATION_REQUIRED'],
+  );
+  for (const state of PENDING_FUNDING_STATES) {
+    assert.equal(isGatewayFundingPendingState(state), true);
+  }
+  assert.equal(isGatewayFundingPendingState('PREPARING'), false);
+  assert.equal(isGatewayFundingPendingState('READY_TO_BROADCAST'), false);
+
+  const regressionWallet = new ethers.Wallet(`0x${'77'.repeat(32)}`);
+  const regressionAuth = {
+    userId: '77777777-7777-4777-8777-777777777777',
+    circleWalletId: CIRCLE_WALLET_ID,
+    walletAddress: regressionWallet.address,
+    executionMode: 'CIRCLE_USER_WALLET',
+  };
+  const regressionGateway = {
+    ...fakeGateway,
+    async readUnifiedUsdcBalance(address) {
+      assert.equal(address.toLowerCase(), regressionWallet.address.toLowerCase());
+      return { balances: [{ domain: 6, balanceRaw: '2500000', transferable: true }] };
+    },
+  };
+  const service = createGatewayFundingService({
+    database: fakeDb,
+    gateway: regressionGateway,
+    circle: fakeCircle,
+    runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: false },
+  });
+  const requestId = '77777777-7777-4777-8777-777777777778';
+  const prepared = await service.start({
+    auth: regressionAuth,
+    userToken: 'circle_user_token_long_enough',
+    requestId,
+    destinationDomain: 0,
+    valueRaw: '2000000',
+  });
+  assert.equal(prepared.state, 'SIGNATURE_PENDING');
+  assert.equal(prepared.pending, true);
+  assert.equal(prepared.signatureIndex, 0);
+  assert.equal(typeof prepared.challengeId, 'string');
+  assert.equal(prepared.intentCount, 1);
+  assert.equal(prepared.transferId, null);
+  assert.equal(prepared.transactionHash, null);
+  assert.equal(challengeCreates, 1);
+  const preparedChallengeId = prepared.challengeId;
+  const preparedRow = rows.get(prepared.actionId);
+  assert.deepEqual(preparedRow.circle_sign_challenges_json, [preparedChallengeId]);
+  assert.deepEqual(preparedRow.signatures_json, [null]);
+  assert.equal(preparedRow.gateway_transfer_id, null);
+  assert.equal(preparedRow.gateway_transaction_hash, null);
+  const insertAttemptsAfterPrepare = fundingInsertAttempts;
+  const challengeCreatesAfterPrepare = challengeCreates;
+  const estimatesAfterPrepare = gatewayEstimateCalls;
+  const submitsAfterPrepare = submitCalls;
+
+  // This is the exact GET /gateway-funding/:actionId service path. It must
+  // report the same SIGNATURE_PENDING action as pending=true.
+  const hydrated = await service.status({ auth: regressionAuth, actionId: prepared.actionId });
+  assert.equal(hydrated.state, 'SIGNATURE_PENDING');
+  assert.equal(hydrated.pending, true);
+  assert.equal(hydrated.actionId, prepared.actionId);
+  assert.equal(hydrated.challengeId, preparedChallengeId);
+  assert.equal(hydrated.signatureIndex, 0);
+
+  // Keep the persisted action in the exact no-signature shape while the
+  // existing challenge is still pending. verifySignature() reaches the same
+  // challenge record and returns pending without creating or submitting.
+  const stillPending = await service.verifySignature({
+    auth: regressionAuth,
+    actionId: hydrated.actionId,
+    userToken: 'circle_user_token_long_enough',
+  });
+  assert.equal(stillPending.state, 'SIGNATURE_PENDING');
+  assert.equal(stillPending.pending, true);
+  assert.equal(stillPending.signatureIndex, 0);
+  assert.equal(challengeReadIds[challengeReadIds.length - 1], preparedChallengeId);
+  assert.equal(challengeCreates, challengeCreatesAfterPrepare);
+  assert.equal(fundingInsertAttempts, insertAttemptsAfterPrepare);
+  assert.equal(gatewayEstimateCalls, estimatesAfterPrepare);
+  assert.equal(submitCalls, submitsAfterPrepare);
+
+  const circleActions = fs.readFileSync(path.join(__dirname, '../../app/lib/circle-actions.ts'), 'utf8');
+  const confirmStart = circleActions.indexOf('export async function confirmPreparedCircleGatewayFunding');
+  const confirmEnd = circleActions.indexOf('// Compatibility name for existing integrations.', confirmStart);
+  assert.ok(confirmStart > -1 && confirmEnd > confirmStart);
+  const confirmBody = circleActions.slice(confirmStart, confirmEnd);
+  assert.match(confirmBody, /backendApi\.wallet\.gatewayFunding\(recovery!\.actionId\)/);
+  assert.match(confirmBody, /current\.state !== "SIGNATURE_PENDING"/);
+  assert.match(confirmBody, /current\.signatureIndex < 0/);
+  assert.match(confirmBody, /current\.challengeId\.trim\(\)\.length === 0/);
+  assert.match(confirmBody, /executeHostedChallenge\(current\.challengeId\)/);
+  assert.doesNotMatch(confirmBody, /!current\.pending/);
+  assert.doesNotMatch(confirmBody, /startGatewayFunding/);
+  assert.doesNotMatch(confirmBody, /createSignatureChallenge/);
+  assert.doesNotMatch(confirmBody, /estimateGatewayTransfer/);
+  assert.doesNotMatch(confirmBody, /submitGatewayFunding/);
+
+  const walletRoutes = fs.readFileSync(path.join(__dirname, '../src/routes/wallet.js'), 'utf8');
+  const routeStart = walletRoutes.indexOf("router.get('/gateway-funding/:actionId'");
+  const routeEnd = walletRoutes.indexOf("router.post('/gateway-funding/:actionId/submit'", routeStart);
+  assert.ok(routeStart > -1 && routeEnd > routeStart);
+  const routeBody = walletRoutes.slice(routeStart, routeEnd);
+  assert.match(routeBody, /gatewayFundingService\.status\(\{ auth: req\.auth, actionId: req\.params\.actionId \}\)/);
+
+  const serviceSource = fs.readFileSync(path.join(__dirname, '../src/services/gatewayFundingService.js'), 'utf8');
+  assert.match(serviceSource, /pending: isGatewayFundingPendingState\(row\.state\)/);
+  const statusStart = serviceSource.indexOf('async function status({ auth, actionId })');
+  const statusEnd = serviceSource.indexOf('async function current({ auth })', statusStart);
+  assert.ok(statusStart > -1 && statusEnd > statusStart);
+  assert.match(serviceSource.slice(statusStart, statusEnd), /return expose\(row\);/);
+
+  const walletPage = fs.readFileSync(path.join(__dirname, '../../app/wallet/page.tsx'), 'utf8');
+  const i18nSource = fs.readFileSync(path.join(__dirname, '../../app/i18n.tsx'), 'utf8');
+  assert.match(walletPage, /gateway_signature_challenge_unavailable/);
+  assert.match(walletPage, /setGatewayFundingError\(t\.wallet\.gatewaySigningStartFailed\)/);
+  assert.match(i18nSource, /gatewaySigningStartFailed: "Signing could not be started\./);
+  assert.match(i18nSource, /gatewaySigningStartFailed: "İmzalama başlatılamadı\./);
+
+  console.log('GATEWAY_SIGN_PENDING_STATUS_CONSISTENT=PASS');
+  console.log('GATEWAY_SIGN_CONFIRM_USES_DURABLE_STATE=PASS');
+  console.log('GATEWAY_SIGN_EXISTING_CHALLENGE_RESUMED=PASS');
+  console.log('GATEWAY_SIGN_NO_SECOND_ACTION=PASS');
+  console.log('GATEWAY_SIGN_NO_SECOND_CHALLENGE=PASS');
+  console.log('GATEWAY_SIGN_NO_REESTIMATE=PASS');
+  console.log('GATEWAY_SIGN_NO_AUTOSUBMIT=PASS');
+  console.log('GATEWAY_SIGN_STAGE_ERROR_COPY=PASS');
+  console.log('GATEWAY_REVIEW_TO_SIGN_PRODUCTION_REGRESSION=PASS');
+
+  // Keep the pre-existing lifecycle assertions deterministic: this isolated
+  // regression row belongs to another user, but the shared fixture counters
+  // must not change the historical challenge-id expectations below.
+  fundingInsertAttempts = 0;
+  challengeCreates = 0;
+  challengeReadIds.length = 0;
+  gatewayEstimateCalls = 0;
+  submitCalls = 0;
+  statusCalls = 0;
+}
+
 (async () => {
+  await verifyCircleSignPendingRegression();
   await verifyGatewayCostReview();
   const accepts = verifyPreparingSchemaLifecycle();
   await verifyPreparingPlanlessLifecycle(accepts);

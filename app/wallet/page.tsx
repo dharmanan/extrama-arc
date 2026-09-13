@@ -1697,6 +1697,12 @@ export default function WalletPage() {
         setGatewayFundingError(t.wallet.gatewayInsufficientAfterFees);
       } else if (cause instanceof Error && cause.message === "gateway_cost_review_unavailable") {
         setGatewayFundingError(t.wallet.gatewayCostReviewUnavailable);
+      } else if (cause instanceof Error && (
+        cause.message === "gateway_signature_challenge_unavailable" ||
+        cause.message === "gateway_signature_required" ||
+        cause.message === "gateway_signature_challenge_failed"
+      )) {
+        setGatewayFundingError(t.wallet.gatewaySigningStartFailed);
       } else {
         setGatewayFundingError(t.wallet.gatewayTransferPreparationFailed);
       }

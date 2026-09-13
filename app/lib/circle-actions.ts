@@ -651,7 +651,12 @@ export async function confirmPreparedCircleGatewayFunding(
       // pre-submission terminal response.
       return current;
     }
-    if (!current.pending || current.signatureIndex < 0 || !current.challengeId) {
+    if (
+      current.state !== "SIGNATURE_PENDING" ||
+      current.signatureIndex < 0 ||
+      typeof current.challengeId !== "string" ||
+      current.challengeId.trim().length === 0
+    ) {
       throw new Error("gateway_signature_challenge_unavailable");
     }
 

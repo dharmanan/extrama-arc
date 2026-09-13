@@ -30,6 +30,14 @@ const ACTIVE_FUNDING_STATES = Object.freeze([
   'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING',
   'READY_TO_BROADCAST', 'SUBMITTING', 'SUBMITTED', 'RECONCILIATION_REQUIRED',
 ]);
+// One public meaning of "pending": the action still has work that must be
+// resumed, reconciled or explicitly submitted. PREPARING and READY_TO_BROADCAST
+// are deliberately excluded: the former is only an internal preparation
+// phase, while the latter is an explicit submit boundary.
+const PENDING_FUNDING_STATES = new Set([
+  'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING',
+  'SUBMITTING', 'SUBMITTED', 'RECONCILIATION_REQUIRED',
+]);
 const PRE_SUBMISSION_DISCARD_STATES = Object.freeze([
   'PREPARING', 'SIGN_CHALLENGE_CREATING', 'SIGNATURE_PENDING', 'READY_TO_BROADCAST',
 ]);
@@ -138,6 +146,10 @@ function assertInput({ requestId, destinationDomain, valueRaw }) {
 
 function isExpired(row) {
   return new Date(row.expires_at).getTime() <= Date.now();
+}
+
+function isGatewayFundingPendingState(state) {
+  return PENDING_FUNDING_STATES.has(state);
 }
 
 // --- Row shape compatibility ---------------------------------------------
@@ -288,7 +300,7 @@ function publicAction(row, options = {}) {
     state: row.state,
     recovery: options.recovery || null,
     terminal: TERMINAL_FUNDING_STATES.has(row.state),
-    pending: options.pending === true,
+    pending: isGatewayFundingPendingState(row.state),
     readyToBroadcast: row.state === 'READY_TO_BROADCAST',
     // Submission capability is a server decision. The browser may render
     // this boolean, but it cannot enable or override the submit route.
@@ -882,7 +894,7 @@ function createGatewayFundingService({
     }
     let row = await markExpired(await findById(auth, actionId));
     if (['SUBMITTED', 'COMPLETED', 'FAILED', 'RECONCILIATION_REQUIRED'].includes(row.state)) {
-      return expose(row, { pending: row.state === 'SUBMITTED' || row.state === 'RECONCILIATION_REQUIRED' });
+      return expose(row);
     }
     if (row.state !== 'READY_TO_BROADCAST') {
       throw new Error('gateway_funding_not_ready');
@@ -900,7 +912,7 @@ function createGatewayFundingService({
     );
     if (!reserved.rows[0]) {
       row = await findById(auth, actionId);
-      return expose(row, { pending: true });
+      return expose(row);
     }
     row = reserved.rows[0];
 
@@ -916,14 +928,14 @@ function createGatewayFundingService({
         requestId: row.request_id,
       });
       row = await updateState(row, 'SUBMITTED', { transferId: submitted.transferId });
-      return expose(row, { pending: true });
+      return expose(row);
     } catch (error) {
       if (DETERMINISTIC_TRANSFER_REJECTION_CODES.has(error?.message)) {
         row = await updateState(row, 'FAILED', { lastError: error.message });
         return expose(row);
       }
       row = await updateState(row, 'RECONCILIATION_REQUIRED', { lastError: 'gateway_transfer_submit_unknown' });
-      return expose(row, { pending: true });
+      return expose(row);
     }
   }
 
@@ -956,9 +968,7 @@ function createGatewayFundingService({
     if (['SUBMITTED', 'SUBMITTING', 'RECONCILIATION_REQUIRED'].includes(row.state)) {
       row = await reconcileRemote(auth, row);
     }
-    return expose(row, {
-      pending: ['SUBMITTED', 'SUBMITTING', 'RECONCILIATION_REQUIRED'].includes(row.state),
-    });
+    return expose(row);
   }
 
   async function current({ auth }) {
@@ -1003,8 +1013,6 @@ function createGatewayFundingService({
     }
     if (created.disposition === 'CONFLICT') {
       return expose(row, {
-        pending: ['SIGNATURE_PENDING', 'SUBMITTING', 'SUBMITTED', 'RECONCILIATION_REQUIRED']
-          .includes(row.state),
         recovery: 'CONFLICT',
       });
     }
@@ -1019,16 +1027,13 @@ function createGatewayFundingService({
         row = await createSignatureChallenge(auth, row, userToken);
       }
     }
-    return expose(row, {
-      pending: row.state === 'SIGNATURE_PENDING',
-      recovery: created.disposition,
-    });
+    return expose(row, { recovery: created.disposition });
   }
 
   async function get({ auth, actionId }) {
     assertHumanGatewaySession(auth);
     const row = await markExpired(await findById(auth, actionId));
-    return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    return expose(row);
   }
 
   /**
@@ -1113,7 +1118,7 @@ function createGatewayFundingService({
         if (!challengeId) throw new Error('gateway_signature_challenge_unavailable');
         const challenge = await circle.getTypedDataChallenge({ userToken, challengeId });
         if (!challenge || challenge.status === 'PENDING' || challenge.status === 'IN_PROGRESS') {
-          return expose(row, { pending: true });
+          return expose(row);
         }
         if (challenge.status !== 'COMPLETE') {
           const failure = challenge.errorCode === 156026
@@ -1146,17 +1151,17 @@ function createGatewayFundingService({
       if (!batch && !isCircle) {
         // One signature per call for a single-signature external submission:
         // report the next allocation instead of looping on the same value.
-        return expose(row, { pending: true });
+        return expose(row);
       }
       if (isCircle) {
         // Issue the next allocation's challenge and hand it back so the
         // browser can run it. No further signature exists yet.
         row = await createSignatureChallenge(auth, row, userToken);
-        return expose(row, { pending: true });
+        return expose(row);
       }
     }
 
-    return expose(row, { pending: row.state === 'SIGNATURE_PENDING' });
+    return expose(row);
   }
 
   return { start, get, verifySignature, submit, discard, status, current };
@@ -1169,6 +1174,8 @@ module.exports = {
   canonicalJson,
   hashPayload,
   ACTIVE_FUNDING_STATES,
+  PENDING_FUNDING_STATES,
+  isGatewayFundingPendingState,
   PRE_SUBMISSION_DISCARD_STATES,
   FEE_AWARE_MAX_ITERATIONS,
   FEE_AWARE_MAX_ESTIMATE_CALLS,
