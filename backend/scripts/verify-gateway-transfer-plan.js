@@ -36,6 +36,11 @@ const {
   createGatewayFundingService,
   FEE_AWARE_MAX_ESTIMATE_CALLS,
   FEE_AWARE_MAX_ITERATIONS,
+  MAX_FEE_HEADROOM_BPS,
+  MAX_FEE_BPS_DENOMINATOR,
+  MIN_MAX_FEE_HEADROOM_RAW,
+  MAX_BUFFERED_MAX_FEE_RAW,
+  bufferGatewayMaxFee,
   hashPayload,
 } = require('../src/services/gatewayFundingService');
 
@@ -322,9 +327,9 @@ function createFakeDb(rows) {
 
 // Base 1.00, OP 0.75, Ethereum 0.25 and a request for 2.00 USDC, which is the
 // case that has no single-source answer at all.
-// Each source includes a 0.01 USDC fee reserve. The requested plan itself is
+// Each source includes a 0.11 USDC buffered fee reserve. The requested plan itself is
 // still exactly 2.00 USDC; the extra balance is never allocated.
-const SPREAD_BALANCES = [balance(6, '1010000'), balance(2, '760000'), balance(0, '260000')];
+const SPREAD_BALANCES = [balance(6, '1110000'), balance(2, '860000'), balance(0, '360000')];
 const SPREAD_PLAN = [
   { sourceDomain: 6, valueRaw: '1000000' },
   { sourceDomain: 2, valueRaw: '750000' },
@@ -449,7 +454,7 @@ async function verifyFeeAwarePlanner() {
   // candidate covers the requested value and is checked against each fee.
   const spread = await prepare({
     requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3',
-    balances: [balance(6, '1005000'), balance(2, '20000')],
+    balances: [balance(6, '1105000'), balance(2, '120000')],
     feeByDomain: { 6: '10000', 2: '1000' },
     valueRaw: '1000000',
   });
@@ -475,13 +480,13 @@ async function verifyFeeAwarePlanner() {
   // the same source plan, payload hash and per-intent salt.
   const first = await prepare({
     requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5',
-    balances: [balance(6, '1005000'), balance(2, '20000')],
+    balances: [balance(6, '1105000'), balance(2, '120000')],
     feeByDomain: { 6: '10000', 2: '1000' },
     valueRaw: '1000000',
   });
   const second = await prepare({
     requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5',
-    balances: [balance(6, '1005000'), balance(2, '20000')],
+    balances: [balance(6, '1105000'), balance(2, '120000')],
     feeByDomain: { 6: '10000', 2: '1000' },
     valueRaw: '1000000',
   });
@@ -489,6 +494,36 @@ async function verifyFeeAwarePlanner() {
   assert.equal(second.result.payloadHash, first.result.payloadHash);
   assert.deepEqual(second.result.typedDataList, first.result.typedDataList);
   console.log('GATEWAY_FEE_SAFE_PLANNER=PASS');
+}
+
+function verifyMaxFeeHeadroom() {
+  assert.equal(MAX_FEE_HEADROOM_BPS, 1000n);
+  assert.equal(MAX_FEE_BPS_DENOMINATOR, 10000n);
+  assert.equal(MIN_MAX_FEE_HEADROOM_RAW, 100000n);
+  assert.equal(MAX_BUFFERED_MAX_FEE_RAW, 10000000n);
+  assert.equal(bufferGatewayMaxFee('0'), '100000');
+  assert.equal(bufferGatewayMaxFee('1000000'), '1100000');
+
+  // Exact production regression: 1,204,701 + max(ceil(10%), 100,000)
+  // covers the read-only re-estimate of 1,257,798 without changing the signed
+  // typed data after the user approves it.
+  const observedSignedMaxFee = '1204701';
+  const observedFreshEstimate = '1257798';
+  const bufferedProductionMaxFee = bufferGatewayMaxFee(observedSignedMaxFee);
+  assert.equal(bufferedProductionMaxFee, '1325172');
+  assert.ok(BigInt(bufferedProductionMaxFee) >= BigInt(observedFreshEstimate));
+  assert.equal(BigInt(observedFreshEstimate) - BigInt(observedSignedMaxFee), 53097n);
+  console.log('GATEWAY_MAXFEE_HEADROOM=PASS');
+  console.log('GATEWAY_MAXFEE_HEADROOM_MINIMUM=PASS');
+  console.log('GATEWAY_MAXFEE_HEADROOM_PERCENT=PASS');
+  console.log('GATEWAY_ETHEREUM_FEE_DRIFT_REGRESSION=PASS');
+
+  // The buffered ceiling is strict: 9,090,909 + ceil(10%) reaches exactly
+  // 10 USDC, while the next raw estimate is rejected rather than expanded.
+  assert.equal(bufferGatewayMaxFee('9090909'), '10000000');
+  assert.throws(() => bufferGatewayMaxFee('9090910'), /gateway_max_fee_invalid/);
+  assert.throws(() => bufferGatewayMaxFee('10000000'), /gateway_max_fee_invalid/);
+  console.log('GATEWAY_MAXFEE_HEADROOM_BOUNDED=PASS');
 }
 
 async function verifyLiveArbitrumFeeAwareRegression() {
@@ -542,8 +577,8 @@ async function verifyLiveArbitrumFeeAwareRegression() {
     feeByDomain: liveFeeFor,
   });
   assert.deepEqual(live.result.sourcePlan, [
-    { sourceDomain: 2, valueRaw: '579222' },
-    { sourceDomain: 3, valueRaw: '420778' },
+    { sourceDomain: 2, valueRaw: '479222' },
+    { sourceDomain: 3, valueRaw: '520778' },
   ]);
   assert.ok(live.state.estimatedPlans.some((plan) => allocationKey(plan) === '2:999999|3:1'));
   assert.ok(live.state.estimatedPlans.some((plan) => allocationKey(plan) === allocationKey(live.result.sourcePlan)));
@@ -566,13 +601,17 @@ async function verifyLiveArbitrumFeeAwareRegression() {
     assert.equal(live.result.sourcePlan[index].valueRaw, intent.spec.value);
     assert.equal(
       String(maxFee),
-      liveFeeFor(intent.spec, persisted.burn_intents_json.map((entry) => entry.spec)),
+      bufferGatewayMaxFee(liveFeeFor(intent.spec, persisted.burn_intents_json.map((entry) => entry.spec))),
     );
   });
   assert.equal(exactTotal, 1000000n);
   console.log('GATEWAY_FEE_AWARE_FINAL_QUOTE_SOLVENT=PASS');
+  console.log('GATEWAY_BUFFERED_SOURCE_SOLVENCY=PASS');
+  console.log('GATEWAY_BUFFERED_MULTI_SOURCE_SOLVENCY=PASS');
   console.log('GATEWAY_FEE_AWARE_EXACT_SUM=PASS');
+  console.log('GATEWAY_BUFFERED_PLAN_EXACT_SUM=PASS');
   console.log('GATEWAY_FEE_AWARE_NO_ZERO_INTENTS=PASS');
+  console.log('GATEWAY_BUFFERED_PLAN_NO_ZERO_INTENTS=PASS');
   console.log('GATEWAY_FEE_AWARE_REQUOTE=PASS');
   console.log('GATEWAY_FEE_AWARE_BOUNDED_CONVERGENCE=PASS');
 
@@ -599,7 +638,7 @@ async function verifyLiveArbitrumFeeAwareRegression() {
 
   const threeSource = await prepare({
     requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa04',
-    balances: [balance(6, '600000'), balance(2, '500000'), balance(0, '400000')],
+    balances: [balance(6, '700000'), balance(2, '600000'), balance(0, '500000')],
     feeByDomain: { 6: '100000', 2: '100000', 0: '100000' },
   });
   assert.equal(threeSource.result.sourcePlan.length, 3);
@@ -620,18 +659,18 @@ async function verifyLiveArbitrumFeeAwareRegression() {
     feeByDomain: changingFees,
   });
   assert.deepEqual(requoted.result.sourcePlan, [
-    { sourceDomain: 2, valueRaw: '650000' },
-    { sourceDomain: 6, valueRaw: '350000' },
+    { sourceDomain: 2, valueRaw: '550000' },
+    { sourceDomain: 6, valueRaw: '450000' },
   ]);
-  assert.ok(requoted.state.estimatedPlans.some((plan) => allocationKey(plan) === '2:600000|6:400000'));
+  assert.ok(requoted.state.estimatedPlans.some((plan) => allocationKey(plan) === '2:500000|6:500000'));
   assert.ok(requoted.state.estimateCalls <= FEE_AWARE_MAX_ITERATIONS + 2);
 
   // A quote-driven A -> B -> A cycle is not treated as convergence. The
   // subset fails closed instead of accepting an unquoted or stale allocation.
   const oscillatingFees = (spec, specs) => {
     if (specs.length === 1) return '300000';
-    if (spec.sourceDomain === 2) return spec.value === '999999' ? '600000' : '100000';
-    return spec.value === '1' ? '100000' : '200000';
+    if (spec.sourceDomain === 2) return spec.value === '500000' ? '100000' : '600000';
+    return '200000';
   };
   await rejectsCode(
     () => prepare({
@@ -653,14 +692,14 @@ async function verifyLiveArbitrumFeeAwareRegression() {
   };
   const lowerFeeTie = await prepare({
     requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa07',
-    balances: [balance(0, '600000'), balance(2, '600000'), balance(6, '600000')],
+    balances: [balance(0, '700000'), balance(2, '700000'), balance(6, '700000')],
     feeByDomain: equalCountFees,
   });
   assert.deepEqual(lowerFeeTie.result.sourcePlan, [
     { sourceDomain: 0, valueRaw: '550000' },
     { sourceDomain: 2, valueRaw: '450000' },
   ]);
-  assert.ok(lowerFeeTie.rows.get(lowerFeeTie.result.actionId).burn_intents_json.every((intent) => intent.maxFee === '50000'));
+  assert.ok(lowerFeeTie.rows.get(lowerFeeTie.result.actionId).burn_intents_json.every((intent) => intent.maxFee === '150000'));
   console.log('GATEWAY_FEE_AWARE_LOWEST_FEE_TIEBREAK=PASS');
 
   // The live-shaped result is a deterministic replay: same request, balances
@@ -723,11 +762,11 @@ async function verifyBoundedPlanner() {
     const rows = new Map();
     const state = { estimateCalls: 0, estimatedSpecCounts: [] };
     const service = createGatewayFundingService({
-      database: createFakeDb(rows),
+        database: createFakeDb(rows),
       gateway: createFeeGateway(wallet, [
         balance(26, '10000'),
-        balance(6, '1005000'),
-        balance(2, '20000'),
+        balance(6, '1100000'),
+        balance(2, '120000'),
         balance(3, '10000'),
         balance(0, '10000'),
       ], { 26: '1000', 6: '10000', 2: '1000', 3: '1000', 0: '1000' }, state),
@@ -834,6 +873,7 @@ async function verifyCircleMultiSource() {
   assert.equal(challengeCreates, 1);
   assert.deepEqual(replay.sourcePlan, SPREAD_PLAN);
   assert.equal(state.estimateCalls, 5, 'a replay never re-prices the plan');
+  console.log('GATEWAY_NO_AUTOMATIC_RESIGN=PASS');
 
   // Sign allocation by allocation. Each step issues the next challenge and the
   // action stays short of READY_TO_BROADCAST until every intent is signed.
@@ -941,8 +981,8 @@ async function verifyMultiSourceTampering() {
   };
   const rows = new Map();
   const state = { estimateCalls: 0, estimatedSpecCounts: [], submitCalls: 0, submitted: null };
-  const service = createGatewayFundingService({
-    database: createFakeDb(rows),
+    const service = createGatewayFundingService({
+      database: createFakeDb(rows),
     gateway: createFakeGateway(wallet.address, state),
     circle: {},
     runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: true },

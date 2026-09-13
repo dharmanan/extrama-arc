@@ -309,6 +309,7 @@ async function verifyBurnIntent() {
   }
 
   console.log('GATEWAY_BURN_INTENT=PASS');
+  console.log('GATEWAY_NO_POST_SIGN_FEE_MUTATION=PASS');
 }
 
 async function verifyEstimate() {
@@ -474,6 +475,56 @@ async function verifyForwardingClient() {
     ),
     /gateway_transfer_submit_unknown/,
   );
+
+  // A deterministic provider rejection is read exactly once. Only the bounded
+  // status/code/type/message/reason projection survives on the internal error;
+  // raw bodies, signatures and authorization material never do.
+  let rejectionTextReads = 0;
+  let rejectionJsonReads = 0;
+  let rejectionError;
+  await assert.rejects(
+    () => submitGatewayTransfer(
+      { requests: [{ burnIntent, signature }], requestId },
+      async () => ({
+        ok: false,
+        status: 400,
+        async text() {
+          rejectionTextReads += 1;
+          return JSON.stringify({
+            errorCode: 'MAX_FEE_TOO_LOW',
+            errorType: 'VALIDATION_ERROR',
+            message: 'Forwarding fee changed; max fee is too low',
+            reason: 'read-only fee drift',
+            signature: `0x${'ef'.repeat(65)}`,
+            authorization: 'Bearer should-never-be-retained',
+          });
+        },
+        async json() {
+          rejectionJsonReads += 1;
+          throw new Error('json() must not be called after text()');
+        },
+      }),
+    ),
+    (error) => {
+      rejectionError = error;
+      return error?.message === 'gateway_transfer_fee_rejected';
+    },
+  );
+  assert.equal(rejectionTextReads, 1);
+  assert.equal(rejectionJsonReads, 0);
+  assert.deepEqual(rejectionError.gatewayDiagnostic, {
+    status: 400,
+    providerCode: 'MAX_FEE_TOO_LOW',
+    providerType: 'VALIDATION_ERROR',
+    providerMessage: 'Forwarding fee changed; max fee is too low',
+    providerReason: 'read-only fee drift',
+  });
+  assert.ok(!JSON.stringify(rejectionError).includes(signature));
+  assert.ok(!JSON.stringify(rejectionError).includes('should-never-be-retained'));
+  assert.ok(rejectionError.gatewayDiagnostic.providerMessage.length <= 160);
+  console.log('GATEWAY_TRANSFER_REJECTION_BODY_CAPTURED=PASS');
+  console.log('GATEWAY_TRANSFER_REJECTION_DIAGNOSTICS_BOUNDED=PASS');
+  console.log('GATEWAY_TRANSFER_REJECTION_NO_SECRET_PERSISTENCE=PASS');
   await assert.rejects(
     () => readGatewayTransferStatus(transferId, async () => ({ ok: false, status: 404 })),
     /gateway_transfer_not_found/,

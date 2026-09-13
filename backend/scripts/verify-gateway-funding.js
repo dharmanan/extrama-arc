@@ -896,6 +896,70 @@ async function verifyPreparingPlanlessLifecycle(accepts) {
     'gateway_funding_discard_not_allowed',
   );
 
+  // A deterministic Gateway rejection is terminal only because the provider
+  // rejected it before acceptance. It persists the bounded internal
+  // classification and is never submitted again on replay.
+  const rejectionWallet = new ethers.Wallet(`0x${'22'.repeat(32)}`);
+  const rejectionAuth = {
+    userId: '66666666-6666-4666-8666-666666666661',
+    circleWalletId: CIRCLE_WALLET_ID,
+    walletAddress: rejectionWallet.address,
+    executionMode: 'CIRCLE_USER_WALLET',
+  };
+  let rejectedSubmitCalls = 0;
+  const rejectedGateway = {
+    ...fakeGateway,
+    async readUnifiedUsdcBalance(address) {
+      assert.equal(address.toLowerCase(), rejectionWallet.address.toLowerCase());
+      return { balances: [{ domain: 6, balanceRaw: '2500000', transferable: true }] };
+    },
+    async submitGatewayTransfer() {
+      rejectedSubmitCalls += 1;
+      throw Object.assign(new Error('gateway_transfer_fee_rejected'), {
+        gatewayDiagnostic: {
+          status: 400,
+          providerCode: 'MAX_FEE_TOO_LOW',
+          providerType: 'VALIDATION_ERROR',
+          providerMessage: 'Forwarding fee changed',
+        },
+      });
+    },
+  };
+  const rejectedService = createGatewayFundingService({
+    database: fakeDb,
+    gateway: rejectedGateway,
+    circle: fakeCircle,
+    runtimeConfig: { EXTREMA_ENABLE_GATEWAY_BROADCAST: true },
+  });
+  const rejectedStart = await rejectedService.start({
+    auth: rejectionAuth,
+    userToken: 'circle_user_token_long_enough',
+    requestId: '66666666-6666-4666-8666-666666666662',
+    destinationDomain: ARC_DOMAIN,
+    valueRaw: '1000000',
+  });
+  const rejectedTypedData = rows.get(rejectedStart.actionId).typed_data_list_json[0];
+  const rejectedSignature = await rejectionWallet.signTypedData(
+    rejectedTypedData.domain, rejectedTypedData.types, rejectedTypedData.message,
+  );
+  const rejectedReady = await rejectedService.verifySignature({
+    auth: rejectionAuth,
+    actionId: rejectedStart.actionId,
+    userToken: 'circle_user_token_long_enough',
+    signature: rejectedSignature,
+  });
+  assert.equal(rejectedReady.state, 'READY_TO_BROADCAST');
+  const rejected = await rejectedService.submit({ auth: rejectionAuth, actionId: rejectedStart.actionId });
+  assert.equal(rejected.state, 'FAILED');
+  assert.equal(rows.get(rejectedStart.actionId).last_error, 'gateway_transfer_fee_rejected');
+  assert.equal(rows.get(rejectedStart.actionId).gateway_transfer_id, null);
+  assert.equal(rows.get(rejectedStart.actionId).gateway_transaction_hash, null);
+  const rejectedReplay = await rejectedService.submit({ auth: rejectionAuth, actionId: rejectedStart.actionId });
+  assert.equal(rejectedReplay.state, 'FAILED');
+  assert.equal(rejectedSubmitCalls, 1);
+  console.log('GATEWAY_TRANSFER_REJECTION_CLASSIFICATION_PERSISTED=PASS');
+  console.log('GATEWAY_NO_AUTOMATIC_SUBMIT_RETRY=PASS');
+
   // Explicit server gate remains closed by default, independent of browser
   // retries or refreshes.
   const gatedService = createGatewayFundingService({ database: fakeDb, gateway: fakeGateway, circle: fakeCircle });
@@ -1067,7 +1131,14 @@ async function verifyPreparingPlanlessLifecycle(accepts) {
   assert.match(circleActions, /isGatewayFundingTerminalWithoutSubmission/);
   assert.match(gatewayActions, /backendApi\.wallet\.gatewayFunding\(recovery\.actionId\)/);
   assert.match(walletPage, /gatewayTransferAuthorizationFailed/);
+  assert.match(walletPage, /function clearStaleGatewayFundingTerminalNotice()/);
+  assert.match(walletPage, /!gatewayFundingStatus && !gatewayFundingRecovery && gatewayFundingAuthorityState === "none"/);
+  assert.ok(
+    (walletPage.match(/clearStaleGatewayFundingTerminalNotice()/g) || []).length >= 3,
+    'fresh transfer controls must clear only stale idle terminal notices',
+  );
   console.log('GATEWAY_FUNDING_TERMINAL_RECOVERY_RELEASE=PASS');
+  console.log('GATEWAY_STALE_TERMINAL_NOTICE_CLEARS_ON_FRESH_START=PASS');
 
   // A completed action has a dedicated browser cleanup path: it clears local
   // recovery, resets the editable amount, retains a human notice, and only
@@ -1153,9 +1224,10 @@ async function verifyPreparingPlanlessLifecycle(accepts) {
   );
   assert.match(checklist, /GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS/);
   assert.match(checklist, /Gateway -> Arc FULLY LIVE PROVEN/);
-  for (const destination of ['Base Sepolia', 'OP Sepolia', 'Arbitrum Sepolia', 'Ethereum Sepolia']) {
-    assert.match(checklist, new RegExp(`${destination}.*NOT LIVE PROVEN as Gateway destination`));
-  }
+  assert.match(
+    checklist,
+    /Current outbound destination matrix: Arc Testnet, Base Sepolia, OP Sepolia and Arbitrum Sepolia are \*\*FULLY LIVE PROVEN as Gateway destinations\*\*; Ethereum Sepolia remains \*\*OPEN \/ NOT LIVE PROVEN as a Gateway destination\*\*/,
+  );
   console.log('GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS');
 
   console.log('GATEWAY_FUNDING=PASS');

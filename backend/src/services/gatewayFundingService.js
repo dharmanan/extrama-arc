@@ -38,6 +38,33 @@ const FEE_AWARE_MAX_ITERATIONS = 6;
 // plans are quoted once; multi-source subsets may be requoted at most six
 // times, so preparation can make no more than 5 + 26 * 6 = 161 estimates.
 const FEE_AWARE_MAX_ESTIMATE_CALLS = 161;
+const MAX_FEE_HEADROOM_BPS = 1_000n;
+const MAX_FEE_BPS_DENOMINATOR = 10_000n;
+const MIN_MAX_FEE_HEADROOM_RAW = 100_000n;
+// Ten USDC is intentionally generous for the supported testnet forwarding
+// path, while keeping a malformed provider quote from becoming unbounded.
+const MAX_BUFFERED_MAX_FEE_RAW = 10_000_000n;
+const DETERMINISTIC_TRANSFER_REJECTION_CODES = new Set([
+  'gateway_transfer_fee_rejected',
+  'gateway_transfer_invalid_intent',
+  'gateway_transfer_rejected',
+]);
+
+function bufferGatewayMaxFee(estimatedMaxFeeRaw) {
+  if (typeof estimatedMaxFeeRaw !== 'string' || !/^\d+$/.test(estimatedMaxFeeRaw)) {
+    throw new Error('gateway_max_fee_invalid');
+  }
+  const estimated = BigInt(estimatedMaxFeeRaw);
+  const percentHeadroom = (
+    estimated * MAX_FEE_HEADROOM_BPS + MAX_FEE_BPS_DENOMINATOR - 1n
+  ) / MAX_FEE_BPS_DENOMINATOR;
+  const headroom = percentHeadroom > MIN_MAX_FEE_HEADROOM_RAW
+    ? percentHeadroom
+    : MIN_MAX_FEE_HEADROOM_RAW;
+  const buffered = estimated + headroom;
+  if (buffered > MAX_BUFFERED_MAX_FEE_RAW) throw new Error('gateway_max_fee_invalid');
+  return buffered.toString();
+}
 
 function canonicalJson(value) {
   if (value === null) return 'null';
@@ -406,17 +433,25 @@ function createGatewayFundingService({
           index,
         }),
       }));
-      const estimate = await gateway.estimateGatewayTransfer(specs);
+      const providerEstimate = await gateway.estimateGatewayTransfer(specs);
       if (
-        !estimate || !Array.isArray(estimate.intents) || estimate.intents.length !== specs.length ||
-        estimate.intents.some((intent) => (
+        !providerEstimate || !Array.isArray(providerEstimate.intents) ||
+        providerEstimate.intents.length !== specs.length ||
+        providerEstimate.intents.some((intent) => (
           !intent || typeof intent.maxFeeRaw !== 'string' || !/^\d+$/.test(intent.maxFeeRaw) ||
           typeof intent.maxBlockHeight !== 'string' || !/^\d+$/.test(intent.maxBlockHeight)
         ))
       ) {
         throw new Error('gateway_response_invalid');
       }
-      return { plan, specs, estimate };
+      const estimate = {
+        ...providerEstimate,
+        intents: providerEstimate.intents.map((intent) => ({
+          ...intent,
+          maxFeeRaw: bufferGatewayMaxFee(intent.maxFeeRaw),
+        })),
+      };
+      return { plan, specs, estimate, providerEstimate };
     }
 
     // Price every one-source option first. A safe one-source plan wins before
@@ -427,14 +462,15 @@ function createGatewayFundingService({
         allocations: [{ sourceDomain: source.domain, valueRaw: row.value_raw }],
       };
       const priced = await pricePlan(oneSourcePlan);
-      const feeRaw = BigInt(priced.estimate.intents[0].maxFeeRaw);
-      estimates.push({ ...priced, source, feeRaw });
+      const estimatedFeeRaw = BigInt(priced.providerEstimate.intents[0].maxFeeRaw);
+      const bufferedFeeRaw = BigInt(priced.estimate.intents[0].maxFeeRaw);
+      estimates.push({ ...priced, source, estimatedFeeRaw, feeRaw: bufferedFeeRaw });
     }
 
     const validOneSource = estimates
       .filter((candidate) => BigInt(candidate.source.balanceRaw) >= requested + candidate.feeRaw)
       .sort((left, right) => (
-        left.feeRaw < right.feeRaw ? -1 : left.feeRaw > right.feeRaw ? 1
+        left.estimatedFeeRaw < right.estimatedFeeRaw ? -1 : left.estimatedFeeRaw > right.estimatedFeeRaw ? 1
           : left.source.domain - right.source.domain
       ));
     let selected = validOneSource[0] || null;
@@ -524,8 +560,8 @@ function createGatewayFundingService({
           }
         }
         pricedCandidates.sort((left, right) => {
-          const leftFee = feeScore(left.estimate);
-          const rightFee = feeScore(right.estimate);
+          const leftFee = feeScore(left.providerEstimate || left.estimate);
+          const rightFee = feeScore(right.providerEstimate || right.estimate);
           if (leftFee !== rightFee) return leftFee < rightFee ? -1 : 1;
           return JSON.stringify(left.plan.allocations).localeCompare(JSON.stringify(right.plan.allocations));
         });
@@ -826,8 +862,8 @@ function createGatewayFundingService({
       row = await updateState(row, 'SUBMITTED', { transferId: submitted.transferId });
       return expose(row, { pending: true });
     } catch (error) {
-      if (error?.message === 'gateway_transfer_rejected') {
-        row = await updateState(row, 'FAILED', { lastError: 'gateway_transfer_rejected' });
+      if (DETERMINISTIC_TRANSFER_REJECTION_CODES.has(error?.message)) {
+        row = await updateState(row, 'FAILED', { lastError: error.message });
         return expose(row);
       }
       row = await updateState(row, 'RECONCILIATION_REQUIRED', { lastError: 'gateway_transfer_submit_unknown' });
@@ -1080,6 +1116,11 @@ module.exports = {
   PRE_SUBMISSION_DISCARD_STATES,
   FEE_AWARE_MAX_ITERATIONS,
   FEE_AWARE_MAX_ESTIMATE_CALLS,
+  MAX_FEE_HEADROOM_BPS,
+  MAX_FEE_BPS_DENOMINATOR,
+  MIN_MAX_FEE_HEADROOM_RAW,
+  MAX_BUFFERED_MAX_FEE_RAW,
+  bufferGatewayMaxFee,
   createGatewayFundingService,
   ...gatewayFundingService,
 };

@@ -79,6 +79,7 @@ const BURN_INTENT_SET_EIP712_TYPES = {
 
 const TRANSFER_SPEC_VERSION = 1;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const GATEWAY_REJECTION_DIAGNOSTIC_MAX_TEXT = 160;
 
 function gatewayHeaders() {
   const headers = { 'content-type': 'application/json' };
@@ -507,6 +508,97 @@ function gatewayError(code, metadata = {}) {
   return error;
 }
 
+function safeGatewayDiagnosticText(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/(?:authorization|bearer|api[\s_-]?key|access[\s_-]?token|refresh[\s_-]?token|private[\s_-]?key|secret)\s*[:=]?/i.test(text)) {
+    return null;
+  }
+  if (/0x[0-9a-f]{64,}/i.test(text)) return null;
+  return text.slice(0, GATEWAY_REJECTION_DIAGNOSTIC_MAX_TEXT);
+}
+
+function providerDiagnosticRoots(body) {
+  if (!body || typeof body !== 'object') return [];
+  const roots = [
+    body,
+    body.body,
+    Array.isArray(body.body) ? body.body[0] : null,
+    body.error,
+    body.body?.error,
+    body.data,
+    body.body?.data,
+    body.details,
+    body.body?.details,
+  ];
+  return roots.filter((root) => root && typeof root === 'object' && !Array.isArray(root));
+}
+
+function firstProviderDiagnosticValue(roots, keys) {
+  for (const root of roots) {
+    for (const key of keys) {
+      if (root[key] !== undefined && root[key] !== null) return root[key];
+    }
+  }
+  return null;
+}
+
+function extractGatewayTransferRejectionDiagnostics({ status, body, rawText }) {
+  const roots = providerDiagnosticRoots(body);
+  const providerCode = safeGatewayDiagnosticText(firstProviderDiagnosticValue(
+    roots, ['errorCode', 'error_code', 'providerErrorCode', 'code'],
+  ));
+  const providerType = safeGatewayDiagnosticText(firstProviderDiagnosticValue(
+    roots, ['errorType', 'error_type', 'providerErrorType', 'type'],
+  ));
+  const providerMessage = safeGatewayDiagnosticText(firstProviderDiagnosticValue(
+    roots, ['errorMessage', 'error_message', 'providerMessage', 'message', 'detail'],
+  )) || (body === null ? safeGatewayDiagnosticText(rawText) : null);
+  const providerReason = safeGatewayDiagnosticText(firstProviderDiagnosticValue(
+    roots, ['failureReason', 'failure_reason', 'reason'],
+  ));
+  return {
+    status,
+    ...(providerCode ? { providerCode } : {}),
+    ...(providerType ? { providerType } : {}),
+    ...(providerMessage ? { providerMessage } : {}),
+    ...(providerReason ? { providerReason } : {}),
+  };
+}
+
+function classifyGatewayTransferRejection(diagnostics) {
+  const providerSignals = [
+    diagnostics?.providerCode,
+    diagnostics?.providerType,
+    diagnostics?.providerMessage,
+    diagnostics?.providerReason,
+  ].filter(Boolean).join(' ');
+  if (/(?:fee|max[\s_-]?fee|forwarding[\s_-]?fee)/i.test(providerSignals)) {
+    return 'gateway_transfer_fee_rejected';
+  }
+  if (/(?:invalid[\s_-]?(?:burn[\s_-]?)?intent|burn[\s_-]?intent|invalid[\s_-]?signature|validation)/i.test(providerSignals)) {
+    return 'gateway_transfer_invalid_intent';
+  }
+  return 'gateway_transfer_rejected';
+}
+
+// A failed response body has one consumable stream. Prefer text so JSON can be
+// parsed without a second read, while deterministic test doubles that only
+// expose json() remain supported.
+async function readGatewayErrorBodyOnce(response) {
+  try {
+    if (typeof response.text === 'function') {
+      const rawText = await response.text();
+      try { return { body: JSON.parse(rawText), rawText }; } catch { return { body: null, rawText }; }
+    }
+    if (typeof response.json === 'function') return { body: await response.json(), rawText: null };
+  } catch {
+    // The status itself remains useful even when the provider body is unreadable.
+  }
+  return { body: null, rawText: null };
+}
+
 // Submit an already-signed source plan to Circle's forwarding service as ONE
 // transfer. Each entry is an individually signed burn intent, which is the
 // official multi-source shape for this path: /v1/transfer takes the array and
@@ -545,12 +637,24 @@ async function submitGatewayTransfer({ requests, requestId }, fetchImpl = fetch)
   }
 
   if (!response.ok) {
+    const { body, rawText } = await readGatewayErrorBodyOnce(response);
+    const gatewayDiagnostic = extractGatewayTransferRejectionDiagnostics({
+      status: response.status,
+      body,
+      rawText,
+    });
     // A deterministic 4xx is a remote rejection before acceptance. 5xx and
     // throttling remain ambiguous because the transfer may already exist.
     if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-      throw gatewayError('gateway_transfer_rejected', { status: response.status });
+      throw gatewayError(classifyGatewayTransferRejection(gatewayDiagnostic), {
+        status: response.status,
+        gatewayDiagnostic,
+      });
     }
-    throw gatewayError('gateway_transfer_submit_unknown', { status: response.status });
+    throw gatewayError('gateway_transfer_submit_unknown', {
+      status: response.status,
+      gatewayDiagnostic,
+    });
   }
 
   let body;
@@ -691,6 +795,7 @@ module.exports = {
   GATEWAY_MINTER_CONTRACT,
   GATEWAY_WALLET_CONTRACT,
   MAX_BURN_INTENTS,
+  GATEWAY_REJECTION_DIAGNOSTIC_MAX_TEXT,
   TRANSFER_SOURCE_USDC_BY_DOMAIN,
   SOURCE_USDC_BY_DOMAIN,
   buildGatewayTransferSpec,
@@ -699,6 +804,8 @@ module.exports = {
   enumerateSourceAllocationPlans,
   planSourceAllocation,
   submitGatewayTransfer,
+  classifyGatewayTransferRejection,
+  extractGatewayTransferRejectionDiagnostics,
   readGatewayTransferStatus,
   isTransferableSourceDomain,
   readUnifiedUsdcBalance,

@@ -1481,6 +1481,12 @@ export default function WalletPage() {
     gatewayReadState === "ready" && hasPositiveRawAmount(gatewaySpendableRaw)
   );
 
+  function clearStaleGatewayFundingTerminalNotice() {
+    if (!gatewayFundingStatus && !gatewayFundingRecovery && gatewayFundingAuthorityState === "none") {
+      setGatewayFundingError("");
+    }
+  }
+
   async function handleGatewayFundingSubmit() {
     const prepared = gatewayFundingStatus;
     if (
@@ -1575,6 +1581,7 @@ export default function WalletPage() {
   }
 
   async function handleGatewayTransfer() {
+    clearStaleGatewayFundingTerminalNotice();
     if (gatewayFundingStatus?.state === "READY_TO_BROADCAST") {
       await handleGatewayFundingSubmit();
       return;
@@ -1875,6 +1882,7 @@ export default function WalletPage() {
                             const select = event.currentTarget;
                             // Product state first; focus handling never
                             // precedes or replaces the destination update.
+                            clearStaleGatewayFundingTerminalNotice();
                             setGatewayDestinationDomain(event.target.value);
                             blurAfterPointerSelectChange(destinationPointerIntent, select);
                           }}
@@ -1894,7 +1902,10 @@ export default function WalletPage() {
                           inputMode="decimal"
                           placeholder="0.00"
                           value={gatewayAmount}
-                          onChange={(event) => setGatewayAmount(event.target.value)}
+                          onChange={(event) => {
+                            clearStaleGatewayFundingTerminalNotice();
+                            setGatewayAmount(event.target.value);
+                          }}
                           disabled={gatewayFundingBusy || Boolean(gatewayFundingRecovery)}
                         />
                       </label>
