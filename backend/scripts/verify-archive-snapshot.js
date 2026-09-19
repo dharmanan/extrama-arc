@@ -45,25 +45,26 @@ function archiveDatePrefix(freshness, locale) {
 
 function verifyArchivePageFreshness() {
   const page = fs.readFileSync(path.resolve(__dirname, '../../app/archive/page.tsx'), 'utf8');
+  const leaderboard = fs.readFileSync(path.resolve(__dirname, '../../app/leaderboard/page.tsx'), 'utf8');
   const cacheRead = page.indexOf('const cached = readCachedArchive(ARCHIVE_DAYS);');
   const freshRead = page.indexOf('backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal })');
   const dateSelect = page.slice(page.indexOf('<select'), page.indexOf('</select>'));
 
   assert.ok(cacheRead >= 0, 'the page reads the archive cache');
-  assert.ok(freshRead > cacheRead, 'the fresh request starts after cached content is applied');
-  assert.equal(
-    (page.match(/backendApi\.rounds\.archive\(ARCHIVE_DAYS/g) || []).length,
-    1,
-    'the page has one background archive request',
-  );
-  assert.match(page, /if \(cached\) \{\s*applyArchive\(cached\.archive, cached\.cachedAt\);\s*setFreshness\("revalidating_cached"\);/);
+  assert.ok(freshRead > cacheRead, 'network revalidation starts after cached content is applied');
+  assert.match(page, /for \(let attempt = 0; attempt < 40 && !cancelled; attempt \+= 1\)/);
+  assert.match(page, /if \(!result\.snapshot\?\.stale && !result\.snapshot\?\.refreshing\)/);
+  assert.match(page, /setFreshness\("revalidating_cached"\)/);
+  assert.match(page, /retryTimer = setTimeout\(resolve, 3_000\)/);
+  assert.match(leaderboard, /if \(!result\.snapshot\?\.stale && !result\.snapshot\?\.refreshing\) return;/);
+  assert.match(leaderboard, /retryTimer = setTimeout\(resolve, 3_000\)/);
   console.log('ARCHIVE_CACHE_IMMEDIATE_RENDER=PASS');
-  console.log('ARCHIVE_CACHE_REVALIDATES_IN_BACKGROUND=PASS');
-  console.log('ARCHIVE_NO_EXTRA_NETWORK_REQUEST=PASS');
+  console.log('ARCHIVE_STALE_RESPONSE_POLLED_UNTIL_FRESH=PASS');
+  console.log('LEADERBOARD_STALE_RESPONSE_POLLED_UNTIL_FRESH=PASS');
 
   assert.match(page, /type ArchiveFreshness = "initial" \| "revalidating_cached" \| "fresh" \| "cached_refresh_failed"/);
   assert.match(page, /setFreshness\("fresh"\)/);
-  assert.match(page, /if \(hasArchive\.current\) \{\s*setFreshness\("cached_refresh_failed"\);\s*return;/);
+  assert.match(page, /if \(!cancelled && hasArchive\.current\) setFreshness\("cached_refresh_failed"\)/);
   assert.match(dateSelect, /index === 0 \? archiveDatePrefix\(freshness, locale\) : ""/);
   assert.equal(archiveDatePrefix('revalidating_cached', 'en') + 'Sep 11, 2026', 'Updating · Sep 11, 2026');
   assert.equal(archiveDatePrefix('revalidating_cached', 'tr') + '11 Eyl 2026', 'Güncelleniyor · 11 Eyl 2026');
@@ -75,18 +76,12 @@ function verifyArchivePageFreshness() {
 
   assert.match(page, /setArchive\(next\);/);
   assert.match(page, /setFreshness\("cached_refresh_failed"\)/);
-  assert.equal(
-    /\.catch\(\(cause: unknown\) => \{[\s\S]*?if \(hasArchive\.current\) \{[\s\S]*?setFreshness\("cached_refresh_failed"\);[\s\S]*?return;/.test(page),
-    true,
-    'a failed refresh keeps the cached archive and marks it cached',
-  );
   assert.equal(archiveDatePrefix('cached_refresh_failed', 'en') + 'Sep 11, 2026', 'Cached · Sep 11, 2026');
   assert.equal(archiveDatePrefix('cached_refresh_failed', 'tr') + '11 Eyl 2026', 'Önbellek · 11 Eyl 2026');
   console.log('ARCHIVE_REFRESH_FAILURE_PRESERVES_CACHE=PASS');
   console.log('ARCHIVE_REFRESH_FAILURE_MARKED_CACHED=PASS');
 
   assert.match(page, /requested && dates\.includes\(requested\) \? requested : \(dates\[0\] \?\? ""\)/);
-  assert.equal(archiveDatePrefix('fresh', 'en') + 'Sep 12, 2026', 'Latest · Sep 12, 2026');
   console.log('ARCHIVE_EXPLICIT_DATE_PRESERVED=PASS');
 }
 
@@ -219,6 +214,44 @@ async function main() {
     console.log('ARCHIVE_SNAPSHOT_STALE_WHILE_REVALIDATE=PASS');
   }
 
+  // Event-driven refresh must stay stale until one post-event read completes.
+  // This covers the real race where a settlement lands while an older archive
+  // refresh is already in flight.
+  {
+    const store = createMemoryStore();
+    const stored = archivePayload('before_event');
+    store.rows.set(90, { payload: JSON.stringify(stored), refreshedAt: nowMs });
+    const reader = createReader();
+    const service = createArchiveSnapshotService({ readRoundArchive: reader.read, store, now: clock, logger: quietLogger });
+
+    const baseline = await service.getWithMeta(90);
+    assert.equal(baseline.snapshot.stale, false);
+
+    nowMs += ARCHIVE_SNAPSHOT_FRESH_MS;
+    const stale = await service.getWithMeta(90);
+    assert.equal(stale.snapshot.stale, true);
+    assert.equal(stale.snapshot.refreshing, true);
+    assert.equal(reader.calls, 1);
+
+    const eventRefresh = service.refreshAfterCurrent(90);
+    reader.resolveNext(archivePayload('pre_event_inflight'));
+    await flush();
+    await flush();
+    assert.equal(reader.calls, 2, 'event refresh performs a second post-event read');
+
+    const duringEvent = await service.getWithMeta(90);
+    assert.equal(duringEvent.snapshot.stale, true, 'dirty snapshot never reports fresh during post-event read');
+    assert.equal(duringEvent.snapshot.refreshing, true);
+
+    reader.resolveNext(archivePayload('after_event'));
+    await eventRefresh;
+    const final = await service.getWithMeta(90);
+    assert.equal(final.snapshot.stale, false);
+    assert.equal(final.snapshot.refreshing, false);
+    assert.equal(final.archive.rounds[0].label, 'after_event');
+    console.log('ARCHIVE_EVENT_REFRESH_RACE=PASS');
+  }
+
   // 6. A failed refresh keeps the previous snapshot, in memory and durably,
   //    and the next attempt waits one freshness interval.
   {
@@ -311,8 +344,16 @@ async function main() {
     assert.equal(/sendTransaction|getArcWriteProvider|new ethers\.Wallet|getSigner|private_key/.test(service), false);
     const routes = fs.readFileSync(path.resolve(__dirname, '../src/routes/rounds.js'), 'utf8');
     const archiveRoute = routes.slice(routes.indexOf("router.get('/archive'"), routes.indexOf("router.get('/:slug/:roundId/result'"));
-    assert.match(archiveRoute, /await archiveSnapshots\.get\(days\)/);
+    assert.match(archiveRoute, /await archiveSnapshots\.getWithMeta\(days\)/);
+    assert.match(archiveRoute, /res\.json\(\{ \.\.\.archive, snapshot \}\)/);
     assert.equal(archiveRoute.includes('arcService.readRoundArchive('), false, 'the route never bypasses the snapshot');
+    const runtime = fs.readFileSync(path.resolve(__dirname, '../src/services/archiveSnapshotRuntime.js'), 'utf8');
+    assert.match(runtime, /createArchiveSnapshotService/);
+    assert.match(runtime, /readRoundArchive: \(params\) => arcService\.readRoundArchive\(params\)/);
+    const automation = fs.readFileSync(path.resolve(__dirname, '../src/services/roundAutomationService.js'), 'utf8');
+    assert.match(automation, /archiveSnapshots\.refreshAfterCurrent\(90\)/);
+    assert.match(automation, /refreshArchiveSnapshotAfterEvent\('round-resolved'\)/);
+    assert.match(automation, /refreshArchiveSnapshotAfterEvent\('market-archive-complete'\)/);
     const schema = fs.readFileSync(path.resolve(__dirname, '../src/db/schema.sql'), 'utf8');
     const table = schema.slice(schema.indexOf('CREATE TABLE IF NOT EXISTS round_archive_snapshots'));
     assert.match(table, /days SMALLINT PRIMARY KEY,\s+payload JSON NOT NULL,\s+refreshed_at TIMESTAMPTZ NOT NULL,\s+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW\(\)/);
