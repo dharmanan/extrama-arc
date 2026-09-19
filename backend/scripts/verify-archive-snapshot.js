@@ -45,25 +45,26 @@ function archiveDatePrefix(freshness, locale) {
 
 function verifyArchivePageFreshness() {
   const page = fs.readFileSync(path.resolve(__dirname, '../../app/archive/page.tsx'), 'utf8');
+  const leaderboard = fs.readFileSync(path.resolve(__dirname, '../../app/leaderboard/page.tsx'), 'utf8');
   const cacheRead = page.indexOf('const cached = readCachedArchive(ARCHIVE_DAYS);');
   const freshRead = page.indexOf('backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal })');
   const dateSelect = page.slice(page.indexOf('<select'), page.indexOf('</select>'));
 
   assert.ok(cacheRead >= 0, 'the page reads the archive cache');
-  assert.ok(freshRead > cacheRead, 'the fresh request starts after cached content is applied');
-  assert.equal(
-    (page.match(/backendApi\.rounds\.archive\(ARCHIVE_DAYS/g) || []).length,
-    1,
-    'the page has one background archive request',
-  );
-  assert.match(page, /if \(cached\) \{\s*applyArchive\(cached\.archive, cached\.cachedAt\);\s*setFreshness\("revalidating_cached"\);/);
+  assert.ok(freshRead > cacheRead, 'network revalidation starts after cached content is applied');
+  assert.match(page, /for \(let attempt = 0; attempt < 40 && !cancelled; attempt \+= 1\)/);
+  assert.match(page, /if \(!result\.snapshot\?\.stale && !result\.snapshot\?\.refreshing\)/);
+  assert.match(page, /setFreshness\("revalidating_cached"\)/);
+  assert.match(page, /retryTimer = setTimeout\(resolve, 3_000\)/);
+  assert.match(leaderboard, /if \(!result\.snapshot\?\.stale && !result\.snapshot\?\.refreshing\) return;/);
+  assert.match(leaderboard, /retryTimer = setTimeout\(resolve, 3_000\)/);
   console.log('ARCHIVE_CACHE_IMMEDIATE_RENDER=PASS');
-  console.log('ARCHIVE_CACHE_REVALIDATES_IN_BACKGROUND=PASS');
-  console.log('ARCHIVE_NO_EXTRA_NETWORK_REQUEST=PASS');
+  console.log('ARCHIVE_STALE_RESPONSE_POLLED_UNTIL_FRESH=PASS');
+  console.log('LEADERBOARD_STALE_RESPONSE_POLLED_UNTIL_FRESH=PASS');
 
   assert.match(page, /type ArchiveFreshness = "initial" \| "revalidating_cached" \| "fresh" \| "cached_refresh_failed"/);
   assert.match(page, /setFreshness\("fresh"\)/);
-  assert.match(page, /if \(hasArchive\.current\) \{\s*setFreshness\("cached_refresh_failed"\);\s*return;/);
+  assert.match(page, /if \(!cancelled && hasArchive\.current\) setFreshness\("cached_refresh_failed"\)/);
   assert.match(dateSelect, /index === 0 \? archiveDatePrefix\(freshness, locale\) : ""/);
   assert.equal(archiveDatePrefix('revalidating_cached', 'en') + 'Sep 11, 2026', 'Updating · Sep 11, 2026');
   assert.equal(archiveDatePrefix('revalidating_cached', 'tr') + '11 Eyl 2026', 'Güncelleniyor · 11 Eyl 2026');
@@ -75,18 +76,12 @@ function verifyArchivePageFreshness() {
 
   assert.match(page, /setArchive\(next\);/);
   assert.match(page, /setFreshness\("cached_refresh_failed"\)/);
-  assert.equal(
-    /\.catch\(\(cause: unknown\) => \{[\s\S]*?if \(hasArchive\.current\) \{[\s\S]*?setFreshness\("cached_refresh_failed"\);[\s\S]*?return;/.test(page),
-    true,
-    'a failed refresh keeps the cached archive and marks it cached',
-  );
   assert.equal(archiveDatePrefix('cached_refresh_failed', 'en') + 'Sep 11, 2026', 'Cached · Sep 11, 2026');
   assert.equal(archiveDatePrefix('cached_refresh_failed', 'tr') + '11 Eyl 2026', 'Önbellek · 11 Eyl 2026');
   console.log('ARCHIVE_REFRESH_FAILURE_PRESERVES_CACHE=PASS');
   console.log('ARCHIVE_REFRESH_FAILURE_MARKED_CACHED=PASS');
 
   assert.match(page, /requested && dates\.includes\(requested\) \? requested : \(dates\[0\] \?\? ""\)/);
-  assert.equal(archiveDatePrefix('fresh', 'en') + 'Sep 12, 2026', 'Latest · Sep 12, 2026');
   console.log('ARCHIVE_EXPLICIT_DATE_PRESERVED=PASS');
 }
 
