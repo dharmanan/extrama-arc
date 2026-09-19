@@ -4,11 +4,7 @@ const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const arcService = require('../services/arcService');
 const { createRoundResultCache } = require('../services/roundResultCache');
-const {
-  createArchiveSnapshotService,
-  createPostgresArchiveSnapshotStore,
-} = require('../services/archiveSnapshotService');
-const db = require('../db');
+const archiveSnapshots = require('../services/archiveSnapshotRuntime');
 
 const router = express.Router();
 
@@ -29,16 +25,9 @@ router.get('/', async (req, res, next) => {
 });
 
 
-// The archive is an expensive chain read that only changes when a round
-// closes or a claim lands. Its last successful response is kept in memory and
-// durably in PostgreSQL and served stale while revalidate: a request never
-// waits for Arc while a snapshot exists, even right after a restart. Live
-// round endpoints are deliberately not cached here.
-const archiveSnapshots = createArchiveSnapshotService({
-  readRoundArchive: (params) => arcService.readRoundArchive(params),
-  store: createPostgresArchiveSnapshotStore(db),
-});
-
+// The archive is an expensive chain read. Its process-wide snapshot runtime
+// is shared with lifecycle automation so settlement/archive events refresh it
+// before a user has to visit this route.
 router.get('/archive', async (req, res, next) => {
   try {
     const days = req.query.days === undefined ? 90 : Number(req.query.days);
@@ -46,8 +35,8 @@ router.get('/archive', async (req, res, next) => {
       return res.status(400).json({ error: 'archive_days_invalid' });
     }
 
-    const archive = await archiveSnapshots.get(days);
-    res.json(archive);
+    const { archive, snapshot } = await archiveSnapshots.getWithMeta(days);
+    res.json({ ...archive, snapshot });
   } catch (error) {
     next(error);
   }
