@@ -13,6 +13,7 @@ const resolverSignerService = require('./resolverSignerService');
 const settlementEvidenceService = require('./settlementEvidenceService');
 const marketOutcomeService = require('./marketOutcomeService');
 const marketArchiveCore = require('./marketArchiveCore');
+const archiveSnapshots = require('./archiveSnapshotRuntime');
 const { sendOnceWithReconciliation } = require('./transactionReconciliation');
 const {
   currentDailySchedule,
@@ -1065,6 +1066,7 @@ async function runLifecycleInternal() {
 
   if (resolver.executed.length > 0) {
     await arcService.refreshStandardRoundsCache();
+    await archiveSnapshots.refreshAfterCurrent(90);
   }
 
   return {
@@ -1176,8 +1178,8 @@ async function runDailyMarketArchiveJob({
   marketDate = null,
   trigger = 'manual',
 } = {}) {
-  return withMarketArchiveLock(async () => {
-    const result = marketDate
+  const result = await withMarketArchiveLock(async () => {
+    const next = marketDate
       ? await marketOutcomeService.ingestUtcDayByDate(marketDate)
       : await marketOutcomeService.ingestPreviousUtcDay(new Date());
 
@@ -1185,19 +1187,27 @@ async function runDailyMarketArchiveJob({
       '[market-archive] batch complete',
       JSON.stringify({
         trigger,
-        marketDate: result.marketDate,
-        sourceComplete: result.sourceComplete ?? result.complete,
-        derivationsComplete: result.derivationsComplete ?? true,
-        daily: result.daily,
-        failures: result.failures,
-        weekly: result.weekly,
-        quarterly: result.quarterly,
-        derivedFailures: result.derivedFailures,
+        marketDate: next.marketDate,
+        sourceComplete: next.sourceComplete ?? next.complete,
+        derivationsComplete: next.derivationsComplete ?? true,
+        daily: next.daily,
+        failures: next.failures,
+        weekly: next.weekly,
+        quarterly: next.quarterly,
+        derivedFailures: next.derivedFailures,
       }),
     );
 
-    return result;
+    return next;
   });
+
+  // A completed market day changes Archive even before any round settles.
+  // Refresh the durable 90-day snapshot now, not when the first reader visits.
+  if (result && !result.skipped && result.complete) {
+    await archiveSnapshots.refreshAfterCurrent(90);
+  }
+
+  return result;
 }
 
 function clearMarketArchiveRetry(marketDate) {
