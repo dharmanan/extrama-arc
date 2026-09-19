@@ -214,6 +214,44 @@ async function main() {
     console.log('ARCHIVE_SNAPSHOT_STALE_WHILE_REVALIDATE=PASS');
   }
 
+  // Event-driven refresh must stay stale until one post-event read completes.
+  // This covers the real race where a settlement lands while an older archive
+  // refresh is already in flight.
+  {
+    const store = createMemoryStore();
+    const stored = archivePayload('before_event');
+    store.rows.set(90, { payload: JSON.stringify(stored), refreshedAt: nowMs });
+    const reader = createReader();
+    const service = createArchiveSnapshotService({ readRoundArchive: reader.read, store, now: clock, logger: quietLogger });
+
+    const baseline = await service.getWithMeta(90);
+    assert.equal(baseline.snapshot.stale, false);
+
+    nowMs += ARCHIVE_SNAPSHOT_FRESH_MS;
+    const stale = await service.getWithMeta(90);
+    assert.equal(stale.snapshot.stale, true);
+    assert.equal(stale.snapshot.refreshing, true);
+    assert.equal(reader.calls, 1);
+
+    const eventRefresh = service.refreshAfterCurrent(90);
+    reader.resolveNext(archivePayload('pre_event_inflight'));
+    await flush();
+    await flush();
+    assert.equal(reader.calls, 2, 'event refresh performs a second post-event read');
+
+    const duringEvent = await service.getWithMeta(90);
+    assert.equal(duringEvent.snapshot.stale, true, 'dirty snapshot never reports fresh during post-event read');
+    assert.equal(duringEvent.snapshot.refreshing, true);
+
+    reader.resolveNext(archivePayload('after_event'));
+    await eventRefresh;
+    const final = await service.getWithMeta(90);
+    assert.equal(final.snapshot.stale, false);
+    assert.equal(final.snapshot.refreshing, false);
+    assert.equal(final.archive.rounds[0].label, 'after_event');
+    console.log('ARCHIVE_EVENT_REFRESH_RACE=PASS');
+  }
+
   // 6. A failed refresh keeps the previous snapshot, in memory and durably,
   //    and the next attempt waits one freshness interval.
   {
@@ -306,8 +344,17 @@ async function main() {
     assert.equal(/sendTransaction|getArcWriteProvider|new ethers\.Wallet|getSigner|private_key/.test(service), false);
     const routes = fs.readFileSync(path.resolve(__dirname, '../src/routes/rounds.js'), 'utf8');
     const archiveRoute = routes.slice(routes.indexOf("router.get('/archive'"), routes.indexOf("router.get('/:slug/:roundId/result'"));
-    assert.match(archiveRoute, /await archiveSnapshots\.get\(days\)/);
+    assert.match(archiveRoute, /await archiveSnapshots\.getWithMeta\(days\)/);
+    assert.match(archiveRoute, /res\.json\(\{ \.\.\.archive, snapshot \}\)/);
     assert.equal(archiveRoute.includes('arcService.readRoundArchive('), false, 'the route never bypasses the snapshot');
+    const runtime = fs.readFileSync(path.resolve(__dirname, '../src/services/archiveSnapshotRuntime.js'), 'utf8');
+    assert.match(runtime, /createArchiveSnapshotService/);
+    assert.match(runtime, /readRoundArchive: \(params\) => arcService\.readRoundArchive\(params\)/);
+    const automation = fs.readFileSync(path.resolve(__dirname, '../src/services/roundAutomationService.js'), 'utf8');
+    assert.ok(
+      (automation.match(/archiveSnapshots\.refreshAfterCurrent\(90\)/g) || []).length >= 2,
+      'market archive completion and resolver settlement/cancel both refresh the shared archive snapshot',
+    );
     const schema = fs.readFileSync(path.resolve(__dirname, '../src/db/schema.sql'), 'utf8');
     const table = schema.slice(schema.indexOf('CREATE TABLE IF NOT EXISTS round_archive_snapshots'));
     assert.match(table, /days SMALLINT PRIMARY KEY,\s+payload JSON NOT NULL,\s+refreshed_at TIMESTAMPTZ NOT NULL,\s+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW\(\)/);
