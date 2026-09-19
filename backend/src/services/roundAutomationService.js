@@ -60,6 +60,15 @@ let timer = null;
 const CADENCE_ENUM = Object.freeze({ DAILY: 0, WEEKLY: 1, QUARTERLY: 2 });
 const CADENCE_POOL_COUNT = 8;
 
+function refreshArchiveSnapshotAfterEvent(reason) {
+  archiveSnapshots.refreshAfterCurrent(90).catch((error) => {
+    console.error(
+      '[archive-snapshot] event refresh failed',
+      JSON.stringify({ reason, error: error.message }),
+    );
+  });
+}
+
 function sameSchedule(cadence, round, schedule) {
   return Boolean(round) && roundMatchesCanonicalSchedule(cadence, round, schedule);
 }
@@ -1066,7 +1075,7 @@ async function runLifecycleInternal() {
 
   if (resolver.executed.length > 0) {
     await arcService.refreshStandardRoundsCache();
-    await archiveSnapshots.refreshAfterCurrent(90);
+    refreshArchiveSnapshotAfterEvent('round-resolved');
   }
 
   return {
@@ -1204,7 +1213,7 @@ async function runDailyMarketArchiveJob({
   // A completed market day changes Archive even before any round settles.
   // Refresh the durable 90-day snapshot now, not when the first reader visits.
   if (result && !result.skipped && result.complete) {
-    await archiveSnapshots.refreshAfterCurrent(90);
+    refreshArchiveSnapshotAfterEvent('market-archive-complete');
   }
 
   return result;
