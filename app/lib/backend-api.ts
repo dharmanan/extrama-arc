@@ -118,6 +118,11 @@ export type ArchiveResponse = {
   };
   retentionDays: number;
   rounds: ArchiveRound[];
+  snapshot?: {
+    refreshedAtIso: string;
+    stale: boolean;
+    refreshing: boolean;
+  };
 };
 
 export type RoundEntry = {
