@@ -104,6 +104,7 @@ export default function ArchivePage() {
   // refresh keeps what is on screen and never falls back to an error page.
   useIsomorphicLayoutEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     function applyArchive(next: ArchiveResponse, readAt: number) {
       hasArchive.current = true;
@@ -125,28 +126,53 @@ export default function ArchivePage() {
       setFreshness("revalidating_cached");
     }
 
-    // Cancelled on unmount (for example when a result is opened): a slow
-    // revalidation must not hold a browser connection and stall navigation.
     const controller = new AbortController();
-    backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal })
-      .then((result) => {
-        if (cancelled) return;
-        writeCachedArchive(ARCHIVE_DAYS, result);
-        applyArchive(result, Date.now());
-        setFreshness("fresh");
-      })
-      .catch((cause: unknown) => {
+
+    async function waitForRetry() {
+      await new Promise<void>((resolve) => {
+        retryTimer = setTimeout(resolve, 3_000);
+      });
+    }
+
+    async function revalidate() {
+      try {
+        // The first request is immediate. If the backend returns a known stale
+        // snapshot while its expensive chain refresh is running, keep that
+        // usable snapshot on screen and poll only the cheap snapshot endpoint
+        // until the authoritative replacement is ready.
+        for (let attempt = 0; attempt < 40 && !cancelled; attempt += 1) {
+          const result = await backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal });
+          if (cancelled) return;
+
+          writeCachedArchive(ARCHIVE_DAYS, result);
+          applyArchive(result, Date.now());
+
+          if (!result.snapshot?.stale && !result.snapshot?.refreshing) {
+            setFreshness("fresh");
+            return;
+          }
+
+          setFreshness("revalidating_cached");
+          await waitForRetry();
+        }
+
+        if (!cancelled && hasArchive.current) setFreshness("cached_refresh_failed");
+      } catch (cause: unknown) {
         if (cancelled) return;
         if (hasArchive.current) {
           setFreshness("cached_refresh_failed");
           return;
         }
         setError(cause instanceof Error ? cause.message : "Unable to load archive.");
-      });
+      }
+    }
+
+    void revalidate();
 
     return () => {
       cancelled = true;
       controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, []);
 
