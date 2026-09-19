@@ -117,7 +117,18 @@ function createArchiveSnapshotService({
     });
   }
 
-  async function get(days) {
+  function withMeta(days, entry) {
+    return {
+      archive: entry.archive,
+      snapshot: {
+        refreshedAtIso: new Date(entry.refreshedAt).toISOString(),
+        stale: now() - entry.refreshedAt >= freshMs,
+        refreshing: inFlight.has(days),
+      },
+    };
+  }
+
+  async function getWithMeta(days) {
     const known = await knownSnapshot(days);
 
     if (known) {
@@ -125,17 +136,51 @@ function createArchiveSnapshotService({
       const attempted = lastAttemptAt.get(days);
       const attemptDue = attempted === undefined || now() - attempted >= freshMs;
       if (stale && attemptDue) refreshInBackground(days);
-      return known.archive;
+      return withMeta(days, known);
     }
 
     // Cold bootstrap: nothing known yet, so the one real read is awaited.
     const entry = await refresh(days);
-    return entry.archive;
+    return withMeta(days, entry);
+  }
+
+  async function get(days) {
+    return (await getWithMeta(days)).archive;
+  }
+
+  // Used by a client that already has a stale snapshot on screen and is
+  // explicitly waiting for the authoritative replacement. A concurrent
+  // background refresh is shared rather than duplicated.
+  async function getFreshWithMeta(days) {
+    const known = await knownSnapshot(days);
+    if (known && now() - known.refreshedAt < freshMs) {
+      return withMeta(days, known);
+    }
+    const entry = await refresh(days);
+    return withMeta(days, entry);
+  }
+
+  // A lifecycle event that lands while an older refresh is already reading
+  // the chain must get one post-event pass. Otherwise the in-flight read may
+  // have observed the pre-settlement state and become the new "fresh" cache.
+  async function refreshAfterCurrent(days) {
+    const pending = inFlight.get(days);
+    if (pending) {
+      try {
+        await pending;
+      } catch {
+        // The post-event refresh below is still required.
+      }
+    }
+    return refresh(days);
   }
 
   return Object.freeze({
     get,
+    getWithMeta,
+    getFreshWithMeta,
     refresh,
+    refreshAfterCurrent,
     inFlightCount: () => inFlight.size,
   });
 }
