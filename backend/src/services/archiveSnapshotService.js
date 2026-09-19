@@ -65,6 +65,7 @@ function createArchiveSnapshotService({
   const memory = new Map();
   const inFlight = new Map();
   const lastAttemptAt = new Map();
+  const dirty = new Set();
 
   function remember(days, entry) {
     const current = memory.get(days);
@@ -94,6 +95,7 @@ function createArchiveSnapshotService({
       .then(() => readRoundArchive({ days }))
       .then(async (archive) => {
         const entry = remember(days, { archive, refreshedAt: now() });
+        dirty.delete(days);
         try {
           await store.write(days, entry);
         } catch (error) {
@@ -122,7 +124,7 @@ function createArchiveSnapshotService({
       archive: entry.archive,
       snapshot: {
         refreshedAtIso: new Date(entry.refreshedAt).toISOString(),
-        stale: now() - entry.refreshedAt >= freshMs,
+        stale: dirty.has(days) || now() - entry.refreshedAt >= freshMs,
         refreshing: inFlight.has(days),
       },
     };
@@ -132,7 +134,7 @@ function createArchiveSnapshotService({
     const known = await knownSnapshot(days);
 
     if (known) {
-      const stale = now() - known.refreshedAt >= freshMs;
+      const stale = dirty.has(days) || now() - known.refreshedAt >= freshMs;
       const attempted = lastAttemptAt.get(days);
       const attemptDue = attempted === undefined || now() - attempted >= freshMs;
       if (stale && attemptDue) refreshInBackground(days);
@@ -153,7 +155,7 @@ function createArchiveSnapshotService({
   // background refresh is shared rather than duplicated.
   async function getFreshWithMeta(days) {
     const known = await knownSnapshot(days);
-    if (known && now() - known.refreshedAt < freshMs) {
+    if (known && !dirty.has(days) && now() - known.refreshedAt < freshMs) {
       return withMeta(days, known);
     }
     const entry = await refresh(days);
@@ -164,6 +166,7 @@ function createArchiveSnapshotService({
   // the chain must get one post-event pass. Otherwise the in-flight read may
   // have observed the pre-settlement state and become the new "fresh" cache.
   async function refreshAfterCurrent(days) {
+    dirty.add(days);
     const pending = inFlight.get(days);
     if (pending) {
       try {
@@ -181,6 +184,9 @@ function createArchiveSnapshotService({
     getFreshWithMeta,
     refresh,
     refreshAfterCurrent,
+    markDirty(days) {
+      dirty.add(days);
+    },
     inFlightCount: () => inFlight.size,
   });
 }
