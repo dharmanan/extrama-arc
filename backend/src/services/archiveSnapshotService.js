@@ -175,6 +175,10 @@ function createArchiveSnapshotService({
         // The post-event refresh below is still required.
       }
     }
+    // The in-flight pre-event refresh clears dirty on success. Re-assert it
+    // before the required post-event read so no request can observe that
+    // intermediate snapshot as authoritative.
+    dirty.add(days);
     return refresh(days);
   }
 
