@@ -351,10 +351,9 @@ async function main() {
     assert.match(runtime, /createArchiveSnapshotService/);
     assert.match(runtime, /readRoundArchive: \(params\) => arcService\.readRoundArchive\(params\)/);
     const automation = fs.readFileSync(path.resolve(__dirname, '../src/services/roundAutomationService.js'), 'utf8');
-    assert.ok(
-      (automation.match(/archiveSnapshots\.refreshAfterCurrent\(90\)/g) || []).length >= 2,
-      'market archive completion and resolver settlement/cancel both refresh the shared archive snapshot',
-    );
+    assert.match(automation, /archiveSnapshots\.refreshAfterCurrent\(90\)/);
+    assert.match(automation, /refreshArchiveSnapshotAfterEvent\('round-resolved'\)/);
+    assert.match(automation, /refreshArchiveSnapshotAfterEvent\('market-archive-complete'\)/);
     const schema = fs.readFileSync(path.resolve(__dirname, '../src/db/schema.sql'), 'utf8');
     const table = schema.slice(schema.indexOf('CREATE TABLE IF NOT EXISTS round_archive_snapshots'));
     assert.match(table, /days SMALLINT PRIMARY KEY,\s+payload JSON NOT NULL,\s+refreshed_at TIMESTAMPTZ NOT NULL,\s+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW\(\)/);
