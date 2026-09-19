@@ -81,6 +81,7 @@ export default function LeaderboardPage() {
   // standings at once, refresh silently, keep them if the refresh fails.
   useIsomorphicLayoutEffect(() => {
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     const cached = readCachedArchive(ARCHIVE_DAYS);
     if (cached) {
@@ -88,25 +89,40 @@ export default function LeaderboardPage() {
       setArchive(cached.archive);
     }
 
-    // Cancelled on unmount so a slow archive read never stalls navigation.
     const controller = new AbortController();
 
-    backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal })
-      .then((result) => {
-        if (cancelled) return;
-        writeCachedArchive(ARCHIVE_DAYS, result);
-        hasArchive.current = true;
-        setArchive(result);
-        setError("");
-      })
-      .catch((cause: unknown) => {
+    async function waitForRetry() {
+      await new Promise<void>((resolve) => {
+        retryTimer = setTimeout(resolve, 3_000);
+      });
+    }
+
+    async function revalidate() {
+      try {
+        for (let attempt = 0; attempt < 40 && !cancelled; attempt += 1) {
+          const result = await backendApi.rounds.archive(ARCHIVE_DAYS, { signal: controller.signal });
+          if (cancelled) return;
+
+          writeCachedArchive(ARCHIVE_DAYS, result);
+          hasArchive.current = true;
+          setArchive(result);
+          setError("");
+
+          if (!result.snapshot?.stale && !result.snapshot?.refreshing) return;
+          await waitForRetry();
+        }
+      } catch (cause: unknown) {
         if (cancelled || hasArchive.current) return;
         setError(cause instanceof Error ? cause.message : "Unable to load leaderboard.");
-      });
+      }
+    }
+
+    void revalidate();
 
     return () => {
       cancelled = true;
       controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, []);
 
