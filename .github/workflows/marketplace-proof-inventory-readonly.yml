@@ -21,3 +21,8 @@ jobs:
           ARC_TESTNET_RPC_URL: https://rpc.testnet.arc.network
           ARC_TESTNET_RPC_FALLBACK_URL: https://rpc.solidrpc.io/public/evm/5042002
         run: node backend/scripts/inventory-marketplace-live-proof.js
+      - name: Inventory human marketplace candidate
+        env:
+          ARC_TESTNET_RPC_URL: https://rpc.testnet.arc.network
+          ARC_TESTNET_RPC_FALLBACK_URL: https://rpc.solidrpc.io/public/evm/5042002
+        run: node backend/scripts/inventory-human-marketplace-candidate.js
