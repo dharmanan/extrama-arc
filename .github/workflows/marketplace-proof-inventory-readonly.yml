@@ -1,0 +1,23 @@
+name: Marketplace Proof Inventory Readonly
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend
+        run: npm --prefix backend ci
+      - name: Inventory marketplace proof candidates
+        env:
+          ARC_TESTNET_RPC_URL: https://rpc.testnet.arc.network
+          ARC_TESTNET_RPC_FALLBACK_URL: https://rpc.solidrpc.io/public/evm/5042002
+        run: node backend/scripts/inventory-marketplace-live-proof.js
