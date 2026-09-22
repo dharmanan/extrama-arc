@@ -125,7 +125,7 @@ EXTREMA supports three execution identities.
 | Identity | Participant | Signing model |
 | --- | --- | --- |
 | `EXTERNAL_WALLET` | Human using an EVM wallet | The connected wallet signs every financial transaction |
-| `CIRCLE_USER_WALLET` | Human using Google or email onboarding | The user approves every transaction through a Circle hosted challenge |
+| `CIRCLE_USER_WALLET` | Human using Google onboarding | The user approves every transaction through a Circle hosted challenge |
 | `SYSTEM_SEED_WALLET` | Autonomous EXTREMA agent | An approved encrypted seed wallet signs through the controlled backend automation path |
 
 There is no active human backend signer.

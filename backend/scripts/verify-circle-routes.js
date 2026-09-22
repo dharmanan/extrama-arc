@@ -24,9 +24,10 @@ const circleActions = fs.readFileSync(path.join(root, '../app/lib/circle-actions
 const schema = fs.readFileSync(path.join(root, 'src/db/schema.sql'), 'utf8');
 
 assert.match(routes, /router\.post\('\/device-token\/social'/);
-assert.match(routes, /router\.post\('\/device-token\/email'/);
-assert.match(routes, /emailOtpLimiter/);
-assert.match(routes, /circle_email_otp_cooldown/);
+assert.doesNotMatch(routes, /router\.post\('\/device-token\/email'/);
+assert.doesNotMatch(routes, /emailOtpLimiter/);
+assert.doesNotMatch(browserApi, /emailDeviceToken\(/);
+assert.doesNotMatch(onboarding, /Continue with email|verifyOtp|resendEmailOtp|emailDeviceToken/);
 assert.match(routes, /router\.post\('\/wallet\/initialize'/);
 assert.match(routes, /router\.post\('\/session'/);
 assert.match(routes, /router\.post\('\/session\/refresh', walletLimiter, requireAuth/);
@@ -57,7 +58,7 @@ assert.ok(
 assert.ok(!sessionService.includes('refreshToken'), 'Circle refresh credentials must not enter the EXTREMA JWT/session payload');
 assert.match(browserApi, /refreshSession\(deviceId: string\)/);
 assert.match(onboarding, /refreshToken\?: string/);
-assert.match(onboarding, /auth\.refreshToken \? \{ refreshToken: auth\.refreshToken, deviceId \} : undefined/);
+assert.match(onboarding, /auth\.refreshToken\s*\?\s*\{\s*refreshToken:\s*auth\.refreshToken,\s*deviceId\s*\}\s*:\s*undefined/);
 assert.ok(!onboarding.includes('storeCircleTabAuth(auth)'), 'a Circle refresh token must never be written to browser tab storage');
 assert.match(circleAuth, /type CircleTabAuth = \{\s+userToken: string;\s+encryptionKey: string;/);
 assert.ok(!browserApi.includes('CIRCLE_API_KEY'), 'the Circle API key must never enter browser code');

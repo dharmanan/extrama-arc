@@ -63,7 +63,7 @@ import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { assetConfigs } from "../lib/asset-config";
 import { readBinanceLiveMarket } from "../lib/live-market";
 
-// Two entry choices only: Circle (Google or email) or a connected EVM
+// Two entry choices only: Circle (Google) or a connected EVM
 // wallet. "choice" is the connected wallet's single login signature.
 type Step = "owner" | "choice" | "ready";
 type GatewayReadState = "idle" | "loading" | "ready" | "error";
@@ -366,7 +366,7 @@ export default function WalletPage() {
   const [sessionNeedsAuth, setSessionNeedsAuth] = useState(false);
   const [walletNotice, setWalletNotice] = useState("");
   // A Circle session whose stored Circle login can no longer refresh it
-  // falls back to the Circle Google or email sign in, never to another method.
+  // falls back to the Circle Google sign in, never to another method.
   const [circleReauthRequired, setCircleReauthRequired] = useState(false);
 
   // The selected funding source controls one compact form. Its source-wallet
@@ -1423,7 +1423,7 @@ export default function WalletPage() {
 
   // An expired Circle session is restored through Circle only. The Circle
   // login already held by this tab refreshes the EXTREMA session. If that
-  // login is gone or expired, the Circle Google or email sign in is shown.
+  // login is gone or expired, the Circle Google sign in is shown.
   async function handleCircleSessionRefresh() {
     setError("");
     setChainError("");
@@ -2330,7 +2330,7 @@ export default function WalletPage() {
               </h1>
 
               <p className="ex-lede">
-                Continue with Google or email using a Circle user controlled
+                Continue with Google using a Circle user controlled
                 wallet, or connect an existing EVM wallet.
               </p>
             </section>
@@ -2431,8 +2431,8 @@ export default function WalletPage() {
             </h1>
 
             <p className="ex-lede">
-              Continue with Google or email using a Circle user controlled
-              wallet, or connect an existing EVM wallet.
+              Continue with Google using a Circle user controlled
+                wallet, or connect an existing EVM wallet.
             </p>
           </section>
 
