@@ -1604,17 +1604,6 @@ async function verifyCircleSignPendingRegression() {
     'current route must precede the action-id route',
   );
 
-  const checklist = fs.readFileSync(
-    path.join(__dirname, '../../EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md'), 'utf8',
-  );
-  assert.match(checklist, /GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS/);
-  assert.match(checklist, /Gateway -> Arc FULLY LIVE PROVEN/);
-  assert.match(
-    checklist,
-    /Current outbound destination matrix: Arc Testnet, Base Sepolia, OP Sepolia and Arbitrum Sepolia are \*\*FULLY LIVE PROVEN as Gateway destinations\*\*; Ethereum Sepolia remains \*\*OPEN \/ NOT LIVE PROVEN as a Gateway destination\*\*/,
-  );
-  console.log('GATEWAY_OUTBOUND_DESTINATION_PROOF_MATRIX=PASS');
-
   console.log('GATEWAY_FUNDING=PASS');
   console.log('GATEWAY_FUNDING_SUBMIT_MOCK=PASS');
   console.log('GATEWAY_FUNDING_RECONCILIATION=PASS');

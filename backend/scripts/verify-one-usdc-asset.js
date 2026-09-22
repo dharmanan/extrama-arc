@@ -215,11 +215,6 @@ async function main() {
     /Native balance reads are used only where EVM gas semantics require them/i,
   );
 
-  assert.match(
-    source('EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md'),
-    /One economic USDC asset/,
-  );
-
   const activeRuntime = `${collectRuntimeSource('backend/src')}\n${collectRuntimeSource('app')}`;
   const count = (pattern) => (activeRuntime.match(pattern) || []).length;
   assert.equal(count(/passkey|webauthn/gi), 0);

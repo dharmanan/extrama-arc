@@ -33,7 +33,7 @@ const TICKET_IFACE = new Interface([
   'function MINTER() view returns (address)',
 ]);
 
-// Historical fixtures documented in docs/REFUND_CANCELLATION_READINESS.md and
+// Historical Arc Testnet fixtures mirrored by
 // contracts/test/ExtremaMarketplaceArcFork.t.sol. Only public identifiers.
 const HISTORICAL_LOCK_RECEIPTS = [
   {

@@ -280,8 +280,6 @@ The project has recorded real Arc Testnet execution for the core lifecycle.
 | Secondary marketplace listing | `0x7b1137330f1bd1d34374998a5e7c1d8b1d80adeeddd3309ea48af127fce7557de` |
 | Secondary marketplace purchase (Listing #3, 2.5 USDC) | `0x76ee63cdd5d010ceb662be4fe00e9a59645d16e044d7a9e3108757b4a2486846` |
 
-The detailed evidence record, including round state, balances, ownership transitions, and acceptance gates, is maintained in [EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md](./EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md).
-
 ## Verification
 
 EXTREMA includes complementary verification layers across contracts, backend execution, application behavior, and security.
@@ -354,11 +352,7 @@ The current deterministic CI baseline is Forge **67/67**, backend Layer 3 **28/2
 
 The recorded final live single-round proof is ETH Daily High Round #4 and ends in `RESULT=FINAL_SINGLE_ROUND_PROOF_COMPLETE`. Live proofs are intentionally kept separate from required deterministic CI because public RPC or hosted-service availability must not make ordinary source-code checks flaky.
 
-Detailed readiness documentation is available in:
-
-- [EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md](./EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md)
-- [docs/EXTREMA_E2E_READINESS.md](./docs/EXTREMA_E2E_READINESS.md)
-- [docs/REFUND_CANCELLATION_READINESS.md](./docs/REFUND_CANCELLATION_READINESS.md)
+Operational security and secret-rotation guidance is available in [docs/SECURITY_OPERATIONS.md](./docs/SECURITY_OPERATIONS.md).
 
 ## Architecture
 

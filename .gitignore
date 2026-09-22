@@ -26,3 +26,6 @@ foundry-pp/
 *.dump
 backups/
 sil/
+
+# Private local release/proof notes
+EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md
