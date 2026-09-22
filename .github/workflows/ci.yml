@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -21,6 +23,9 @@ jobs:
 
       - name: Secret scan
         run: node backend/scripts/verify-no-committed-secrets.js
+
+      - name: Full history secret scan
+        run: node backend/scripts/verify-no-secrets-history.js
 
       - name: Setup Foundry
         uses: foundry-rs/foundry-toolchain@v1
