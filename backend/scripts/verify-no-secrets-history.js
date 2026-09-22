@@ -64,7 +64,7 @@ for (const line of names.split('\n')) {
 
   if (sensitiveFilename.test(file)) {
     findings.set(
-      \`SENSITIVE_FILENAME|\${file}|\${currentCommit}\`,
+      'SENSITIVE_FILENAME|' + file + '|' + currentCommit,
       {
         rule: 'SENSITIVE_FILENAME',
         file,
@@ -109,17 +109,11 @@ for (const line of patch.split('\n')) {
     continue;
   }
 
-  if (
-    !line.startsWith('+') &&
-    !line.startsWith('-')
-  ) {
+  if (!line.startsWith('+') && !line.startsWith('-')) {
     continue;
   }
 
-  if (
-    line.startsWith('+++') ||
-    line.startsWith('---')
-  ) {
+  if (line.startsWith('+++') || line.startsWith('---')) {
     continue;
   }
 
@@ -130,24 +124,23 @@ for (const line of patch.split('\n')) {
     if (!regex.test(candidate)) continue;
 
     findings.set(
-      \`\${rule}|\${currentFile}|\${currentCommit}\`,
+      rule + '|' + currentFile + '|' + currentCommit,
       { rule, file: currentFile, commit: currentCommit },
     );
   }
 }
 
 const results = [...findings.values()];
+const commitCount = git(['rev-list', '--all', '--count']).trim();
 
-console.log(
-  \`HISTORY_COMMITS_SCANNED=\${git(['rev-list', '--all', '--count']).trim()}\`,
-);
+console.log('HISTORY_COMMITS_SCANNED=' + commitCount);
 
 if (historicalArchives.size > 0) {
   console.log(
-    \`HISTORY_BINARY_ARCHIVES_PRESENT=\${historicalArchives.size}\`,
+    'HISTORY_BINARY_ARCHIVES_PRESENT=' + historicalArchives.size,
   );
   for (const file of [...historicalArchives].sort()) {
-    console.log(\`HISTORY_BINARY_ARCHIVE=\${file}\`);
+    console.log('HISTORY_BINARY_ARCHIVE=' + file);
   }
 }
 
@@ -155,7 +148,7 @@ if (results.length > 0) {
   console.log('FULL_HISTORY_SECRET_SCAN=FAIL');
   for (const finding of results) {
     console.log(
-      \`\${finding.rule}: \${finding.file} @ \${finding.commit}\`,
+      finding.rule + ': ' + finding.file + ' @ ' + finding.commit,
     );
   }
   process.exitCode = 1;
