@@ -16,22 +16,6 @@ const { EXECUTION_MODES } = require('../services/executionIdentityService');
 const router = express.Router();
 const deviceLimiter = rateLimit({ windowMs: 60 * 1000, limit: 8, standardHeaders: 'draft-8', legacyHeaders: false });
 
-const emailOtpLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: 1,
-  standardHeaders: 'draft-8',
-  legacyHeaders: false,
-  skipFailedRequests: true,
-  keyGenerator: (req) => {
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const deviceId = String(req.body?.deviceId || '');
-    return `${email}:${deviceId}`;
-  },
-  handler: (req, res) => {
-    res.status(429).json({ error: 'circle_email_otp_cooldown' });
-  },
-});
-
 const walletLimiter = rateLimit({ windowMs: 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false });
 const readinessLimiter = rateLimit({ windowMs: 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false });
 
@@ -39,7 +23,6 @@ const idempotencyKey = z.string().uuid();
 const deviceId = z.string().min(1).max(512);
 const userToken = z.string().min(1).max(8192);
 const socialSchema = z.object({ deviceId, idempotencyKey });
-const emailSchema = z.object({ deviceId, email: z.string().email().max(254), idempotencyKey });
 const userTokenSchema = z.object({ userToken });
 const circleSessionSchema = userTokenSchema.extend({
   refreshToken: z.string().min(16).max(8192).optional(),
@@ -117,11 +100,6 @@ router.post('/device-token/social', deviceLimiter, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-router.post('/device-token/email', emailOtpLimiter, deviceLimiter, async (req, res, next) => {
-  try {
-    res.json(await circleUserWalletService.createEmailDeviceToken(emailSchema.parse(req.body)));
-  } catch (error) { next(error); }
-});
 
 router.post('/wallet/initialize', walletLimiter, async (req, res, next) => {
   try {
