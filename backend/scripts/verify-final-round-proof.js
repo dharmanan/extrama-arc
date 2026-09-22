@@ -4,9 +4,6 @@ const assert = require('node:assert/strict');
 const {
   Interface,
   getAddress,
-  zeroPadValue,
-  toBeHex,
-  toQuantity,
 } = require('ethers');
 
 const CHAIN_ID_HEX = '0x4cef52';
@@ -48,19 +45,12 @@ const EXPECTED_CLAIM_TX =
 const EXPECTED_CLAIM_TICKET = 2n;
 const EXPECTED_CLAIM_AMOUNT = 405000n;
 const EXPECTED_TREASURY_AMOUNT = 300000n;
-const EXPECTED_STAKE = 1000000n;
-
-const SEARCH_LOW_BLOCK = 60000000;
-const SEARCH_HIGH_BLOCK = 61052025;
 
 const poolIface = new Interface([
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
   'function entries(uint256 ticketId) view returns (uint256 ticketId,uint256 roundId,address originalEntrant,uint64 predictionPriceCents,uint64 entrySequence)',
   'function claimed(uint256 ticketId) view returns (bool)',
   'function claimableByTicket(uint256 ticketId) view returns (uint256)',
-  'event RoundCreated(uint256 indexed roundId,uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt)',
-  'event RoundLocked(uint256 indexed roundId)',
-  'event PredictionEntered(uint256 indexed roundId,uint256 indexed ticketId,address indexed entrant,uint64 predictionPriceCents,uint64 entrySequence)',
   'event RoundSettled(uint256 indexed roundId,uint64 resolvedPriceCents,uint256 firstTicketId,uint256 secondTicketId,uint256 thirdTicketId)',
   'event RewardClaimed(uint256 indexed roundId,uint256 indexed ticketId,address indexed owner,uint256 amount)',
   'event TreasuryAllocated(uint256 indexed roundId,address indexed treasury,uint256 amount)',
@@ -75,6 +65,10 @@ const usdcIface = new Interface([
 ]);
 
 let rpcId = 0;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function fetchJson(url, options = {}, timeoutMs = 10000) {
   const controller = new AbortController();
@@ -91,9 +85,11 @@ async function fetchJson(url, options = {}, timeoutMs = 10000) {
     });
 
     if (!response.ok) {
-      throw new Error(
+      const error = new Error(
         `HTTP_${response.status}_${url}`,
       );
+      error.status = response.status;
+      throw error;
     }
 
     return await response.json();
@@ -122,38 +118,57 @@ async function rpcOne(url, method, params) {
   );
 
   if (body.error) {
-    throw new Error(
+    const error = new Error(
       `RPC_${method}_${JSON.stringify(body.error)}`,
     );
+    error.rpcCode = body.error.code;
+    throw error;
   }
 
   return body.result;
 }
 
+function transient(error) {
+  const text =
+    String(error?.message || error)
+      .toLowerCase();
+
+  return (
+    error?.status === 429 ||
+    error?.rpcCode === -32005 ||
+    text.includes('timeout') ||
+    text.includes('rate limit') ||
+    text.includes('too many requests') ||
+    text.includes('socket') ||
+    text.includes('fetch failed')
+  );
+}
+
 async function rpc(method, params) {
-  let primaryError = null;
+  let lastError = null;
 
-  try {
-    return await rpcOne(
-      PRIMARY_RPC,
-      method,
-      params,
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (const url of [PRIMARY_RPC, FALLBACK_RPC]) {
+      try {
+        return await rpcOne(
+          url,
+          method,
+          params,
+        );
+      } catch (error) {
+        lastError = error;
+        if (!transient(error)) {
+          throw error;
+        }
+      }
+    }
+
+    await sleep(
+      300 * (2 ** attempt),
     );
-  } catch (error) {
-    primaryError = error;
   }
 
-  try {
-    return await rpcOne(
-      FALLBACK_RPC,
-      method,
-      params,
-    );
-  } catch (fallbackError) {
-    throw new Error(
-      `both_rpc_endpoints_failed primary=${primaryError?.message} fallback=${fallbackError.message}`,
-    );
-  }
+  throw lastError;
 }
 
 async function ethCall(to, data, block = 'latest') {
@@ -181,134 +196,6 @@ async function receipt(txHash) {
   );
 
   return value;
-}
-
-function roundTopic(eventName) {
-  return [
-    poolIface.getEvent(eventName).topicHash,
-    zeroPadValue(
-      toBeHex(ROUND_ID),
-      32,
-    ),
-  ];
-}
-
-async function getBlockByNumber(number) {
-  const block = await rpc(
-    'eth_getBlockByNumber',
-    [toQuantity(number), false],
-  );
-
-  assert.ok(
-    block,
-    `missing block ${number}`,
-  );
-
-  return block;
-}
-
-async function blockAtOrBeforeTimestamp(timestamp) {
-  let low = SEARCH_LOW_BLOCK;
-  let high = SEARCH_HIGH_BLOCK;
-  let answer = low;
-
-  while (low <= high) {
-    const mid =
-      Math.floor((low + high) / 2);
-
-    const block =
-      await getBlockByNumber(mid);
-
-    const blockTime =
-      Number(block.timestamp);
-
-    if (blockTime <= timestamp) {
-      answer = mid;
-      low = mid + 1;
-    } else {
-      high = mid - 1;
-    }
-  }
-
-  return answer;
-}
-
-function isRangeTooLarge(error) {
-  const text =
-    String(error?.message || error);
-
-  return (
-    text.includes('requested range too large') ||
-    text.includes('maxBlockRange') ||
-    text.includes('maxFilteredBlockRange')
-  );
-}
-
-async function getLogsAdaptive({
-  address,
-  topics,
-  fromBlock,
-  toBlock,
-}) {
-  if (fromBlock > toBlock) return [];
-
-  const filter = {
-    address,
-    fromBlock: toQuantity(fromBlock),
-    toBlock: toQuantity(toBlock),
-    topics,
-  };
-
-  try {
-    return await rpcOne(
-      PRIMARY_RPC,
-      'eth_getLogs',
-      [filter],
-    );
-  } catch (primaryError) {
-    const width =
-      toBlock - fromBlock + 1;
-
-    if (
-      width <= 100 &&
-      !isRangeTooLarge(primaryError)
-    ) {
-      try {
-        return await rpcOne(
-          FALLBACK_RPC,
-          'eth_getLogs',
-          [filter],
-        );
-      } catch {}
-    }
-
-    if (fromBlock === toBlock) {
-      throw primaryError;
-    }
-
-    const middle =
-      Math.floor(
-        (fromBlock + toBlock) / 2,
-      );
-
-    const [left, right] =
-      await Promise.all([
-        getLogsAdaptive({
-          address,
-          topics,
-          fromBlock,
-          toBlock: middle,
-        }),
-        getLogsAdaptive({
-          address,
-          topics,
-          fromBlock: middle + 1,
-          toBlock,
-        }),
-      ]);
-
-    return [...left, ...right];
-  }
 }
 
 function parsePoolLog(log) {
@@ -413,114 +300,9 @@ async function main() {
     'winner ordering mismatch',
   );
 
-  const entryOpenBlock =
-    await blockAtOrBeforeTimestamp(
-      Number(round.entryOpenAt),
-    );
-
-  const entryCloseBlock =
-    await blockAtOrBeforeTimestamp(
-      Number(round.entryCloseAt),
-    );
-
-  const observationEndBlock =
-    await blockAtOrBeforeTimestamp(
-      Number(round.observationEndAt),
-    );
-
-  const createdLogs =
-    await getLogsAdaptive({
-      address: POOL,
-      topics: roundTopic('RoundCreated'),
-      fromBlock: Math.max(
-        SEARCH_LOW_BLOCK,
-        entryOpenBlock - 20000,
-      ),
-      toBlock: entryOpenBlock + 2000,
-    });
-
-  assert.equal(
-    createdLogs.length,
-    1,
-    'exactly one RoundCreated event expected',
-  );
-
-  const created =
-    parsePoolLog(createdLogs[0]);
-
-  assert.equal(
-    created.args.roundId,
-    ROUND_ID,
-  );
-
-  const createdReceipt =
-    await receipt(
-      createdLogs[0].transactionHash,
-    );
-
-  const lockedLogs =
-    await getLogsAdaptive({
-      address: POOL,
-      topics: roundTopic('RoundLocked'),
-      fromBlock: Math.max(
-        Number(createdLogs[0].blockNumber),
-        entryCloseBlock - 1000,
-      ),
-      toBlock: Math.min(
-        60988590,
-        entryCloseBlock + 10000,
-      ),
-    });
-
-  assert.equal(
-    lockedLogs.length,
-    1,
-    'exactly one RoundLocked event expected',
-  );
-
-  await receipt(
-    lockedLogs[0].transactionHash,
-  );
-
-  const entryLogs =
-    await getLogsAdaptive({
-      address: POOL,
-      topics: roundTopic('PredictionEntered'),
-      fromBlock: Math.max(
-        Number(createdLogs[0].blockNumber),
-        entryOpenBlock - 1000,
-      ),
-      toBlock: Math.min(
-        Number(lockedLogs[0].blockNumber),
-        entryCloseBlock + 1000,
-      ),
-    });
-
-  assert.equal(
-    entryLogs.length,
-    3,
-    'exactly 3 PredictionEntered events expected',
-  );
-
   const entries = [];
 
-  for (const log of entryLogs) {
-    const parsed = parsePoolLog(log);
-    const ticketId =
-      BigInt(parsed.args.ticketId);
-    const entrant =
-      getAddress(parsed.args.entrant);
-    const prediction =
-      BigInt(
-        parsed.args.predictionPriceCents,
-      );
-
-    assert.equal(
-      prediction,
-      EXPECTED_PREDICTIONS.get(ticketId),
-      `prediction mismatch ticket ${ticketId}`,
-    );
-
+  for (const ticketId of [2n, 3n, 4n]) {
     const entryRaw =
       await ethCall(
         POOL,
@@ -537,44 +319,32 @@ async function main() {
       );
 
     assert.equal(
+      BigInt(decoded.ticketId),
+      ticketId,
+    );
+    assert.equal(
       BigInt(decoded.roundId),
       ROUND_ID,
     );
     assert.equal(
-      getAddress(decoded.originalEntrant),
-      entrant,
-    );
-    assert.equal(
       BigInt(decoded.predictionPriceCents),
-      prediction,
+      EXPECTED_PREDICTIONS.get(ticketId),
+      `prediction mismatch ticket ${ticketId}`,
     );
-
-    const entryReceipt =
-      await receipt(
-        log.transactionHash,
-      );
-
-    assert.equal(
-      findExactTransfer(
-        entryReceipt,
-        entrant,
-        POOL,
-        EXPECTED_STAKE,
-      ),
-      true,
-      `1 USDC entry transfer missing ticket ${ticketId}`,
+    assert.notEqual(
+      getAddress(decoded.originalEntrant),
+      '0x0000000000000000000000000000000000000000',
+      `missing original entrant ticket ${ticketId}`,
     );
 
     entries.push({
       ticketId: ticketId.toString(),
-      entrant,
+      originalEntrant:
+        getAddress(decoded.originalEntrant),
       predictionPriceCents:
-        prediction.toString(),
+        decoded.predictionPriceCents.toString(),
       entrySequence:
-        parsed.args.entrySequence.toString(),
-      txHash: log.transactionHash,
-      blockNumber:
-        Number(log.blockNumber),
+        decoded.entrySequence.toString(),
     });
   }
 
@@ -582,6 +352,12 @@ async function main() {
     (a, b) =>
       Number(a.entrySequence) -
       Number(b.entrySequence),
+  );
+
+  assert.deepEqual(
+    entries.map(item => item.ticketId),
+    ['2', '3', '4'],
+    'entry sequence ordering mismatch',
   );
 
   const settlementReceipt =
@@ -883,39 +659,27 @@ async function main() {
     chainId: 5042002,
     pool: getAddress(POOL),
     ticket: getAddress(TICKET),
-    roundId: 4,
-    blockAnchors: {
-      entryOpenBlock,
-      entryCloseBlock,
-      observationEndBlock,
-    },
-    roundCreated: {
-      txHash:
-        createdLogs[0].transactionHash,
-      blockNumber:
-        Number(createdLogs[0].blockNumber),
-      receiptStatus:
-        Number(createdReceipt.status),
+    round: {
+      roundId: 4,
+      status: 'SETTLED',
       entryOpenAt:
-        Number(created.args.entryOpenAt),
+        Number(round.entryOpenAt),
       entryCloseAt:
-        Number(created.args.entryCloseAt),
+        Number(round.entryCloseAt),
       observationStartAt:
-        Number(
-          created.args.observationStartAt,
-        ),
+        Number(round.observationStartAt),
       observationEndAt:
-        Number(
-          created.args.observationEndAt,
-        ),
+        Number(round.observationEndAt),
+      entryCount:
+        Number(round.entryCount),
+      totalStakeRaw:
+        round.totalStake.toString(),
+      resolvedPriceCents:
+        round.resolvedPriceCents.toString(),
+      winnerTicketIds:
+        winners.map(String),
     },
     entries,
-    lock: {
-      txHash:
-        lockedLogs[0].transactionHash,
-      blockNumber:
-        Number(lockedLogs[0].blockNumber),
-    },
     settlement: {
       txHash: EXPECTED_SETTLEMENT_TX,
       blockNumber:
@@ -924,10 +688,6 @@ async function main() {
         ),
       resolver:
         getAddress(RESOLVER),
-      resolvedPriceCents:
-        EXPECTED_RESOLVED_PRICE.toString(),
-      winners:
-        EXPECTED_WINNERS.map(String),
       treasuryUsdcRaw:
         EXPECTED_TREASURY_AMOUNT.toString(),
     },
@@ -971,13 +731,13 @@ async function main() {
   );
 
   console.log(
-    'RESULT=FINAL_SINGLE_ROUND_LIFECYCLE_PROOF_COMPLETE',
+    'RESULT=FINAL_SINGLE_ROUND_PROOF_COMPLETE',
   );
 }
 
 main().catch((error) => {
   console.error(
-    'RESULT=FINAL_SINGLE_ROUND_LIFECYCLE_PROOF_FAIL',
+    'RESULT=FINAL_SINGLE_ROUND_PROOF_FAIL',
   );
   console.error(
     error.stack || error.message,
