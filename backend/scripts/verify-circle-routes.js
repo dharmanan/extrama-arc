@@ -24,9 +24,10 @@ const circleActions = fs.readFileSync(path.join(root, '../app/lib/circle-actions
 const schema = fs.readFileSync(path.join(root, 'src/db/schema.sql'), 'utf8');
 
 assert.match(routes, /router\.post\('\/device-token\/social'/);
-assert.match(routes, /router\.post\('\/device-token\/email'/);
-assert.match(routes, /emailOtpLimiter/);
-assert.match(routes, /circle_email_otp_cooldown/);
+assert.doesNotMatch(routes, /router\.post\('\/device-token\/email'/);
+assert.doesNotMatch(routes, /emailOtpLimiter/);
+assert.doesNotMatch(browserApi, /emailDeviceToken\(/);
+assert.doesNotMatch(onboarding, /Continue with email|verifyOtp|resendEmailOtp|emailDeviceToken/);
 assert.match(routes, /router\.post\('\/wallet\/initialize'/);
 assert.match(routes, /router\.post\('\/session'/);
 assert.match(routes, /router\.post\('\/session\/refresh', walletLimiter, requireAuth/);
