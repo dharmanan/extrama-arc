@@ -22,9 +22,11 @@ function createRpcServer({
   blockNumber,
   callResult,
   healthy = true,
+  delayMs = 0,
 }) {
   const state = {
     healthy,
+    delayMs,
     requests: 0,
     methods: [],
   };
@@ -39,8 +41,14 @@ function createRpcServer({
         body += chunk;
       });
 
-      req.on('end', () => {
+      req.on('end', async () => {
         state.requests += 1;
+
+        if (state.delayMs > 0) {
+          await new Promise(resolve => {
+            setTimeout(resolve, state.delayMs);
+          });
+        }
 
         let payload;
 
@@ -265,11 +273,74 @@ async function main() {
     );
 
     /* --------------------------------------------------------
+       A slow primary may still finish after fallback has already
+       won. Its later rejection must be fully consumed instead of
+       becoming an unhandled rejection that can terminate Node.
+       -------------------------------------------------------- */
+
+    const unhandled = [];
+    const onUnhandled = reason => {
+      unhandled.push(reason);
+    };
+
+    process.on(
+      'unhandledRejection',
+      onUnhandled,
+    );
+
+    primary.state.healthy = false;
+    primary.state.delayMs = 1_200;
+
+    const startedAt = Date.now();
+
+    const hedgedBlock =
+      await readProvider.send(
+        'eth_blockNumber',
+        [],
+      );
+
+    const elapsedMs =
+      Date.now() - startedAt;
+
+    assert.equal(
+      hedgedBlock,
+      '0x222',
+      'fallback wins a stalled primary read',
+    );
+
+    assert.equal(
+      elapsedMs < 1_200,
+      true,
+      `fallback did not hedge before primary completed: ${elapsedMs}ms`,
+    );
+
+    // Let the deliberately late primary response finish. If the losing
+    // request were not contained, it would surface here as an unhandled
+    // rejection after the successful fallback result was already returned.
+    await new Promise(resolve => {
+      setTimeout(resolve, 700);
+    });
+
+    process.off(
+      'unhandledRejection',
+      onUnhandled,
+    );
+
+    assert.equal(
+      unhandled.length,
+      0,
+      'late losing RPC rejection escaped the read failover layer',
+    );
+
+    primary.state.delayMs = 0;
+
+    /* --------------------------------------------------------
        Make primary healthy again. The WRITE provider must talk
        directly to primary and never route through fallback.
        -------------------------------------------------------- */
 
     primary.state.healthy = true;
+    primary.state.delayMs = 0;
 
     const fallbackBefore =
       fallback.state.requests;
@@ -330,6 +401,33 @@ async function main() {
         'utf8',
       );
 
+    const rpcSource =
+      fs.readFileSync(
+        path.join(
+          root,
+          'src/services/arcRpcProviderService.js',
+        ),
+        'utf8',
+      );
+
+    assert.doesNotMatch(
+      rpcSource,
+      /new ethers\.FallbackProvider/,
+      'ethers FallbackProvider must not own Arc read hedging',
+    );
+
+    assert.match(
+      rpcSource,
+      /class HedgedReadProvider extends ethers\.AbstractProvider/,
+      'Arc reads use the contained hedged provider',
+    );
+
+    assert.match(
+      rpcSource,
+      /settleRead\([\s\S]*?ok: false,[\s\S]*?error/,
+      'both hedged branches must convert rejection into settled data',
+    );
+
     assert.match(
       automationSource,
       /function getAutomationProvider\(\)[\s\S]*?return getArcReadProvider\(\)/,
@@ -368,6 +466,10 @@ async function main() {
 
     console.log(
       'ARC_RPC_FAILOVER=PASS',
+    );
+
+    console.log(
+      'ARC_RPC_HEDGED_LATE_REJECTION_CONTAINED=PASS',
     );
 
     console.log(
