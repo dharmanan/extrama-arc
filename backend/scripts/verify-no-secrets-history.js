@@ -35,8 +35,24 @@ const patterns = [
   ['PERSONAL_GMAIL_ADDRESS', /\b[A-Za-z0-9._%+-]+@gmail\.com\b/gi],
 ];
 
-const sensitiveFilename =
-  /(^|\/)\.env($|\.)|\.(?:pem|key|p12|pfx)$|(^|\/)(?:id_rsa|id_ed25519)$|(?:credential|secret)[^/]*$/i;
+function isSensitiveFilename(file) {
+  const base = file.split('/').pop() || file;
+
+  if (
+    base === '.env' ||
+    (
+      base.startsWith('.env.') &&
+      !/\.env\.(?:example|sample|template)$/i.test(base)
+    )
+  ) {
+    return true;
+  }
+
+  return (
+    /\.(?:pem|key|p12|pfx)$/i.test(base) ||
+    /^(?:id_rsa|id_ed25519)$/i.test(base)
+  );
+}
 
 const archiveFilename = /\.(?:zip|7z|rar|tar|tgz|gz)$/i;
 
@@ -62,7 +78,7 @@ for (const line of names.split('\n')) {
   const file = line.trim();
   if (!file) continue;
 
-  if (sensitiveFilename.test(file)) {
+  if (isSensitiveFilename(file)) {
     findings.set(
       'SENSITIVE_FILENAME|' + file + '|' + currentCommit,
       {
