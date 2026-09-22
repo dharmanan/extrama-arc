@@ -1262,11 +1262,6 @@ export const backendApi = {
         "/circle/device-token/social", { deviceId, idempotencyKey },
       );
     },
-    emailDeviceToken(deviceId: string, email: string, idempotencyKey: string) {
-      return post<{ deviceToken: string; deviceEncryptionKey: string; otpToken: string }>(
-        "/circle/device-token/email", { deviceId, email, idempotencyKey },
-      );
-    },
     initializeWallet(userToken: string, idempotencyKey: string) {
       return post<{
         status: "EXISTING" | "CHALLENGE_REQUIRED";
