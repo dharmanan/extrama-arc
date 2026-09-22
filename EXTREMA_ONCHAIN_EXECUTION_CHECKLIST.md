@@ -1885,19 +1885,48 @@ One complete round must be demonstrated from start to finish:
 
 ### Final proof record
 
-- Chain ID:
-- Contracts:
-- Round ID:
-- Entry transactions:
-- NFT mint events:
-- NFT transfer:
-- Settlement source:
-- Settlement transaction:
-- Winners:
-- Claim transactions:
-- Treasury transfer/accounting:
-- Explorer links:
-- Final verification result:
+#### 2026-09-22 consolidated single-round proof
+
+A stable, read-only final verifier now runs in CI against the canonical Railway result and verification endpoints:
+
+`backend/scripts/verify-final-round-proof.js`
+
+GitHub Actions run `35716569947` completed successfully with:
+
+`RESULT=FINAL_SINGLE_ROUND_PROOF_COMPLETE`
+
+The consolidated live round is **ETH Daily High Round #4**:
+
+- Chain ID: `5042002`
+- Pool: `0xA5467fDCDAA0afaE379Fd8Ab0F9761944211725f`
+- Ticket contract: `0xF65Cf4a67299ad596e139e3F6a9594E809F05637`
+- Round ID: `4`
+- Status: `SETTLED`
+- Real entries: `3`
+- Total stake: `3.0 USDC`
+- Resolved price: `$2535.00`
+- Winner #1: Ticket #4, prediction `$2508.56`, distance `$26.44`
+- Winner #2: Ticket #3, prediction `$2507.56`, distance `$27.44`
+- Winner #3: Ticket #2, prediction `$2506.56`, distance `$28.44`
+- Settlement transaction: `0xa70d8ee5f5891d3a72e2f9f62f8680a6f737b27ad0999dc701386381826cdcc9`
+- Settlement verification status: `VERIFIED`
+- Evidence SHA256: `0451d8569c28edd05e76a008d259a52a5860f7280594f2968bad1882a266dd75`
+- Source-data SHA256: `e3ebc5037503422a58bb0e968ef9bbdfa9917be0c8c8111a1dc082dfa7467392`
+- Evidence hash, pool identity, market period and resolved-price integrity checks: all `true`
+- Recorded live claim: Ticket #2, `0.405 USDC`
+- Claim transaction: `0xc7913e802e228549cfb564e60eba6f6f57afbbc1e8e4e8fe33ee0f11e59cf2ff`
+- Current claim state for Ticket #2: `isClaimed=true`, `claimableRaw=0`
+- All three Round #4 winner tickets now read as claimed with zero remaining claimable USDC.
+
+This closes the **core single-round settlement / winner / claim proof** used by the release roadmap.
+
+The stricter acceptance list above is intentionally **not fully checked off**. In particular, Round #4 did not contain the later real secondary-market transfer, so these same-round requirements remain separate:
+
+- transfer a ticket before settlement
+- prove that transferred owner later claims that same round live
+- record one complete creation/entry/mint/transfer transaction-hash bundle for the same round
+
+Those ownership semantics are already deterministic E2E PASS, and a separate real marketplace sale has transferred a live ticket on Arc Testnet, but this document does not combine evidence from different rounds and call it one live end-to-end transferred-winner proof.
 
 ---
 
@@ -2026,6 +2055,8 @@ The old calendar gated lifecycle proof is closed. As of 2026-09-09, the resolver
 These proofs intentionally do **not** imply that every negative case was redundantly broadcast on production. Live double-claim and double-refund attempts remain unperformed; their rejection is covered by deterministic contract/E2E tests.
 
 ### Completed immediately after C6
+
+- [x] **Final consolidated single-round core proof completed.** ETH Daily High Round #4 is re-verified in CI through the canonical live Result + Verify surfaces: 3 real entries / 3.0 USDC, SETTLED at $2535.00, winners [4,3,2], persisted settlement evidence VERIFIED, and the recorded Ticket #2 0.405 USDC claim remains reflected onchain as claimed with zero claimable balance. The stricter same-round transferred-winner acceptance item in Section 15 remains separately open.
 
 - [x] **Stale Circle entry recovery UX fixed.** Commit `463d9b6` adds local recovery expiry handling, one read-only reconciliation probe for expired records, no blind ~3-minute polling, and no automatic second financial intent.
 - [x] **WEEKLY and QUARTERLY round creation automation verified.** The generalized creation path is already wired into the production lifecycle. Live production state on 2026-09-09 showed 8/8 WEEKLY pools on V2 Round #3 and 8/8 QUARTERLY pools on V2 Round #2 with canonical schedules.
