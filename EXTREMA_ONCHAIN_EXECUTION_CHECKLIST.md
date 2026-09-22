@@ -2063,7 +2063,7 @@ These proofs intentionally do **not** imply that every negative case was redunda
 - [x] The live Arc Testnet proof was moved to a manual workflow so hosted-service/RPC availability cannot make normal source-code CI flaky.
 - [x] Unreferenced `sil/` screenshots and the old design ZIP were removed from the release tree.
 - [x] `SECURITY.md` added and linked to the existing operational secret-rotation guide.
-- [ ] Repository visibility is still private and must be changed to public in GitHub repository settings after final CI is green.
+- [x] Repository visibility changed to public and re-verified after green CI; only the `main` branch is present.
 - [ ] Create the `v1.0-testnet` release/tag after the repository is public.
 
 ### Completed immediately after C6
