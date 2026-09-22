@@ -6,6 +6,7 @@ const {
   getAddress,
   zeroPadValue,
   toBeHex,
+  toQuantity,
 } = require('ethers');
 
 const CHAIN_ID_HEX = '0x4cef52';
@@ -49,9 +50,8 @@ const EXPECTED_CLAIM_AMOUNT = 405000n;
 const EXPECTED_TREASURY_AMOUNT = 300000n;
 const EXPECTED_STAKE = 1000000n;
 
-const SEARCH_FROM_BLOCK = 60600000;
-const SEARCH_TO_BLOCK = 61052025;
-const LOG_CHUNK_SIZE = 20000;
+const SEARCH_LOW_BLOCK = 60000000;
+const SEARCH_HIGH_BLOCK = 61052025;
 
 const poolIface = new Interface([
   'function getRound(uint256 roundId) view returns (tuple(uint64 entryOpenAt,uint64 entryCloseAt,uint64 observationStartAt,uint64 observationEndAt,uint8 status,uint64 entryCount,uint64 nextEntrySequence,uint256 totalStake,uint256 escrowRemaining,uint64 resolvedPriceCents,uint256[3] winnerTicketIds))',
@@ -193,38 +193,122 @@ function roundTopic(eventName) {
   ];
 }
 
-async function getLogsChunked({
-  address,
-  topics,
-  fromBlock = SEARCH_FROM_BLOCK,
-  toBlock = SEARCH_TO_BLOCK,
-}) {
-  const logs = [];
+async function getBlockByNumber(number) {
+  const block = await rpc(
+    'eth_getBlockByNumber',
+    [toQuantity(number), false],
+  );
 
-  for (
-    let start = fromBlock;
-    start <= toBlock;
-    start += LOG_CHUNK_SIZE
-  ) {
-    const end = Math.min(
-      toBlock,
-      start + LOG_CHUNK_SIZE - 1,
-    );
+  assert.ok(
+    block,
+    `missing block ${number}`,
+  );
 
-    const batch = await rpc(
-      'eth_getLogs',
-      [{
-        address,
-        fromBlock: toBeHex(start),
-        toBlock: toBeHex(end),
-        topics,
-      }],
-    );
+  return block;
+}
 
-    logs.push(...batch);
+async function blockAtOrBeforeTimestamp(timestamp) {
+  let low = SEARCH_LOW_BLOCK;
+  let high = SEARCH_HIGH_BLOCK;
+  let answer = low;
+
+  while (low <= high) {
+    const mid =
+      Math.floor((low + high) / 2);
+
+    const block =
+      await getBlockByNumber(mid);
+
+    const blockTime =
+      Number(block.timestamp);
+
+    if (blockTime <= timestamp) {
+      answer = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
   }
 
-  return logs;
+  return answer;
+}
+
+function isRangeTooLarge(error) {
+  const text =
+    String(error?.message || error);
+
+  return (
+    text.includes('requested range too large') ||
+    text.includes('maxBlockRange') ||
+    text.includes('maxFilteredBlockRange')
+  );
+}
+
+async function getLogsAdaptive({
+  address,
+  topics,
+  fromBlock,
+  toBlock,
+}) {
+  if (fromBlock > toBlock) return [];
+
+  const filter = {
+    address,
+    fromBlock: toQuantity(fromBlock),
+    toBlock: toQuantity(toBlock),
+    topics,
+  };
+
+  try {
+    return await rpcOne(
+      PRIMARY_RPC,
+      'eth_getLogs',
+      [filter],
+    );
+  } catch (primaryError) {
+    const width =
+      toBlock - fromBlock + 1;
+
+    if (
+      width <= 100 &&
+      !isRangeTooLarge(primaryError)
+    ) {
+      try {
+        return await rpcOne(
+          FALLBACK_RPC,
+          'eth_getLogs',
+          [filter],
+        );
+      } catch {}
+    }
+
+    if (fromBlock === toBlock) {
+      throw primaryError;
+    }
+
+    const middle =
+      Math.floor(
+        (fromBlock + toBlock) / 2,
+      );
+
+    const [left, right] =
+      await Promise.all([
+        getLogsAdaptive({
+          address,
+          topics,
+          fromBlock,
+          toBlock: middle,
+        }),
+        getLogsAdaptive({
+          address,
+          topics,
+          fromBlock: middle + 1,
+          toBlock,
+        }),
+      ]);
+
+    return [...left, ...right];
+  }
 }
 
 function parsePoolLog(log) {
@@ -329,11 +413,30 @@ async function main() {
     'winner ordering mismatch',
   );
 
+  const entryOpenBlock =
+    await blockAtOrBeforeTimestamp(
+      Number(round.entryOpenAt),
+    );
+
+  const entryCloseBlock =
+    await blockAtOrBeforeTimestamp(
+      Number(round.entryCloseAt),
+    );
+
+  const observationEndBlock =
+    await blockAtOrBeforeTimestamp(
+      Number(round.observationEndAt),
+    );
+
   const createdLogs =
-    await getLogsChunked({
+    await getLogsAdaptive({
       address: POOL,
       topics: roundTopic('RoundCreated'),
-      toBlock: 60988590,
+      fromBlock: Math.max(
+        SEARCH_LOW_BLOCK,
+        entryOpenBlock - 20000,
+      ),
+      toBlock: entryOpenBlock + 2000,
     });
 
   assert.equal(
@@ -356,13 +459,17 @@ async function main() {
     );
 
   const lockedLogs =
-    await getLogsChunked({
+    await getLogsAdaptive({
       address: POOL,
       topics: roundTopic('RoundLocked'),
-      fromBlock: Number(
-        createdLogs[0].blockNumber,
+      fromBlock: Math.max(
+        Number(createdLogs[0].blockNumber),
+        entryCloseBlock - 1000,
       ),
-      toBlock: 60988590,
+      toBlock: Math.min(
+        60988590,
+        entryCloseBlock + 10000,
+      ),
     });
 
   assert.equal(
@@ -376,14 +483,16 @@ async function main() {
   );
 
   const entryLogs =
-    await getLogsChunked({
+    await getLogsAdaptive({
       address: POOL,
       topics: roundTopic('PredictionEntered'),
-      fromBlock: Number(
-        createdLogs[0].blockNumber,
+      fromBlock: Math.max(
+        Number(createdLogs[0].blockNumber),
+        entryOpenBlock - 1000,
       ),
-      toBlock: Number(
-        lockedLogs[0].blockNumber,
+      toBlock: Math.min(
+        Number(lockedLogs[0].blockNumber),
+        entryCloseBlock + 1000,
       ),
     });
 
@@ -775,6 +884,11 @@ async function main() {
     pool: getAddress(POOL),
     ticket: getAddress(TICKET),
     roundId: 4,
+    blockAnchors: {
+      entryOpenBlock,
+      entryCloseBlock,
+      observationEndBlock,
+    },
     roundCreated: {
       txHash:
         createdLogs[0].transactionHash,
