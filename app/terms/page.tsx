@@ -79,8 +79,8 @@ export default function TermsPage() {
           </h2>
 
           <p style={bodyStyle}>
-            Google and email access may create or use a Circle User Controlled
-            Wallet. EXTREMA does not receive the private key for that wallet.
+            Google access may create or use a Circle User Controlled Wallet.
+            EXTREMA does not receive the private key for that wallet.
             Authentication and transaction approval may depend on Circle&apos;s
             infrastructure and availability.
           </p>
