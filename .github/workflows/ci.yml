@@ -19,6 +19,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Setup Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
       - name: Install frontend
         run: npm ci
 
@@ -30,3 +33,6 @@ jobs:
 
       - name: Check backend
         run: npm run backend:check
+
+      - name: Final E2E harness
+        run: npm --prefix backend run verify:e2e
