@@ -1,0 +1,91 @@
+name: Publish v1.0-testnet
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Guard exact release commit
+        id: guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          MESSAGE="$(git log -1 --format=%s "$SHA")"
+
+          if [ "$MESSAGE" != "Release EXTREMA v1.0-testnet" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Not the v1.0-testnet release commit; skipping."
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub pre-release
+        if: steps.guard.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.guard.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view v1.0-testnet --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v1.0-testnet already exists; nothing to do."
+            exit 0
+          fi
+
+          cat > /tmp/release-notes.md <<'EOF'
+          ## EXTREMA v1.0-testnet
+
+          Open-source Arc Testnet reference release.
+
+          **Testnet only.** EXTREMA is not an operated real-money mainnet service. Testnet USDC is for testing and has no intended real-world monetary value.
+
+          ### Included
+
+          - exact-price prediction pools for BTC, ETH, SOL and HYPE
+          - DAILY, WEEKLY and QUARTERLY cadences
+          - HIGH and LOW pools
+          - one prediction per wallet per round
+          - unique exact prediction prices per round
+          - ERC-721 position tickets
+          - secondary marketplace support
+          - deterministic settlement and claim/refund ownership semantics
+          - external-wallet and Circle user-controlled wallet flows
+          - Circle Gateway funding support
+          - Arc Testnet deployment and verification tooling
+
+          ### Verification baseline
+
+          - Forge: 67/67
+          - backend Layer 3: 28/28
+          - E2E matrix: 51 PASS / 0 FAIL
+          - final deterministic result: EXTREMA_E2E=PASS
+          - committed-secret scan: PASS
+          - full Git-history secret scan: PASS
+
+          ### License
+
+          MIT
+
+          Anyone who forks or deploys this code is responsible for their own legal, regulatory, security and operational requirements.
+          EOF
+
+          gh release create v1.0-testnet             --repo "$GITHUB_REPOSITORY"             --target "$RELEASE_SHA"             --title "EXTREMA v1.0-testnet"             --notes-file /tmp/release-notes.md             --prerelease
