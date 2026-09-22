@@ -58,7 +58,7 @@ assert.ok(
 assert.ok(!sessionService.includes('refreshToken'), 'Circle refresh credentials must not enter the EXTREMA JWT/session payload');
 assert.match(browserApi, /refreshSession\(deviceId: string\)/);
 assert.match(onboarding, /refreshToken\?: string/);
-assert.match(onboarding, /auth\.refreshToken \? \{ refreshToken: auth\.refreshToken, deviceId \} : undefined/);
+assert.match(onboarding, /auth\.refreshToken\s*\?\s*\{\s*refreshToken:\s*auth\.refreshToken,\s*deviceId\s*\}\s*:\s*undefined/);
 assert.ok(!onboarding.includes('storeCircleTabAuth(auth)'), 'a Circle refresh token must never be written to browser tab storage');
 assert.match(circleAuth, /type CircleTabAuth = \{\s+userToken: string;\s+encryptionKey: string;/);
 assert.ok(!browserApi.includes('CIRCLE_API_KEY'), 'the Circle API key must never enter browser code');
