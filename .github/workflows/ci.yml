@@ -19,6 +19,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Secret scan
+        run: node backend/scripts/verify-no-committed-secrets.js
+
       - name: Setup Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
@@ -36,6 +39,3 @@ jobs:
 
       - name: Final E2E harness
         run: npm --prefix backend run verify:e2e
-
-      - name: Final live round proof
-        run: node backend/scripts/verify-final-round-proof.js

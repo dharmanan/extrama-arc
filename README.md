@@ -2,6 +2,10 @@
 
 **Predict the extreme. Own the ticket.**
 
+> **TESTNET ONLY**
+>
+> EXTREMA is deployed and operated only on Arc Testnet. There is no EXTREMA real-money mainnet deployment operated by the project author. Testnet USDC is for testing and has no intended real-world monetary value. Anyone who forks or deploys this code is responsible for their own legal, regulatory, security, and operational requirements.
+
 EXTREMA is an onchain prediction game built on Arc for forecasting the highest or lowest price reached by BTC, ETH, SOL, or HYPE over Daily, Weekly, and Quarterly periods.
 
 Every prediction costs exactly **1 USDC**. Every exact price can be taken only once per round. A successful entry mints a transferable ERC-721 ticket, and the current owner of that ticket owns the right to trade it, receive a refund if the round is cancelled, or claim the reward if it wins.
@@ -244,7 +248,7 @@ Execution safeguards include:
 - separate resolver authorization for settlement
 - fail-closed behavior on signer or chain mismatch
 
-The repository also includes committed-secret scanning and dependency-audit gates.
+The repository also includes a committed-secret scanner and CI verification gates.
 
 ## Deployed on Arc Testnet
 
@@ -274,6 +278,7 @@ The project has recorded real Arc Testnet execution for the core lifecycle.
 | Refund with USDC movement | `0x04183e238f8e2e2a29e733119b5262e2ffc74b8c492542d73febce04117cb8cf` |
 | Winner claim with USDC movement | `0xc7913e802e228549cfb564e60eba6f6f57afbbc1e8e4e8fe33ee0f11e59cf2ff` |
 | Secondary marketplace listing | `0x7b1137330f1bd1d34374998a5e7c1d8b1d80adeeddd3309ea48af127fce7557de` |
+| Secondary marketplace purchase (Listing #3, 2.5 USDC) | `0x76ee63cdd5d010ceb662be4fe00e9a59645d16e044d7a9e3108757b4a2486846` |
 
 The detailed evidence record, including round state, balances, ownership transitions, and acceptance gates, is maintained in [EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md](./EXTREMA_ONCHAIN_EXECUTION_CHECKLIST.md).
 
@@ -344,6 +349,10 @@ npm --prefix backend run verify:e2e
 node backend/scripts/verify-no-committed-secrets.js
 forge test
 ```
+
+The current deterministic CI baseline is Forge **67/67**, backend Layer 3 **28/28**, and the E2E matrix **51 PASS / 0 FAIL**, ending in `EXTREMA_E2E=PASS`.
+
+The recorded final live single-round proof is ETH Daily High Round #4 and ends in `RESULT=FINAL_SINGLE_ROUND_PROOF_COMPLETE`. Live proofs are intentionally kept separate from required deterministic CI because public RPC or hosted-service availability must not make ordinary source-code checks flaky.
 
 Detailed readiness documentation is available in:
 
@@ -446,11 +455,29 @@ Circle wallet support additionally requires:
 ```text
 CIRCLE_API_KEY
 NEXT_PUBLIC_CIRCLE_APP_ID
+NEXT_PUBLIC_CIRCLE_GOOGLE_CLIENT_ID
+NEXT_PUBLIC_CIRCLE_GOOGLE_REDIRECT_URI
 ```
+
+`CIRCLE_API_KEY` is a backend-only secret and must never be exposed to browser code or committed to the repository. The Google OAuth client ID is public browser configuration; EXTREMA does not require a Google client secret in the frontend.
 
 Resolver-authorized settlement requires the encrypted resolver credential configured by the deployment environment.
 
 No `WEBAUTHN_*` configuration is used by the active runtime.
+
+## Open-source testnet release
+
+This repository is released as a testnet reference implementation. It is not an operated mainnet real-money service.
+
+Before running your own deployment:
+
+- create your own deployment credentials and never reuse the project's credentials
+- keep round creation, seed-agent execution, and Gateway broadcasting disabled unless you intentionally configure those paths
+- review the deployed contract addresses and network configuration
+- follow the secret-rotation guidance in [docs/SECURITY_OPERATIONS.md](./docs/SECURITY_OPERATIONS.md)
+- run the deterministic CI/E2E checks before enabling any write path
+
+The code is licensed under the **MIT License**. See [LICENSE](./LICENSE).
 
 ## Built by
 

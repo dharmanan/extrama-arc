@@ -2,12 +2,27 @@
 node_modules/
 *.tsbuildinfo
 .DS_Store
+
+# Environment and credentials
 .env
-.env.local
+.env.*
+!.env.example
+!backend/.env.example
 backend/.env
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Backend / contracts
 backend/node_modules/
 contracts/out/
 contracts/cache/
 broadcast/
 foundry-pp/
 .extrema-round-plan.env
+
+# Local backups / scratch artifacts
+*.dump
+backups/
+sil/

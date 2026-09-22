@@ -1,0 +1,23 @@
+name: Live Arc Testnet Proof
+
+on:
+  workflow_dispatch:
+
+jobs:
+  final-live-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install backend
+        run: npm --prefix backend install
+
+      - name: Final live single-round proof
+        run: node backend/scripts/verify-final-round-proof.js

@@ -2054,6 +2054,18 @@ The old calendar gated lifecycle proof is closed. As of 2026-09-09, the resolver
 
 These proofs intentionally do **not** imply that every negative case was redundantly broadcast on production. Live double-claim and double-refund attempts remain unperformed; their rejection is covered by deterministic contract/E2E tests.
 
+### Open-source release packaging
+
+- [x] MIT `LICENSE` added.
+- [x] README now carries a prominent Arc Testnet-only / no operated real-money mainnet notice.
+- [x] Frontend and backend environment templates contain placeholders/defaults only; obsolete WebAuthn/email-era template entries were removed.
+- [x] Committed-secret scanning is a required deterministic CI step.
+- [x] The live Arc Testnet proof was moved to a manual workflow so hosted-service/RPC availability cannot make normal source-code CI flaky.
+- [x] Unreferenced `sil/` screenshots and the old design ZIP were removed from the release tree.
+- [x] `SECURITY.md` added and linked to the existing operational secret-rotation guide.
+- [ ] Repository visibility is still private and must be changed to public in GitHub repository settings after final CI is green.
+- [ ] Create the `v1.0-testnet` release/tag after the repository is public.
+
 ### Completed immediately after C6
 
 - [x] **Final consolidated single-round core proof completed.** ETH Daily High Round #4 is re-verified in CI through the canonical live Result + Verify surfaces: 3 real entries / 3.0 USDC, SETTLED at $2535.00, winners [4,3,2], persisted settlement evidence VERIFIED, and the recorded Ticket #2 0.405 USDC claim remains reflected onchain as claimed with zero claimable balance. The stricter same-round transferred-winner acceptance item in Section 15 remains separately open.
