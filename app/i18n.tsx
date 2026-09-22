@@ -369,8 +369,7 @@ export const copy = {
     wallet: {
       getStarted: "Get started",
       continueGoogle: "Continue with Google",
-      continueEmail: "Continue with email",
-      circleComingSoon: "Google and email access is coming soon.",
+      circleComingSoon: "Google access is coming soon.",
       orConnectWallet: "or connect wallet",
       supportedWallets: "Choose MetaMask, Rabby, Phantom, Coinbase Wallet, WalletConnect or another detected EVM wallet.",
       connectWalletAction: "Connect",
@@ -390,7 +389,7 @@ export const copy = {
 
       entranceEyebrow: "Step 1 · Arc Testnet",
       entranceTitle: "Choose how to continue.",
-      entranceLede: "Use your existing wallet now. Google and email access will use Circle user controlled wallets when that integration is enabled.",
+      entranceLede: "Use your existing wallet now. Google access uses a Circle user controlled wallet.",
       requirementNote: "Requires an injected EVM wallet and the Arc Testnet network.",
 
       choiceEyebrow: "Connected wallet",
@@ -402,7 +401,7 @@ export const copy = {
       readyTitle: "Wallet ready.",
       circleWallet: "Circle wallet",
       circleReadyEyebrow: "Arc Testnet Circle wallet",
-      circleSessionExpiredBody: "Sign in again with Google or email to restore your Circle wallet session.",
+      circleSessionExpiredBody: "Sign in again with Google to restore your Circle wallet session.",
       restoreCircleSession: "Restore Circle session",
       restoringCircleSession: "Restoring Circle session…",
       copyAddress: "Copy address",
@@ -978,8 +977,7 @@ export const copy = {
     wallet: {
       getStarted: "Başla",
       continueGoogle: "Google ile devam et",
-      continueEmail: "E posta ile devam et",
-      circleComingSoon: "Google ve e posta erişimi yakında açılacak.",
+      circleComingSoon: "Google erişimi yakında açılacak.",
       orConnectWallet: "veya cüzdan bağla",
       supportedWallets: "MetaMask, Rabby, Phantom, Coinbase Wallet, WalletConnect veya algılanan başka bir EVM cüzdanı seç.",
       connectWalletAction: "Bağlan",
@@ -1011,7 +1009,7 @@ export const copy = {
       readyTitle: "Cüzdan hazır.",
       circleWallet: "Circle cüzdanı",
       circleReadyEyebrow: "Arc Testnet Circle cüzdanı",
-      circleSessionExpiredBody: "Circle cüzdan oturumunu geri yüklemek için Google veya e posta ile yeniden giriş yap.",
+      circleSessionExpiredBody: "Circle cüzdan oturumunu geri yüklemek için Google ile yeniden giriş yap.",
       restoreCircleSession: "Circle oturumunu geri yükle",
       restoringCircleSession: "Circle oturumu geri yükleniyor…",
       copyAddress: "Adresi kopyala",
