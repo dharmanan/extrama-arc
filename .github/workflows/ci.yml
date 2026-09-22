@@ -36,3 +36,6 @@ jobs:
 
       - name: Final E2E harness
         run: npm --prefix backend run verify:e2e
+
+      - name: Final live round proof
+        run: node backend/scripts/verify-final-round-proof.js
