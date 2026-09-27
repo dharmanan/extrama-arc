@@ -19,6 +19,7 @@ const {
   createSeedBotAutomationService,
 } = require('./services/seedBotAutomationService');
 const settlementEvidenceService = require('./services/settlementEvidenceService');
+const seedClaimAutomationService = require('./services/seedClaimAutomationService');
 const marketOutcomeService = require('./services/marketOutcomeService');
 
 const seedBotAutomationService =
@@ -335,6 +336,9 @@ const server = app.listen(config.PORT, () => {
   arcService.warmStandardRoundsCache();
   roundAutomationService.startRoundAutomation();
   seedBotAutomationService.start();
+  seedClaimAutomationService.start().catch((error) => {
+    console.error('[seed-claim] startup failed', error.message);
+  });
 
   // PHASE A readiness check only: confirms Railway PostgreSQL actually
   // exposes the settlement_evidence relation and its critical columns
