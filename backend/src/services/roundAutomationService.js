@@ -15,6 +15,7 @@ const marketOutcomeService = require('./marketOutcomeService');
 const marketArchiveCore = require('./marketArchiveCore');
 const archiveSnapshots = require('./archiveSnapshotRuntime');
 const { sendOnceWithReconciliation } = require('./transactionReconciliation');
+const seedClaimAutomationService = require('./seedClaimAutomationService');
 const {
   currentDailySchedule,
   currentWeeklySchedule,
@@ -974,6 +975,8 @@ async function executeResolverAction(provider, now, item, signer) {
     slug,
     roundId,
     action: 'settled',
+    cadence: item.topology.cadence,
+    observationEndAt: new Date(Number(round.observationEndAt) * 1000).toISOString(),
     entryCount,
     resolvedPriceCents: persisted.resolvedPriceCents,
     evidenceSha256: persisted.evidenceSha256,
@@ -1076,6 +1079,16 @@ async function runLifecycleInternal() {
   if (resolver.executed.length > 0) {
     await arcService.refreshStandardRoundsCache();
     refreshArchiveSnapshotAfterEvent('round-resolved');
+
+    const dailySettlements = resolver.executed.filter(
+      (item) => item.action === 'settled' && item.cadence === 'DAILY',
+    );
+
+    if (dailySettlements.length > 0) {
+      await seedClaimAutomationService.scheduleDailySettlements({
+        settlements: dailySettlements,
+      });
+    }
   }
 
   return {
