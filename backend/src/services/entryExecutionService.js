@@ -3,6 +3,7 @@
 const { ethers } = require('ethers');
 const arcService = require('./arcService');
 const {
+  getArcReadProvider,
   getArcWriteProvider,
 } = require('./arcRpcProviderService');
 const { isCanonicalV2Round } = require('./canonicalMarketSchedule');
@@ -28,6 +29,123 @@ const POOL_ENTRY_ABI = [
 const TICKET_ABI = [
   'function ownerOf(uint256 tokenId) view returns (address)',
 ];
+
+async function sendSeedTransactionOnce({
+  signer,
+  readProvider,
+  writeProvider,
+  to,
+  data,
+  label,
+  hasLanded,
+}) {
+  const from = ethers.getAddress(signer.address);
+
+  const [latestNonce, pendingNonce] = await Promise.all([
+    readProvider.getTransactionCount(from, 'latest'),
+    readProvider.getTransactionCount(from, 'pending'),
+  ]);
+
+  if (latestNonce !== pendingNonce) {
+    throw new Error(`${label}_pending_nonce`);
+  }
+
+  const [estimatedGas, fee] = await Promise.all([
+    readProvider.estimateGas({
+      from,
+      to,
+      data,
+      value: 0n,
+    }),
+    readProvider.getFeeData(),
+  ]);
+
+  if (
+    fee.maxFeePerGas === null ||
+    fee.maxPriorityFeePerGas === null
+  ) {
+    throw new Error(`${label}_fee_data_unavailable`);
+  }
+
+  const signedTx = await signer.signTransaction({
+    type: 2,
+    chainId: 5042002,
+    nonce: pendingNonce,
+    to,
+    value: 0n,
+    data,
+    gasLimit: (estimatedGas * 125n) / 100n + 10000n,
+    maxFeePerGas: fee.maxFeePerGas,
+    maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+  });
+
+  const txHash = ethers.keccak256(signedTx);
+
+  try {
+    await writeProvider.broadcastTransaction(signedTx);
+  } catch (error) {
+    const landed = await hasLanded().catch(() => false);
+
+    if (landed) {
+      return {
+        txHash,
+        receipt: null,
+        reconciled: true,
+      };
+    }
+
+    const uncertain = new Error(
+      `${label}_broadcast_uncertain:${txHash}`,
+    );
+    uncertain.cause = error;
+    throw uncertain;
+  }
+
+  try {
+    const receipt = await readProvider.waitForTransaction(
+      txHash,
+      1,
+      120000,
+    );
+
+    if (!receipt || Number(receipt.status) !== 1) {
+      throw new Error(
+        `${label}_transaction_failed:${txHash}`,
+      );
+    }
+
+    return {
+      txHash,
+      receipt,
+      reconciled: false,
+    };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith(
+        `${label}_transaction_failed:`,
+      )
+    ) {
+      throw error;
+    }
+
+    const landed = await hasLanded().catch(() => false);
+
+    if (landed) {
+      return {
+        txHash,
+        receipt: null,
+        reconciled: true,
+      };
+    }
+
+    const uncertain = new Error(
+      `${label}_receipt_uncertain:${txHash}`,
+    );
+    uncertain.cause = error;
+    throw uncertain;
+  }
+}
 
 // Server side entry signer for autonomous EXTREMA agents only. The signer is
 // one of the approved, encrypted seed wallets; human users never reach this
@@ -93,10 +211,6 @@ async function executeEntry(userId, payload) {
     provider,
   );
 
-  // Separate write runners. Only these two contract objects can broadcast.
-  const writableUsdc = usdc.connect(signer);
-  const writablePool = pool.connect(signer);
-
   const latestBlock = await provider.getBlock('latest');
   if (!latestBlock) throw new Error('arc_latest_block_unavailable');
 
@@ -141,39 +255,146 @@ async function executeEntry(userId, payload) {
   if (walletUsdcBefore < STAKE_AMOUNT) throw new Error('entry_insufficient_usdc');
   if (nativeUsdcGasBalance === 0n) throw new Error('entry_insufficient_gas');
 
+  const readProvider = getArcReadProvider();
+  const writeProvider = getArcWriteProvider();
+
   let approvalTxHash = null;
-  const allowance = await usdc.allowance(walletAddress, poolAddress);
+  let approvalReconciled = false;
+
+  const allowance = await usdc.allowance(
+    walletAddress,
+    poolAddress,
+  );
 
   if (allowance < STAKE_AMOUNT) {
-    const approvalTx = await writableUsdc.approve(poolAddress, STAKE_AMOUNT);
-    approvalTxHash = approvalTx.hash;
-    const approvalReceipt = await approvalTx.wait();
-    requireSuccessfulReceipt(approvalReceipt, 'entry_approval_failed');
+    const approvalData =
+      usdc.interface.encodeFunctionData(
+        'approve',
+        [poolAddress, STAKE_AMOUNT],
+      );
+
+    const approvalResult =
+      await sendSeedTransactionOnce({
+        signer,
+        readProvider,
+        writeProvider,
+        to: arcService.ARC_TESTNET_USDC_ADDRESS,
+        data: approvalData,
+        label: 'seed_entry_approval',
+        hasLanded: async () =>
+          (
+            await usdc.allowance(
+              walletAddress,
+              poolAddress,
+            )
+          ) >= STAKE_AMOUNT,
+      });
+
+    approvalTxHash = approvalResult.txHash;
+    approvalReconciled =
+      approvalResult.reconciled;
   }
 
-  const entryTx = await writablePool.enterPrediction(
-    payload.roundId,
-    payload.predictionPriceCents,
-  );
-  const entryReceipt = await entryTx.wait();
-  requireSuccessfulReceipt(entryReceipt, 'entry_transaction_failed');
+  let recoveredTicket = null;
+
+  async function findEnteredTicket() {
+    arcService.invalidateArcWalletStateCache(
+      walletAddress,
+    );
+
+    const owned =
+      await arcService.readOwnedTickets(
+        walletAddress,
+      );
+
+    return (
+      owned.tickets.find(
+        (item) =>
+          item.poolAddress.toLowerCase() ===
+            poolAddress.toLowerCase() &&
+          Number(item.roundId) ===
+            payload.roundId &&
+          Number(item.predictionPriceCents) ===
+            payload.predictionPriceCents &&
+          item.owner.toLowerCase() ===
+            walletAddress.toLowerCase(),
+      ) || null
+    );
+  }
+
+  const entryData =
+    pool.interface.encodeFunctionData(
+      'enterPrediction',
+      [
+        payload.roundId,
+        payload.predictionPriceCents,
+      ],
+    );
+
+  const entryResult =
+    await sendSeedTransactionOnce({
+      signer,
+      readProvider,
+      writeProvider,
+      to: poolAddress,
+      data: entryData,
+      label: 'seed_entry',
+      hasLanded: async () => {
+        recoveredTicket =
+          await findEnteredTicket();
+
+        return Boolean(recoveredTicket);
+      },
+    });
+
+  const entryTxHash = entryResult.txHash;
+  const entryReceipt = entryResult.receipt;
 
   let ticketId = null;
   let entrySequence = null;
 
-  for (const log of entryReceipt.logs) {
-    try {
-      const parsed = pool.interface.parseLog(log);
-      if (parsed?.name === 'PredictionEntered') {
-        ticketId = parsed.args.ticketId;
-        entrySequence = parsed.args.entrySequence;
-        break;
-      }
-    } catch {}
+  if (entryReceipt) {
+    for (const log of entryReceipt.logs) {
+      try {
+        const parsed =
+          pool.interface.parseLog(log);
+
+        if (
+          parsed?.name ===
+          'PredictionEntered'
+        ) {
+          ticketId =
+            parsed.args.ticketId;
+
+          entrySequence =
+            parsed.args.entrySequence;
+
+          break;
+        }
+      } catch {}
+    }
+  } else {
+    recoveredTicket ||=
+      await findEnteredTicket();
+
+    if (recoveredTicket) {
+      ticketId =
+        BigInt(recoveredTicket.tokenId);
+
+      entrySequence =
+        BigInt(
+          recoveredTicket.entrySequence,
+        );
+    }
   }
 
-  if (ticketId === null || entrySequence === null) {
-    throw new Error('entry_event_missing');
+  if (
+    ticketId === null ||
+    entrySequence === null
+  ) {
+    throw new Error(
+      'entry_event_missing',
+    );
   }
 
   const ticketAddress = ethers.getAddress(ticketAddressRaw);
@@ -221,8 +442,10 @@ async function executeEntry(userId, payload) {
     stakeRaw: STAKE_AMOUNT.toString(),
     stakeUsdc: ethers.formatUnits(STAKE_AMOUNT, 6),
     approvalTxHash,
-    entryTxHash: entryTx.hash,
-    explorerUrl: `https://testnet.arcscan.app/tx/${entryTx.hash}`,
+    entryTxHash,
+    explorerUrl: `https://testnet.arcscan.app/tx/${entryTxHash}`,
+    approvalReconciled,
+    entryReconciled: entryResult.reconciled,
     ticketId: ticketId.toString(),
     entrySequence: entrySequence.toString(),
     ticketOwner: ethers.getAddress(ticketOwner),
@@ -257,4 +480,7 @@ async function executeEntry(userId, payload) {
   };
 }
 
-module.exports = { executeEntry };
+module.exports = {
+  executeEntry,
+  sendSeedTransactionOnce,
+};
