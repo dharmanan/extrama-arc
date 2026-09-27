@@ -357,8 +357,24 @@ async function deferJob(jobKey, delayMs, errorMessage = null) {
   );
 }
 
+async function hasBlockedClaimState(database = db) {
+  const { rows } = await database.query(
+    `SELECT
+       EXISTS (
+         SELECT 1 FROM seed_bot_claim_jobs WHERE status='BLOCKED'
+       ) OR EXISTS (
+         SELECT 1 FROM seed_bot_claim_attempts WHERE status='UNCERTAIN'
+       ) AS blocked`,
+  );
+  return Boolean(rows[0]?.blocked);
+}
+
 async function runDueJob() {
   if (!running || !enabled()) return;
+  if (await hasBlockedClaimState()) {
+    console.error('[seed-claim] automation blocked by unresolved claim state');
+    return;
+  }
 
   const lockResult = await withSeedAutomationLock(async (client) => {
     const { rows } = await client.query(
@@ -453,6 +469,11 @@ async function scheduleNextPendingJob() {
     timer = null;
   }
 
+  if (await hasBlockedClaimState()) {
+    console.error('[seed-claim] scheduler paused by unresolved claim state');
+    return;
+  }
+
   const { rows } = await db.query(
     `SELECT job_key, due_at
        FROM seed_bot_claim_jobs
@@ -508,17 +529,24 @@ async function scheduleDailySettlements({ settlements, settledAtMs = Date.now() 
        VALUES ($1,$2,$3,'PENDING',NOW())
        ON CONFLICT (job_key)
        DO UPDATE SET
-         due_at=GREATEST(seed_bot_claim_jobs.due_at, EXCLUDED.due_at),
+         due_at=CASE
+           WHEN seed_bot_claim_jobs.status IN ('DONE','BLOCKED')
+             THEN seed_bot_claim_jobs.due_at
+           ELSE GREATEST(seed_bot_claim_jobs.due_at, EXCLUDED.due_at)
+         END,
          status=CASE
-           WHEN seed_bot_claim_jobs.status='BLOCKED' THEN 'BLOCKED'
+           WHEN seed_bot_claim_jobs.status IN ('DONE','BLOCKED')
+             THEN seed_bot_claim_jobs.status
            ELSE 'PENDING'
          END,
          completed_at=CASE
-           WHEN seed_bot_claim_jobs.status='BLOCKED' THEN seed_bot_claim_jobs.completed_at
+           WHEN seed_bot_claim_jobs.status IN ('DONE','BLOCKED')
+             THEN seed_bot_claim_jobs.completed_at
            ELSE NULL
          END,
          last_error=CASE
-           WHEN seed_bot_claim_jobs.status='BLOCKED' THEN seed_bot_claim_jobs.last_error
+           WHEN seed_bot_claim_jobs.status IN ('DONE','BLOCKED')
+             THEN seed_bot_claim_jobs.last_error
            ELSE NULL
          END,
          updated_at=NOW()`,
