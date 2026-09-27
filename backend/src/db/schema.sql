@@ -491,6 +491,49 @@ CREATE TABLE IF NOT EXISTS seed_bot_plans (
 CREATE INDEX IF NOT EXISTS seed_bot_plans_due_idx
   ON seed_bot_plans (planned_execution_at, entry_close_at);
 
+
+-- One durable auto-claim job per completed DAILY market window.
+-- The round lifecycle inserts the job only after an onchain DAILY settlement,
+-- due one hour later. Railway restarts resume PENDING jobs from this table.
+CREATE TABLE IF NOT EXISTS seed_bot_claim_jobs (
+  job_key TEXT PRIMARY KEY,
+  observation_end_at TIMESTAMPTZ NOT NULL,
+  due_at TIMESTAMPTZ NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  completed_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT seed_bot_claim_jobs_status_check
+    CHECK (status IN ('PENDING', 'DONE', 'BLOCKED'))
+);
+
+CREATE INDEX IF NOT EXISTS seed_bot_claim_jobs_due_idx
+  ON seed_bot_claim_jobs (status, due_at);
+
+-- Durable record of every SYSTEM_SEED_WALLET claim transaction prepared by
+-- the backend. The signed tx hash is persisted before broadcast so an
+-- uncertain RPC outcome is reconciled on restart instead of blindly resent.
+CREATE TABLE IF NOT EXISTS seed_bot_claim_attempts (
+  pool_address VARCHAR(42) NOT NULL,
+  token_id TEXT NOT NULL,
+  wallet_address VARCHAR(42) NOT NULL,
+  round_id BIGINT NOT NULL,
+  amount_raw TEXT NOT NULL,
+  nonce BIGINT,
+  tx_hash VARCHAR(66),
+  status VARCHAR(16) NOT NULL,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (pool_address, token_id),
+  CONSTRAINT seed_bot_claim_attempts_status_check
+    CHECK (status IN ('PREPARED', 'UNCERTAIN', 'CONFIRMED', 'FAILED'))
+);
+
+CREATE INDEX IF NOT EXISTS seed_bot_claim_attempts_wallet_idx
+  ON seed_bot_claim_attempts (wallet_address, updated_at DESC);
+
 -- Last successful public round archive response per `days` window. It lets
 -- GET /rounds/archive answer immediately after a deploy or restart while a
 -- fresh Arc read refreshes it in the background. It holds exactly the payload
